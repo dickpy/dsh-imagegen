@@ -1,0 +1,14 @@
+node_modules/
+lib/
+*.tsbuildinfo
+
+# Build artifacts
+*.tgz
+*.zip
+
+# Temp files
+.tmp-*
+
+# OS files
+.DS_Store
+Thumbs.db

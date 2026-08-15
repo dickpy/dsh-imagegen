@@ -1,0 +1,8 @@
+# dsh-imagegen bundle patch: inserts the plugin row into the web profile
+# roster. The row is a bare plugin by package name: the node half (exports ".")
+# runs in the host process (settings bridge + image-generation proxy routes),
+# and the `dsh.client` declaration in package.json makes the browser half
+# (exports "./client", served at /plugins/<id>/client.js) load in the web GUI.
+- insert:
+    - id: imagegen
+      name: '@dsh-local/dsh-imagegen'

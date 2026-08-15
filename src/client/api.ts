@@ -1,0 +1,89 @@
+/**
+ * Browser-side API client for the /api/dsh-imagegen route family. The only
+ * data access path the panel uses — plain fetch, same origin.
+ */
+
+import { GENERATE_API, HISTORY_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type HistoryEntryInput } from '../protocol.ts'
+
+/** Error carrying the route's JSON error message. */
+export class ImageGenApiError extends Error {
+  /** Stable wire code from the host. */
+  readonly code: string
+
+  constructor(message: string, code = 'generate-failed') {
+    super(message)
+    this.name = 'ImageGenApiError'
+    this.code = code
+  }
+}
+
+/** Parse the { ok, ... } envelope or throw an ImageGenApiError. */
+async function readEnvelope<T>(response: Response): Promise<T> {
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new ImageGenApiError(`HTTP ${response.status}: invalid JSON response`)
+  }
+  if (body === null || typeof body !== 'object') {
+    throw new ImageGenApiError(`HTTP ${response.status}: malformed response`)
+  }
+  const record = body as { ok?: unknown; message?: unknown; code?: unknown }
+  if (record.ok !== true) {
+    throw new ImageGenApiError(
+      typeof record.message === 'string' ? record.message : `HTTP ${response.status}`,
+      typeof record.code === 'string' ? record.code : 'generate-failed',
+    )
+  }
+  return body as T
+}
+
+/** The browser half's data entry point. */
+export class ImageGenApi {
+  /** Forward one generate request to the host proxy. */
+  async generate(request: GenerateRequest): Promise<GenerateResult> {
+    const response = await fetch(GENERATE_API, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const body = await readEnvelope<{ ok: true; images: GenerateResult['images'] }>(response)
+    return { images: body.images }
+  }
+
+  /** List the host-persisted history (newest first). */
+  async historyList(): Promise<HistoryEntry[]> {
+    const response = await fetch(HISTORY_API.list, { method: 'POST' })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+
+  /** Append one generation to the host-persisted history. */
+  async historyAppend(entry: HistoryEntryInput): Promise<HistoryEntry[]> {
+    const response = await fetch(HISTORY_API.append, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry }),
+    })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+
+  /** Remove one history entry by id. */
+  async historyRemove(id: string): Promise<HistoryEntry[]> {
+    const response = await fetch(HISTORY_API.remove, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+
+  /** Clear the entire history. */
+  async historyClear(): Promise<HistoryEntry[]> {
+    const response = await fetch(HISTORY_API.clear, { method: 'POST' })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+}

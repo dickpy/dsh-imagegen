@@ -1,0 +1,118 @@
+/**
+ * Wire contract shared by the host and client halves of dsh-imagegen: the
+ * settings namespace, the route paths, and the generate payload/result shapes.
+ * Pure types + constants — safe for the client bundle to inline.
+ */
+
+/** Settings namespace this plugin owns (host settings seam + bridge). */
+export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
+
+/** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
+export const SETTINGS_API = {
+  describe: '/api/dsh-imagegen/settings/describe',
+  mutate: '/api/dsh-imagegen/settings/mutate',
+} as const
+
+/** The image-generation proxy route. */
+export const GENERATE_API = '/api/dsh-imagegen/generate'
+
+/**
+ * Same-origin route family for the host-persisted generation history. Images
+ * live as files under ~/.dsh/dsh-imagegen/images/ and are served back through
+ * the `image` prefix route, so list responses carry metadata only (never
+ * base64) and the browser loads thumbnails/previews lazily.
+ */
+export const HISTORY_API = {
+  list: '/api/dsh-imagegen/history/list',
+  append: '/api/dsh-imagegen/history/append',
+  remove: '/api/dsh-imagegen/history/remove',
+  clear: '/api/dsh-imagegen/history/clear',
+  image: '/api/dsh-imagegen/history/image',
+} as const
+
+/** Maximum number of history entries retained host-side (oldest evicted). */
+export const HISTORY_MAX = 50
+
+/** Generation modes. */
+export type GenerateMode = 'text' | 'edit'
+
+/** A client → host generate request (what the panel collects). */
+export interface GenerateRequest {
+  /** text-to-image (images/generations) or image-to-image (images/edits). */
+  mode: GenerateMode
+  /** Upstream model name, e.g. gpt-image-2. */
+  model: string
+  /** The prompt (up to 2000 chars in the UI). */
+  prompt: string
+  /** Canvas size: 'auto' or a pixel size like '1024x1024'. */
+  size: string
+  /** Quality: 'auto' | 'low' | 'medium' | 'high'. */
+  quality: string
+  /** Number of images, 1-4. */
+  n: number
+  /**
+   * Passthrough detail parameter: '' (omit), 'standard', or 'high'. Some
+   * gpt-image-2 gateways expose it; official OpenAI endpoints reject unknown
+   * parameters, so the UI defaults to '' (omit).
+   */
+  detail: string
+  /** Reference image as a data URL (edit mode only). */
+  image?: string
+}
+
+/** One generated image, normalized host-side to base64 so the browser never
+ *  has to fetch the upstream (no CORS, no key exposure). */
+export interface GeneratedImage {
+  /** Raw base64 payload (no data: prefix). */
+  b64: string
+  /** MIME type of the payload, e.g. image/png. */
+  mime: string
+  /** Upstream revised prompt, when provided. */
+  revisedPrompt?: string
+}
+
+/** Successful generate outcome. */
+export interface GenerateResult {
+  images: GeneratedImage[]
+}
+
+/** One history image reference as the browser consumes it (a served URL). */
+export interface HistoryImageRef {
+  /** Same-origin URL: `${HISTORY_API.image}/<file>`. */
+  url: string
+  /** MIME type, e.g. image/png. */
+  mime: string
+  /** Upstream revised prompt, when provided. */
+  revisedPrompt?: string
+}
+
+/** A saved generation as the browser consumes it (metadata + served images). */
+export interface HistoryEntry {
+  id: string
+  createdAt: number
+  mode: GenerateMode
+  model: string
+  prompt: string
+  size: string
+  quality: string
+  detail: string
+  n: number
+  images: HistoryImageRef[]
+  /** Reference-image filename (edit mode), kept for display only. */
+  refName?: string
+}
+
+/** A history entry the client submits for persistence (images still carry base64). */
+export interface HistoryEntryInput {
+  id: string
+  createdAt: number
+  mode: GenerateMode
+  model: string
+  prompt: string
+  size: string
+  quality: string
+  detail: string
+  n: number
+  images: GeneratedImage[]
+  refName?: string
+}
