@@ -51,7 +51,7 @@ pnpm run build
 ```json
 {
   "dependencies": {
-    "@dsh-local/dsh-imagegen": "link:E:/dsh-plugin"
+    "@dickpy/dsh-imagegen": "link:E:/dsh-plugin"
   }
 }
 ```
@@ -61,7 +61,7 @@ pnpm run build
 ```yaml
 - insert:
     - id: imagegen
-      name: '@dsh-local/dsh-imagegen'
+      name: '@dickpy/dsh-imagegen'
 ```
 
 在 profile 目录执行安装并重启 DSH：
