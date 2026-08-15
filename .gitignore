@@ -6,6 +6,9 @@ lib/
 *.tgz
 *.zip
 
+# npm local cache (used by npm-cli on this machine)
+.npm-cache/
+
 # Temp files
 .tmp-*
 
