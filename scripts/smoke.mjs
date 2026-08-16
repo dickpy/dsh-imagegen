@@ -61,7 +61,9 @@ const upstream = createServer(async (req, res) => {
     assert.equal(body.prompt, 'a cat')
     assert.equal(body.size, '1024x1024')
     assert.equal(body.quality, 'high')
-    assert.equal(body.n, 2)
+    // The engine never sends `n`: Responses-API gateways reject the batch
+    // parameter, so the requested count is satisfied by parallel requests.
+    assert.equal(body.n, undefined)
     assert.equal(body.detail, 'standard')
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({
@@ -81,7 +83,7 @@ const upstream = createServer(async (req, res) => {
     assert.ok(body.includes('name="prompt"') && body.includes('edit this'), 'prompt part missing')
     assert.ok(body.includes('name="model"') && body.includes('gpt-image-2'), 'model part missing')
     assert.ok(body.includes('name="size"') && body.includes('1536x1024'), 'size part missing')
-    assert.ok(body.includes('name="n"') && body.includes('1'), 'n part missing')
+    assert.ok(!body.includes('name="n"'), 'n must not be sent (batch param rejected)')
     assert.ok(body.includes('name="image"'), 'image part missing')
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
@@ -101,7 +103,8 @@ const upstreamPort = upstream.address().port
 await check('B1 text generation normalizes b64_json + url items', async () => {
   const result = await host.generateImage(
     { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' },
-    { mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1024x1024', quality: 'high', n: 2, detail: 'standard' },
+    // n=1: one request returns two data items (b64_json + url), both normalized.
+    { mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1024x1024', quality: 'high', n: 1, detail: 'standard' },
   )
   assert.equal(result.images.length, 2)
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
@@ -164,7 +167,8 @@ await check('B5 dall-e-3 clamps params', async () => {
       { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k' },
       { mode: 'text', model: 'dall-e-3', prompt: 'x', size: '512x512', quality: 'high', n: 4, detail: 'high' },
     )
-    assert.deepEqual(seen[0], { model: 'dall-e-3', size: '1024x1024', n: 1, prompt: 'x' })
+    // dall-e-3: params clamp to { model, size } and no `n` is ever sent.
+    assert.deepEqual(seen[0], { model: 'dall-e-3', size: '1024x1024', prompt: 'x' })
   } finally {
     await new Promise(resolve => dalle.close(resolve))
   }
@@ -295,6 +299,7 @@ await check('D1 client bundle registers via __ModuleLoader__', () => {
   const stubs = {
     'react': {},
     'react/jsx-runtime': { jsx: () => null, jsxs: () => null },
+    'react-dom': {},
     'react-dom/client': { createRoot: () => ({ render: () => {}, unmount: () => {} }) },
     '@deepseek-ai/dsh-client-ui-primitives': {},
     '@deepseek-ai/dsh-client-runtime/client': { createSnapshotStore: (initial) => ({
@@ -419,6 +424,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   const moduleStubs = {
     'react': react,
     'react/jsx-runtime': await import('react/jsx-runtime'),
+    'react-dom': await import('react-dom'),
     'react-dom/client': await import('react-dom/client'),
     // Minimal functional stubs for the system primitives (the real GUI loads
     // the genuine platform module from the module table).
