@@ -126,6 +126,14 @@ pnpm run build      # 构建宿主与 Web bundle
 pnpm run watch      # 持续构建
 ```
 
+## 📬 反馈与提问
+
+- **遇到 Bug**：请使用 [Bug 报告模板](https://github.com/dickpy/dsh-imagegen/issues/new?template=bug_report.yml) 提交，
+  并附带插件版本、DSH 版本、安装方式与复现步骤（**请勿在 issue 中粘贴 API 密钥**）。
+- **功能建议**：请使用 [功能建议模板](https://github.com/dickpy/dsh-imagegen/issues/new?template=feature_request.yml) 提交，
+  描述使用场景与期望效果。
+- **安装 / 使用问题**：先查阅本文档「快速开始」与「配置 API」章节。
+
 ## 许可证
 
 [Apache-2.0](./LICENSE)

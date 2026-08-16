@@ -1,0 +1,104 @@
+name: 🐛 Bug 报告
+description: 提交一个 bug，帮助改进 dsh-imagegen
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 感谢提交 Bug 报告 🙏
+        请尽量完整填写以下信息，便于我们快速定位问题。
+        > ⚠️ **不要**在 issue 中粘贴任何 API 密钥（`api_key`）或真实密钥！
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: 插件版本
+      description: 例如 `1.0.0`（可在 `package.json` 或 `npm view @dickpy/dsh-imagegen version` 查看）
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: 安装方式
+      description: 你是如何安装这个插件的？
+      options:
+        - npm 安装（dsh plugin --profile web add）
+        - GitHub Releases tarball
+        - 源码本地开发（link）
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: dsh_version
+    attributes:
+      label: DSH 版本
+      description: 运行 `dsh --version` 查看，例如 `0.1.0-rc.6`
+      placeholder: "0.1.0-rc.6"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: upstream
+    attributes:
+      label: 上游 API
+      description: 你配置的图像生成接口是哪种？
+      options:
+        - OpenAI 官方 API
+        - 第三方 OpenAI 兼容网关
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: 发生了什么？
+      description: 期望行为与实际行为
+      placeholder: |
+        期望：点击「开始生成」后出现图片结果。
+        实际：按钮无响应 / 报错 / 生成失败。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 如何复现这个问题？步骤越详细越好。
+      placeholder: |
+        1. 打开 DSH Web GUI，进入侧边栏「AI 生图」
+        2. 选择文生图模式，输入提示词「...」
+        3. 选择参数：尺寸 / 清晰度 / 数量
+        4. 点击「开始生成」
+        5. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误信息 / 日志
+      description: 面板报错文案、浏览器 Console 输出、宿主进程日志等（可粘贴或截图）
+      placeholder: "例如：上游接口拒绝请求（HTTP 400）..."
+      render: shell
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图 / 录屏
+      description: 可把图片直接拖拽到本输入框（可选）
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: security
+    attributes:
+      label: 安全确认
+      description: 为保护你的密钥安全
+      options:
+        - label: 我已确认本 issue 中**不包含**任何 API 密钥、Token 或真实敏感配置
+          required: true

@@ -1,0 +1,13 @@
+# Issue 模板选择器配置
+# 强制用户先选择模板（Bug / 功能建议），避免空白 issue；并引导常见问题先去讨论区。
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: 📖 使用文档（README）
+    url: https://github.com/dickpy/dsh-imagegen#readme
+    about: 安装、配置与开发说明，遇到使用问题先看这里
+
+  - name: 🧩 插件市场
+    url: https://www.npmjs.com/package/@dickpy/dsh-imagegen
+    about: npm 包页面，可查看版本与依赖信息
