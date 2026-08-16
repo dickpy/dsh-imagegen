@@ -168,7 +168,7 @@ export const en: Record<keyof typeof zh, string> = {
   'preview.prev': 'Previous',
   'preview.next': 'Next',
   'preview.index': '{index} / {total}',
-  'config.missing': 'API not configured: open "Settings → Web UI Plugins" and fill in api_url and api_key for AI Image.',
+  'config.missing': 'API not configured: open "Settings → Plugins → Configurable" and fill in api_url and api_key for AI Image.',
   'config.configured': 'Connected to {url}',
   'config.disabled': 'The plugin is disabled — re-enable it in Settings.',
   'settings.title': 'AI Image (dsh-imagegen)',

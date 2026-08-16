@@ -33,9 +33,58 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 
 ## 快速开始
 
-### 1. 构建插件
+> 前置条件：一个可运行的 DSH Web profile（`dsh web`），Node.js 20+ 与 pnpm。
+> 无论哪种方式安装，装完都需**重启 dsh web**，然后在「设置 → 插件 → 可配置」中填写 API 地址与密钥。
 
-前置条件：Node.js 20+、pnpm，以及一个可运行的 DSH Web profile。
+### 方式一：让 AI 帮你安装（最省事）
+
+把下面这段提示词直接粘贴给 **DSH**（或 Codex / 其他 coding agent）执行即可：
+
+```text
+请帮我安装 dsh-imagegen 插件（npm 包名 @dickpy/dsh-imagegen，DSH 的 AI 生图插件）：
+1. 找到我的 DSH web profile 目录（含 package.json 和 cordis.patch.yml 的那个）；
+2. 在 profile 的 package.json 的 dependencies 中加入 "@dickpy/dsh-imagegen": "^1.0.0"；
+3. 在 profile 的 cordis.patch.yml 追加：
+   - insert:
+       - id: imagegen
+         name: '@dickpy/dsh-imagegen'
+4. 在 profile 目录执行 pnpm install；
+5. 告诉我完成后重启 dsh web。
+```
+
+### 方式二：npm 安装（推荐）
+
+在 DSH Web profile 目录执行：
+
+```bash
+pnpm add @dickpy/dsh-imagegen
+# 或 npm install @dickpy/dsh-imagegen
+```
+
+然后在 profile 的 `cordis.patch.yml` 追加插件条目：
+
+```yaml
+- insert:
+    - id: imagegen
+      name: '@dickpy/dsh-imagegen'
+```
+
+重启 dsh web 即可。
+
+### 方式三：聚合包（tarball）安装
+
+从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载发布产物
+（如 `dsh-local-dsh-imagegen-1.0.0.tgz`），在 DSH Web profile 目录执行：
+
+```bash
+pnpm add <下载路径>/dsh-local-dsh-imagegen-1.0.0.tgz
+```
+
+同样在 `cordis.patch.yml` 追加插件条目（同方式二第 2 步），重启 dsh web。
+
+### 方式四：源码开发启动（最后的选择）
+
+需要改插件源码时才用这种方式：
 
 ```bash
 git clone https://github.com/dickpy/dsh-imagegen.git
@@ -44,33 +93,19 @@ pnpm install
 pnpm run build
 ```
 
-### 2. 接入 DSH Web profile
-
-在 DSH Web profile 的 `package.json` 中加入本地依赖：
+在 DSH Web profile 的 `package.json` 中加入本地依赖（路径按实际修改）：
 
 ```json
 {
   "dependencies": {
-    "@dickpy/dsh-imagegen": "link:E:/dsh-plugin"
+    "@dickpy/dsh-imagegen": "link:/绝对路径/dsh-imagegen"
   }
 }
 ```
 
-然后在该 profile 的 `cordis.patch.yml` 追加插件条目：
-
-```yaml
-- insert:
-    - id: imagegen
-      name: '@dickpy/dsh-imagegen'
-```
-
-在 profile 目录执行安装并重启 DSH：
-
-```bash
-pnpm install
-```
-
-`lib` 内的宿主与客户端 bundle 变更需要重新构建；开发时可运行 `pnpm run watch` 持续构建。
+在 profile 的 `cordis.patch.yml` 追加插件条目（同方式二第 2 步），在 profile 目录
+执行 `pnpm install`，重启 dsh web。开发时可运行 `pnpm run watch` 持续构建，bundle
+变更由 client-hmr 自动热更。
 
 ## 配置 API
 
