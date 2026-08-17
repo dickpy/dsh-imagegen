@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
-import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, HistoryEntryInput, HistoryImageRef } from '../protocol.ts'
+import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, HistoryImageRef } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import css from './panel.module.css'
 
@@ -177,6 +177,7 @@ export function ImageGenPanel(props: {
       n: count,
       detail,
       ...mode === 'edit' && refImage !== null ? { image: refImage.dataUrl } : {},
+      ...mode === 'edit' && refImage !== null ? { refName: refImage.name } : {},
     }
     setGenerating(true)
     setError(null)
@@ -186,24 +187,8 @@ export function ImageGenPanel(props: {
       const result = await api.generate(request)
       setImages(result.images)
       setViewingHistoryId(null)
-      const entry: HistoryEntryInput = {
-        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: Date.now(),
-        mode,
-        model,
-        prompt: promptText,
-        size,
-        quality,
-        detail,
-        n: count,
-        images: result.images,
-        ...mode === 'edit' && refImage !== null ? { refName: refImage.name } : {},
-      }
-      try {
-        setHistory(await api.historyAppend(entry))
-      } catch {
-        // Persisting history is best-effort; the images stay on the canvas.
-      }
+      if (result.history !== undefined) setHistory(result.history)
+      if (result.historyError !== undefined) setError(result.historyError)
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {

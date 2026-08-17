@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GENERATE_API, HISTORY_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type HistoryEntryInput } from '../protocol.ts'
+import { GENERATE_API, HISTORY_API, type GenerateRequest, type GenerateResult, type HistoryEntry } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -47,24 +47,17 @@ export class ImageGenApi {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     })
-    const body = await readEnvelope<{ ok: true; images: GenerateResult['images'] }>(response)
-    return { images: body.images }
+    const body = await readEnvelope<{ ok: true; images: GenerateResult['images']; history?: HistoryEntry[]; historyError?: string }>(response)
+    return {
+      images: body.images,
+      ...body.history === undefined ? {} : { history: body.history },
+      ...body.historyError === undefined ? {} : { historyError: body.historyError },
+    }
   }
 
   /** List the host-persisted history (newest first). */
   async historyList(): Promise<HistoryEntry[]> {
     const response = await fetch(HISTORY_API.list, { method: 'POST' })
-    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
-    return body.entries
-  }
-
-  /** Append one generation to the host-persisted history. */
-  async historyAppend(entry: HistoryEntryInput): Promise<HistoryEntry[]> {
-    const response = await fetch(HISTORY_API.append, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ entry }),
-    })
     const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
     return body.entries
   }

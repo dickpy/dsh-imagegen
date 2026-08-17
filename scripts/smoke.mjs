@@ -203,7 +203,37 @@ const seam = {
     stored.set('rev', (stored.get('rev') ?? 0) + 1)
   },
 }
-const routes = host.makeRoutes({ settings: seam, resolve: () => ({ apiUrl: 'http://127.0.0.1:9999/v1', apiKey: 'sk-route' }) })
+const persistedHistory = []
+const history = {
+  async list() { return persistedHistory },
+  async append(entry) {
+    const wire = {
+      ...entry,
+      images: entry.images.map((image, index) => ({
+        url: `/api/dsh-imagegen/history/image/${entry.id}-${index}.png`,
+        mime: image.mime,
+        ...(image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt }),
+      })),
+    }
+    persistedHistory.unshift(wire)
+    return persistedHistory
+  },
+  async remove(id) {
+    const index = persistedHistory.findIndex(entry => entry.id === id)
+    if (index >= 0) persistedHistory.splice(index, 1)
+    return persistedHistory
+  },
+  async clear() {
+    persistedHistory.splice(0)
+    return persistedHistory
+  },
+  async readImage() { return undefined },
+}
+const routes = host.makeRoutes({
+  settings: seam,
+  resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
+  history,
+})
 const server = createServer((req, res) => {
   const route = routes.find(r => r.path === new URL(req.url ?? '/', 'http://x').pathname)
   if (route === undefined) {
@@ -252,14 +282,17 @@ await check('C2 settings mutate writes + redacts the key', async () => {
   assert.equal(stored.get('dsh-imagegen').apiKey, 'sk-new')
 })
 
-await check('C3 generate route proxies and enforces loopback fence', async () => {
+await check('C3 generate route persists history server-side and enforces loopback fence', async () => {
   const { status, body } = await post('/api/dsh-imagegen/generate', {
-    mode: 'text', model: 'gpt-image-2', prompt: 'hi', size: 'auto', quality: 'auto', n: 1, detail: '',
+    mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1024x1024', quality: 'high', n: 1, detail: 'standard',
   })
   assert.equal(status, 200)
-  assert.equal(body.ok, false)
-  assert.ok(typeof body.message === 'string' && body.message !== '', 'message present')
-  assert.ok(typeof body.code === 'string')
+  assert.equal(body.ok, true)
+  assert.equal(body.images.length, 2)
+  assert.equal(persistedHistory.length, 1, 'history is written before the response reaches the browser')
+  assert.equal(persistedHistory[0].prompt, 'a cat')
+  assert.equal(persistedHistory[0].images.length, 2)
+  assert.equal(body.history.length, 1)
   const missing = await post('/api/dsh-imagegen/generate', { mode: 'text', model: 'gpt-image-2', prompt: '  ', size: 'auto', quality: 'auto', n: 1, detail: '' })
   assert.equal(missing.body.ok, false)
   assert.match(missing.body.message, /prompt is required/)

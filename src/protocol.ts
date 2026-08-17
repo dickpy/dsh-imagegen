@@ -58,6 +58,8 @@ export interface GenerateRequest {
   detail: string
   /** Reference image as a data URL (edit mode only). */
   image?: string
+  /** Original reference-image name, retained in the history entry. */
+  refName?: string
 }
 
 /** One generated image, normalized host-side to base64 so the browser never
@@ -74,6 +76,10 @@ export interface GeneratedImage {
 /** Successful generate outcome. */
 export interface GenerateResult {
   images: GeneratedImage[]
+  /** Updated host-persisted history, when returned by the generate route. */
+  history?: HistoryEntry[]
+  /** Persistence failure after images were successfully generated. */
+  historyError?: string
 }
 
 /** One history image reference as the browser consumes it (a served URL). */

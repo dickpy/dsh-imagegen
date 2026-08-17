@@ -6,11 +6,12 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import { generateImage, type UpstreamConfig } from './engine.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
-import { GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, type GeneratedImage, type GenerateRequest, type HistoryEntryInput } from './protocol.ts'
+import { GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -31,6 +32,14 @@ export interface ImageGenRoutesDeps {
   settings: SettingsSeam
   /** Resolve the current upstream config (composition entry + settings). */
   resolve: () => UpstreamConfig
+  /** Overrideable history backend, primarily for host integration tests. */
+  history?: {
+    list: () => Promise<HistoryEntry[]>
+    append: (entry: HistoryEntryInput) => Promise<HistoryEntry[]>
+    remove: (id: string) => Promise<HistoryEntry[]>
+    clear: () => Promise<HistoryEntry[]>
+    readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
+  }
 }
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
@@ -166,6 +175,13 @@ function failureOf(error: unknown): { ok: false; code: string; message: string }
  * @returns the route registrations.
  */
 export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
+  const history = deps.history ?? {
+    list: listHistory,
+    append: appendHistory,
+    remove: removeHistory,
+    clear: clearHistory,
+    readImage: readHistoryImage,
+  }
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'forbidden: loopback-only' })
@@ -257,10 +273,28 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           n: typeof body.n === 'number' ? body.n : 1,
           detail: typeof body.detail === 'string' ? body.detail : '',
           ...typeof body.image === 'string' && body.image !== '' ? { image: body.image } : {},
+          ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
         }
         try {
           const result = await generateImage(deps.resolve(), request)
-          writeJson(res, 200, { ok: true, ...result })
+          try {
+            const entries = await history.append({
+              id: randomUUID(),
+              createdAt: Date.now(),
+              mode: request.mode,
+              model: request.model,
+              prompt: request.prompt,
+              size: request.size,
+              quality: request.quality,
+              detail: request.detail,
+              n: request.n,
+              images: result.images,
+              ...request.refName === undefined ? {} : { refName: request.refName },
+            })
+            writeJson(res, 200, { ok: true, ...result, history: entries })
+          } catch (error) {
+            writeJson(res, 200, { ok: true, ...result, historyError: messageOf(error) })
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const code = error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
@@ -277,7 +311,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         try {
-          writeJson(res, 200, { ok: true, entries: await listHistory() })
+          writeJson(res, 200, { ok: true, entries: await history.list() })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'history-failed', message: messageOf(error) })
         }
@@ -300,7 +334,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         try {
-          writeJson(res, 200, { ok: true, entries: await appendHistory(entry) })
+          writeJson(res, 200, { ok: true, entries: await history.append(entry) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'history-failed', message: messageOf(error) })
         }
@@ -319,7 +353,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         try {
-          writeJson(res, 200, { ok: true, entries: await removeHistory(id) })
+          writeJson(res, 200, { ok: true, entries: await history.remove(id) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'history-failed', message: messageOf(error) })
         }
@@ -332,7 +366,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         try {
-          writeJson(res, 200, { ok: true, entries: await clearHistory() })
+          writeJson(res, 200, { ok: true, entries: await history.clear() })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'history-failed', message: messageOf(error) })
         }
@@ -356,7 +390,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           writeJson(res, 404, { error: 'not found' })
           return
         }
-        const found = await readHistoryImage(file)
+        const found = await history.readImage(file)
         if (found === undefined) {
           writeJson(res, 404, { error: 'not found' })
           return
