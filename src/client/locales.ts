@@ -76,6 +76,8 @@ export const zh = {
   'config.missing': '尚未配置 API：请前往「设置 → 插件 → 可配置」为 AI 生图填写 api_url 与 api_key。',
   'config.configured': '已连接 {url}',
   'config.disabled': '插件已停用，请在设置中重新启用。',
+  'connection.connected': '已连接',
+  'connection.disconnected': '未连接',
   // plugin update
   'update.available': '检测到新版本：{version}',
   'update.install': '在线更新',
@@ -86,6 +88,7 @@ export const zh = {
   // settings card
   'settings.title': 'AI 生图（dsh-imagegen）',
   'settings.description': '配置图像生成 API 地址与密钥',
+  'settings.currentVersion': '当前版本',
   'settings.apiUrl': 'API 地址（api_url）',
   'settings.apiUrlHint': 'OpenAI 兼容接口基址，如 https://api.openai.com/v1；将自动拼接 /images/generations 与 /images/edits',
   'settings.apiKey': 'API 密钥（api_key）',
@@ -178,6 +181,8 @@ export const en: Record<keyof typeof zh, string> = {
   'config.missing': 'API not configured: open "Settings → Plugins → Configurable" and fill in api_url and api_key for AI Image.',
   'config.configured': 'Connected to {url}',
   'config.disabled': 'The plugin is disabled — re-enable it in Settings.',
+  'connection.connected': 'Connected',
+  'connection.disconnected': 'Disconnected',
   'update.available': 'A new version is available: {version}',
   'update.install': 'Update online',
   'update.installing': 'Updating…',
@@ -186,6 +191,7 @@ export const en: Record<keyof typeof zh, string> = {
   'update.release': 'View Release',
   'settings.title': 'AI Image (dsh-imagegen)',
   'settings.description': 'Configure the image generation API endpoint and key',
+  'settings.currentVersion': 'Current version',
   'settings.apiUrl': 'API URL (api_url)',
   'settings.apiUrlHint': 'OpenAI-compatible base URL, e.g. https://api.openai.com/v1; /images/generations and /images/edits are appended',
   'settings.apiKey': 'API Key (api_key)',

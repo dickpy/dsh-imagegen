@@ -50,6 +50,13 @@ function useConfig(scope: ImageGenScope): ImageGenConfig | undefined {
   return value
 }
 
+/** Track the redacted api-key presence bit exposed by the settings bridge. */
+function useKeySet(scope: ImageGenScope): boolean {
+  const [keySet, setKeySet] = useState(scope.getKeySetSnapshot())
+  useEffect(() => scope.subscribeKeySet(() => { setKeySet(scope.getKeySetSnapshot()) }), [scope])
+  return keySet
+}
+
 /** Tick a seconds counter while `running`. */
 function useElapsed(running: boolean, startedAt: number | null): number {
   const [elapsed, setElapsed] = useState(0)
@@ -108,6 +115,8 @@ export function ImageGenPanel(props: {
   const enabled = config?.enabled ?? true
   const apiUrl = config?.apiUrl ?? ''
   const configured = apiUrl.trim() !== ''
+  const keySet = useKeySet(scope)
+  const connected = enabled && configured && keySet
 
   const [mode, setMode] = useState<GenerateMode>('text')
   const [prompt, setPrompt] = useState('')
@@ -316,15 +325,20 @@ export function ImageGenPanel(props: {
   return (
     <div className={css.panel}>
       <header className={css.panelHeader}>
-        <h2 className={css.panelTitle}>{tt('panel.title')}</h2>
-        <span className={css.panelSubtitle}>{tt('panel.subtitle')}</span>
+        <span className={css.panelHeading}>
+          <h2 className={css.panelTitle}>{tt('panel.title')}</h2>
+          <span className={css.panelSubtitle}>{tt('panel.subtitle')}</span>
+        </span>
+        <button
+          type="button"
+          className={css.connectionStatus}
+          data-connected={connected ? 'true' : 'false'}
+          aria-label={tt(connected ? 'connection.connected' : 'connection.disconnected')}
+        >
+          <span className={css.connectionDot} aria-hidden="true" />
+          {tt(connected ? 'connection.connected' : 'connection.disconnected')}
+        </button>
       </header>
-
-      {!enabled
-        ? <div className={css.banner} data-kind="warn">{tt('config.disabled')}</div>
-        : !configured
-          ? <div className={css.banner} data-kind="warn">{tt('config.missing')}</div>
-          : <div className={css.banner} data-kind="ok">{tt('config.configured', { url: apiUrl })}</div>}
 
       {update !== null ? (
         <div className={css.updateBanner} data-kind={updateResult === 'success' ? 'ok' : 'warn'}>

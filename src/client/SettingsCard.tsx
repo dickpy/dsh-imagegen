@@ -11,6 +11,7 @@ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-cli
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
+import { PLUGIN_VERSION } from '../protocol.ts'
 import css from './settings-card.module.css'
 
 /** The fields this card edits (the namespace's full schema). */
@@ -161,6 +162,10 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
         ? (
           <div className={css.body}>
             {!state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null}
+            <div className={css.versionRow}>
+              <span className={css.versionLabel}>{t('settings.currentVersion')}</span>
+              <code className={css.versionValue}>v{PLUGIN_VERSION}</code>
+            </div>
             <ValueField
               id="dsh-imagegen-settings-apikey"
               label={t('settings.apiKey')}

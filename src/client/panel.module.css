@@ -122,9 +122,17 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 
 .panelHeader {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+
+.panelHeading {
+  display: flex;
   align-items: baseline;
   gap: 10px;
-  flex: none;
+  min-width: 0;
 }
 
 .panelTitle {
@@ -143,27 +151,35 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   text-overflow: ellipsis;
 }
 
-/* --- banners ------------------------------------------------------------------ */
+/* --- connection status and update notice -------------------------------------- */
 
-.banner {
+.connectionStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex: none;
-  padding: 7px 12px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-label-error);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-error);
+  font: inherit;
   font-size: 12px;
-  line-height: 1.5;
-  border-radius: 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-secondary);
-  overflow-wrap: anywhere;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.banner[data-kind='ok'] {
-  color: var(--dsw-alias-state-success-primary);
+.connectionStatus[data-connected='true'] {
   border-color: var(--dsw-alias-state-success-primary);
+  color: var(--dsw-alias-state-success-primary);
 }
 
-.banner[data-kind='warn'] {
-  color: var(--dsw-alias-state-warn-primary);
-  border-color: var(--dsw-alias-state-warn-primary);
+.connectionDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .updateBanner {
@@ -205,6 +221,16 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 }
 
 @media (max-width: 700px) {
+  .panelHeader {
+    align-items: flex-start;
+  }
+
+  .panelHeading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .updateBanner {
     align-items: flex-start;
     flex-direction: column;

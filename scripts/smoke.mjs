@@ -545,6 +545,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(view.isConnected, 'view container attached to the center column')
     // The panel header rendered.
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-view] h2') !== null, 'panel header rendered')
+    const connectionStatus = jsdomDocument.querySelector('[data-dsh-imagegen-view] [data-connected]')
+    assert.equal(connectionStatus?.getAttribute('data-connected'), 'false', 'missing key is shown as disconnected')
     // The settings card registered into the official plugin-config slot.
     assert.equal(registered.length, 1)
     assert.equal(registered[0].id, 'imagegen')

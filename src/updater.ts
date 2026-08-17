@@ -1,9 +1,10 @@
 /** GitHub Release discovery and explicit, user-triggered plugin updates. */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { PLUGIN_VERSION } from './protocol.ts'
 
 /** Keep this in sync with package.json for each published release. */
-export const CURRENT_VERSION = '1.0.2'
+export const CURRENT_VERSION = PLUGIN_VERSION
 export const PACKAGE_NAME = '@dickpy/dsh-imagegen'
 export const RELEASES_URL = 'https://api.github.com/repos/dickpy/dsh-imagegen/releases/latest'
 
