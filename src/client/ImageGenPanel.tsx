@@ -147,6 +147,7 @@ export function ImageGenPanel(props: {
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const previewStage = useRef<HTMLDivElement>(null)
   const elapsed = useElapsed(generating, startedAt)
 
   // Load the host-persisted history once on mount (it lives in ~/.dsh on the
@@ -287,6 +288,19 @@ export function ImageGenPanel(props: {
     return () => window.removeEventListener('keydown', onKey)
   }, [preview])
 
+  // A scaled image owns real scrollable space, rather than being visually
+  // transformed and clipped. Recenter the viewport after every zoom or slide.
+  useEffect(() => {
+    if (preview === null) return
+    const frame = window.requestAnimationFrame(() => {
+      const stage = previewStage.current
+      if (stage === null) return
+      stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2)
+      stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [preview, previewScale])
+
   /** Load a past generation's images into the canvas. */
   const viewHistoryEntry = async (entry: HistoryEntry): Promise<void> => {
     try {
@@ -343,6 +357,8 @@ export function ImageGenPanel(props: {
   const generateDisabled = generating || !enabled || !configured
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
+  const previewFrameScale = Math.max(1, previewScale)
+  const previewImageScale = previewScale / previewFrameScale
 
   const copyPreviewPrompt = async (text: string): Promise<void> => {
     try {
@@ -750,18 +766,24 @@ export function ImageGenPanel(props: {
             ) : null}
             <figure className={css.lightboxFigure} onClick={(event) => { event.stopPropagation() }}>
               <div
+                ref={previewStage}
                 className={css.lightboxStage}
                 onWheel={(event) => {
                   event.preventDefault()
                   setPreviewScale(current => clampPreviewScale(current + (event.deltaY < 0 ? PREVIEW_SCALE_STEP : -PREVIEW_SCALE_STEP)))
                 }}
               >
-                <img
-                  className={css.lightboxImage}
-                  style={{ transform: `scale(${previewScale})` }}
-                  src={srcOf(previewImage)}
-                  alt={previewImage.revisedPrompt ?? tt('preview.title')}
-                />
+                <div
+                  className={css.lightboxScaleFrame}
+                  style={{ width: `${previewFrameScale * 100}%`, height: `${previewFrameScale * 100}%` }}
+                >
+                  <img
+                    className={css.lightboxImage}
+                    style={{ width: `${previewImageScale * 100}%`, height: `${previewImageScale * 100}%` }}
+                    src={srcOf(previewImage)}
+                    alt={previewImage.revisedPrompt ?? tt('preview.title')}
+                  />
+                </div>
               </div>
               <div className={css.lightboxTools} role="group" aria-label={tt('preview.zoomControls')}>
                 <button type="button" className={css.lightboxTool} aria-label={tt('preview.zoomOut')} title={tt('preview.zoomOut')} onClick={() => { setPreviewScale(current => clampPreviewScale(current - PREVIEW_SCALE_STEP)) }}>
