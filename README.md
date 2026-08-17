@@ -14,13 +14,13 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 
 三栏工作台将参数、生成结果和历史记录放在同一视图中；生成的图片可预览、下载，并从历史记录恢复参数。
 
-![AI 生图工作台](docs/images/image-generation-studio.png)
+![AI 生图工作台（v1.0.3 连接状态）](docs/images/image-generation-studio.png)
 
 ### 独立配置卡片
 
 在 DSH 的“设置 -> 插件 -> 可配置”中填写 API 地址和密钥。密钥只保存在宿主侧设置文件，浏览器端不会获取明文。
 
-![插件配置卡片](docs/images/plugin-settings.png)
+![插件配置卡片（显示当前版本）](docs/images/plugin-settings.png)
 
 ## 功能
 
