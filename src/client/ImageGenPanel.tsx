@@ -42,6 +42,13 @@ const DETAILS = ['', 'standard', 'high'] as const
 
 const PROMPT_MAX = 2000
 const REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+const PREVIEW_SCALE_MIN = 0.5
+const PREVIEW_SCALE_MAX = 3
+const PREVIEW_SCALE_STEP = 0.25
+
+function clampPreviewScale(scale: number): number {
+  return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, scale))
+}
 
 /** Read the current config from the settings scope snapshot. */
 function useConfig(scope: ImageGenScope): ImageGenConfig | undefined {
@@ -133,6 +140,8 @@ export function ImageGenPanel(props: {
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ images: GeneratedImage[]; index: number } | null>(null)
+  const [previewScale, setPreviewScale] = useState(1)
+  const [promptCopied, setPromptCopied] = useState(false)
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const [updating, setUpdating] = useState(false)
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
@@ -242,10 +251,20 @@ export function ImageGenPanel(props: {
   /** Open the full-screen image preview at a given index. */
   const openPreview = (previewImages: GeneratedImage[], index: number): void => {
     setPreview({ images: previewImages, index })
+    setPreviewScale(1)
+    setPromptCopied(false)
+  }
+
+  const closePreview = (): void => {
+    setPreview(null)
+    setPreviewScale(1)
+    setPromptCopied(false)
   }
 
   /** Step the preview by ±1, wrapping around. */
   const stepPreview = (delta: number): void => {
+    setPreviewScale(1)
+    setPromptCopied(false)
     setPreview(current => {
       if (current === null) return null
       const total = current.images.length
@@ -257,9 +276,12 @@ export function ImageGenPanel(props: {
   useEffect(() => {
     if (preview === null) return
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setPreview(null)
+      if (event.key === 'Escape') closePreview()
       else if (event.key === 'ArrowLeft') stepPreview(-1)
       else if (event.key === 'ArrowRight') stepPreview(1)
+      else if (event.key === '+' || event.key === '=') setPreviewScale(current => clampPreviewScale(current + PREVIEW_SCALE_STEP))
+      else if (event.key === '-') setPreviewScale(current => clampPreviewScale(current - PREVIEW_SCALE_STEP))
+      else if (event.key === '0') setPreviewScale(1)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -321,6 +343,40 @@ export function ImageGenPanel(props: {
   const generateDisabled = generating || !enabled || !configured
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
+
+  const copyPreviewPrompt = async (text: string): Promise<void> => {
+    try {
+      if (navigator.clipboard?.writeText !== undefined) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        const copied = document.execCommand('copy')
+        textarea.remove()
+        if (!copied) throw new Error('copy failed')
+      }
+      setPromptCopied(true)
+      window.setTimeout(() => { setPromptCopied(false) }, 1800)
+    } catch {
+      setPromptCopied(false)
+    }
+  }
+
+  const addPreviewToEdit = (): void => {
+    if (previewImage === null || preview === null) return
+    setMode('edit')
+    setRefImage({
+      dataUrl: srcOf(previewImage),
+      name: `dsh-image-${preview.index + 1}.${extensionOf(previewImage.mime)}`,
+    })
+    if (prompt.trim() === '' && previewImage.revisedPrompt !== undefined) setPrompt(previewImage.revisedPrompt)
+    setError(null)
+    closePreview()
+  }
 
   return (
     <div className={css.panel}>
@@ -569,7 +625,7 @@ export function ImageGenPanel(props: {
                   <span className={css.canvasHistoryTag}>{tt('history.viewing', { time: formatTime(viewingEntry.createdAt) })}</span>
                 ) : null}
               </div>
-              <div className={css.grid}>
+              <div className={css.grid} data-count={images.length}>
                 {images.map((image, index) => (
                   <figure
                     key={index}
@@ -677,9 +733,9 @@ export function ImageGenPanel(props: {
             role="dialog"
             aria-modal="true"
             aria-label={tt('preview.title')}
-            onClick={() => { setPreview(null) }}
+            onClick={closePreview}
           >
-            <button type="button" className={css.lightboxClose} aria-label={tt('preview.close')} onClick={() => { setPreview(null) }}>
+            <button type="button" className={css.lightboxClose} aria-label={tt('preview.close')} title={tt('preview.close')} onClick={closePreview}>
               <svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
             </button>
             {preview.images.length > 1 ? (
@@ -693,25 +749,60 @@ export function ImageGenPanel(props: {
               </>
             ) : null}
             <figure className={css.lightboxFigure} onClick={(event) => { event.stopPropagation() }}>
-              <img
-                className={css.lightboxImage}
-                src={srcOf(previewImage)}
-                alt={previewImage.revisedPrompt ?? tt('preview.title')}
-              />
+              <div
+                className={css.lightboxStage}
+                onWheel={(event) => {
+                  event.preventDefault()
+                  setPreviewScale(current => clampPreviewScale(current + (event.deltaY < 0 ? PREVIEW_SCALE_STEP : -PREVIEW_SCALE_STEP)))
+                }}
+              >
+                <img
+                  className={css.lightboxImage}
+                  style={{ transform: `scale(${previewScale})` }}
+                  src={srcOf(previewImage)}
+                  alt={previewImage.revisedPrompt ?? tt('preview.title')}
+                />
+              </div>
+              <div className={css.lightboxTools} role="group" aria-label={tt('preview.zoomControls')}>
+                <button type="button" className={css.lightboxTool} aria-label={tt('preview.zoomOut')} title={tt('preview.zoomOut')} onClick={() => { setPreviewScale(current => clampPreviewScale(current - PREVIEW_SCALE_STEP)) }}>
+                  <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="M4.8 7h4.4M13 13l-2.8-2.8"/></svg>
+                </button>
+                <button type="button" className={css.lightboxZoomLevel} aria-label={tt('preview.zoomReset')} title={tt('preview.zoomReset')} onClick={() => { setPreviewScale(1) }}>
+                  {tt('preview.zoomLevel', { percent: Math.round(previewScale * 100) })}
+                </button>
+                <button type="button" className={css.lightboxTool} aria-label={tt('preview.zoomIn')} title={tt('preview.zoomIn')} onClick={() => { setPreviewScale(current => clampPreviewScale(current + PREVIEW_SCALE_STEP)) }}>
+                  <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="M7 4.8v4.4M4.8 7h4.4M13 13l-2.8-2.8"/></svg>
+                </button>
+              </div>
               {previewImage.revisedPrompt !== undefined ? (
-                <figcaption className={css.lightboxCaption} title={previewImage.revisedPrompt}>
-                  {tt('revisedPrompt', { prompt: previewImage.revisedPrompt })}
-                </figcaption>
+                <div className={css.lightboxCaptionRow}>
+                  <figcaption className={css.lightboxCaption} title={previewImage.revisedPrompt}>
+                    {tt('revisedPrompt', { prompt: previewImage.revisedPrompt })}
+                  </figcaption>
+                  <button type="button" className={css.lightboxCopy} aria-label={tt(promptCopied ? 'preview.copied' : 'preview.copyPrompt')} title={tt(promptCopied ? 'preview.copied' : 'preview.copyPrompt')} onClick={() => { void copyPreviewPrompt(previewImage.revisedPrompt!) }}>
+                    {promptCopied ? (
+                      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 8l3 3 7-7"/></svg>
+                    ) : (
+                      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="5" width="7" height="8" rx="1"/><path d="M3 10V3.8c0-.44.36-.8.8-.8H9"/></svg>
+                    )}
+                    <span>{tt(promptCopied ? 'preview.copied' : 'preview.copyPrompt')}</span>
+                  </button>
+                </div>
               ) : null}
               <div className={css.lightboxMeta}>
                 <span className={css.lightboxIndex}>{tt('preview.index', { index: preview.index + 1, total: preview.images.length })}</span>
-                <a
-                  className={css.lightboxDownload}
-                  href={srcOf(previewImage)}
-                  download={`dsh-image-${preview.index + 1}.${extensionOf(previewImage.mime)}`}
-                >
-                  {tt('download')}
-                </a>
+                <span className={css.lightboxActions}>
+                  <button type="button" className={css.lightboxEdit} onClick={addPreviewToEdit}>
+                    {tt('preview.addToEdit')}
+                  </button>
+                  <a
+                    className={css.lightboxDownload}
+                    href={srcOf(previewImage)}
+                    download={`dsh-image-${preview.index + 1}.${extensionOf(previewImage.mime)}`}
+                  >
+                    {tt('download')}
+                  </a>
+                </span>
               </div>
             </figure>
           </div>,

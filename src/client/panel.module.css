@@ -798,9 +798,29 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  flex: 1;
+  min-height: 0;
   gap: 14px;
-  align-content: start;
+}
+
+.grid[data-count='1'] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.grid[data-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.grid[data-count='3'] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.grid[data-count='4'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
 }
 
 .imageCard {
@@ -813,6 +833,7 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   overflow: hidden;
   background: var(--dsw-alias-bg-layer-2);
   cursor: zoom-in;
+  min-height: 0;
 }
 
 .imageCard:focus-visible {
@@ -822,9 +843,10 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 
 .image {
   display: block;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  aspect-ratio: 1 / 1;
-  object-fit: cover;
+  object-fit: contain;
   background: var(--dsw-alias-bg-base);
 }
 
@@ -971,11 +993,11 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 }
 
 .lightboxNav[data-dir='prev'] {
-  left: 16px;
+  left: max(20px, calc(50% - 640px));
 }
 
 .lightboxNav[data-dir='next'] {
-  right: 16px;
+  right: max(20px, calc(50% - 640px));
 }
 
 .lightboxFigure {
@@ -984,19 +1006,84 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   gap: 10px;
   margin: 0;
   max-width: min(1100px, calc(100vw - 160px));
-  max-height: calc(100vh - 48px);
+  width: min(1100px, calc(100vw - 160px));
+  height: min(820px, calc(100vh - 48px));
+  min-height: 0;
 }
 
-.lightboxImage {
-  max-width: 100%;
-  max-height: calc(100vh - 160px);
-  object-fit: contain;
+.lightboxStage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
   border-radius: 10px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
   background: rgba(255, 255, 255, 0.04);
 }
 
+.lightboxImage {
+  max-width: calc(100% - 4px);
+  max-height: calc(100% - 4px);
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  transition: transform 120ms ease;
+}
+
+.lightboxTools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.lightboxTool,
+.lightboxZoomLevel,
+.lightboxCopy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+}
+
+.lightboxTool,
+.lightboxZoomLevel {
+  height: 32px;
+}
+
+.lightboxTool {
+  width: 32px;
+  border-radius: 50%;
+}
+
+.lightboxZoomLevel {
+  min-width: 58px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lightboxTool:hover,
+.lightboxZoomLevel:hover,
+.lightboxCopy:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.lightboxCaptionRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
 .lightboxCaption {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.6;
   color: rgba(255, 255, 255, 0.9);
@@ -1004,6 +1091,17 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.lightboxCopy {
+  flex: none;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .lightboxMeta {
@@ -1019,8 +1117,16 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   font-variant-numeric: tabular-nums;
 }
 
-.lightboxDownload {
+.lightboxActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lightboxDownload,
+.lightboxEdit {
   padding: 4px 14px;
+  font: inherit;
   font-size: 12.5px;
   font-weight: 500;
   color: #fff;
@@ -1028,10 +1134,49 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 999px;
   text-decoration: none;
+  cursor: pointer;
 }
 
-.lightboxDownload:hover {
+.lightboxDownload:hover,
+.lightboxEdit:hover {
   background: rgba(255, 255, 255, 0.26);
+}
+
+.lightboxEdit {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+}
+
+@media (max-width: 720px) {
+  .lightbox {
+    padding: 16px;
+  }
+
+  .lightboxFigure {
+    width: calc(100vw - 32px);
+    max-width: none;
+  }
+
+  .lightboxNav[data-dir='prev'] {
+    left: 20px;
+  }
+
+  .lightboxNav[data-dir='next'] {
+    right: 20px;
+  }
+
+  .lightboxCaptionRow,
+  .lightboxMeta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lightboxCopy,
+  .lightboxActions {
+    align-self: flex-end;
+  }
 }
 
 @keyframes dshImageGenSpin {
