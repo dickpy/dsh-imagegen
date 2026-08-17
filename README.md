@@ -30,6 +30,7 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 - **持久化历史**：保存提示词、参数和图片；支持查看、恢复、单条删除和清空，最多保留 50 条。
 - **跨设备查看**：历史保存在 DSH 宿主侧，连接同一 DSH 的浏览器或设备共享同一份记录。
 - **原生 DSH 体验**：侧栏入口、主题适配和设置卡片均遵循 DSH Web GUI 的 UI 规范。
+- **在线更新**：插件会检查 GitHub Releases，发现新版本时在工作台显示在线更新按钮；安装完成后重启 DSH 即可加载新版本。
 
 ## 快速开始
 
@@ -41,13 +42,13 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 把下面提示词直接粘贴给 **DSH**（或 Codex / 其他 coding agent）执行即可：
 
 ```text
-用 dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.1 安装 AI 生图插件（profile 名按实际修改），完成后重启 dsh web。
+用 dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.2 安装 AI 生图插件（profile 名按实际修改），完成后重启 dsh web。
 ```
 
 ### 方式二：npm 安装（推荐）
 
 ```bash
-dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.1
+dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.2
 ```
 
 dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cordis.patch.yml），重启 dsh web 即可。
@@ -55,10 +56,10 @@ dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cord
 ### 方式三：聚合包（tarball）安装
 
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载发布产物
-（如 `dickpy-dsh-imagegen-1.0.1.tgz`），然后：
+（如 `dickpy-dsh-imagegen-1.0.2.tgz`），然后：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.1.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.2.tgz
 ```
 
 重启 dsh web。

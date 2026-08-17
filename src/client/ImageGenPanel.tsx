@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
-import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, HistoryImageRef } from '../protocol.ts'
+import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import css from './panel.module.css'
 
@@ -124,6 +124,10 @@ export function ImageGenPanel(props: {
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ images: GeneratedImage[]; index: number } | null>(null)
+  const [update, setUpdate] = useState<UpdateInfo | null>(null)
+  const [updating, setUpdating] = useState(false)
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null)
+  const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const elapsed = useElapsed(generating, startedAt)
 
@@ -136,6 +140,35 @@ export function ImageGenPanel(props: {
       .catch(() => { /* history unavailable — leave the list empty */ })
     return () => { disposed = true }
   }, [api])
+
+  // Release checks are host-mediated and intentionally best-effort: a GitHub
+  // outage must never make the image-generation studio unavailable.
+  useEffect(() => {
+    let disposed = false
+    api.updateCheck()
+      .then(info => {
+        if (!disposed && info.updateAvailable) setUpdate(info)
+      })
+      .catch(() => { /* update discovery is optional */ })
+    return () => { disposed = true }
+  }, [api])
+
+  const applyUpdate = async (): Promise<void> => {
+    if (update === null || updating) return
+    setUpdating(true)
+    setUpdateMessage(null)
+    setUpdateResult(null)
+    try {
+      const result = await api.updateApply(update.latestVersion)
+      setUpdateMessage(tt('update.success', { version: result.updatedVersion }))
+      setUpdateResult('success')
+    } catch {
+      setUpdateMessage(tt('update.failed'))
+      setUpdateResult('failed')
+    } finally {
+      setUpdating(false)
+    }
+  }
 
   /** Read an uploaded reference image into a data URL. */
   const acceptFile = (file: File | undefined): void => {
@@ -292,6 +325,20 @@ export function ImageGenPanel(props: {
         : !configured
           ? <div className={css.banner} data-kind="warn">{tt('config.missing')}</div>
           : <div className={css.banner} data-kind="ok">{tt('config.configured', { url: apiUrl })}</div>}
+
+      {update !== null ? (
+        <div className={css.updateBanner} data-kind={updateResult === 'success' ? 'ok' : 'warn'}>
+          <span className={css.updateText}>
+            {updateMessage ?? tt('update.available', { version: update.latestVersion })}
+          </span>
+          <span className={css.updateActions}>
+            <a className={css.updateRelease} href={update.releaseUrl} target="_blank" rel="noreferrer">{tt('update.release')}</a>
+            <Button variant="primary" size="sm" disabled={updating || updateMessage !== null} onClick={() => { void applyUpdate() }}>
+              {updating ? tt('update.installing') : tt('update.install')}
+            </Button>
+          </span>
+        </div>
+      ) : null}
 
       <div className={css.studio}>
         {/* ---------------------------------------------------- config sidebar */}

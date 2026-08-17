@@ -166,6 +166,56 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   border-color: var(--dsw-alias-state-warn-primary);
 }
 
+.updateBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 7px 10px 7px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  color: var(--dsw-alias-state-warn-primary);
+  overflow-wrap: anywhere;
+}
+
+.updateBanner[data-kind='ok'] {
+  color: var(--dsw-alias-state-success-primary);
+  border-color: var(--dsw-alias-state-success-primary);
+}
+
+.updateText {
+  min-width: 0;
+}
+
+.updateActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.updateRelease {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .updateBanner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .updateActions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
 /* --- studio split: left config sidebar (narrow) + right canvas (wide) --------- */
 
 .studio {

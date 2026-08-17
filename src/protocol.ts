@@ -16,6 +16,12 @@ export const SETTINGS_API = {
 /** The image-generation proxy route. */
 export const GENERATE_API = '/api/dsh-imagegen/generate'
 
+/** Host-mediated GitHub Release update routes. */
+export const UPDATE_API = {
+  check: '/api/dsh-imagegen/update/check',
+  apply: '/api/dsh-imagegen/update/apply',
+} as const
+
 /**
  * Same-origin route family for the host-persisted generation history. Images
  * live as files under ~/.dsh/dsh-imagegen/images/ and are served back through
@@ -80,6 +86,15 @@ export interface GenerateResult {
   history?: HistoryEntry[]
   /** Persistence failure after images were successfully generated. */
   historyError?: string
+}
+
+/** GitHub Release update information shown by the client. */
+export interface UpdateInfo {
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  releaseUrl: string
+  publishedAt?: string
 }
 
 /** One history image reference as the browser consumes it (a served URL). */

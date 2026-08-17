@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GENERATE_API, HISTORY_API, type GenerateRequest, type GenerateResult, type HistoryEntry } from '../protocol.ts'
+import { GENERATE_API, HISTORY_API, UPDATE_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -40,6 +40,24 @@ async function readEnvelope<T>(response: Response): Promise<T> {
 
 /** The browser half's data entry point. */
 export class ImageGenApi {
+  /** Ask the host to check the latest stable GitHub Release. */
+  async updateCheck(): Promise<UpdateInfo> {
+    const response = await fetch(UPDATE_API.check, { method: 'POST' })
+    const body = await readEnvelope<{ ok: true; update: UpdateInfo }>(response)
+    return body.update
+  }
+
+  /** Ask the host to install a previously discovered Release. */
+  async updateApply(version: string): Promise<{ updatedVersion: string; restartRequired: boolean }> {
+    const response = await fetch(UPDATE_API.apply, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version }),
+    })
+    const body = await readEnvelope<{ ok: true; updatedVersion: string; restartRequired: boolean }>(response)
+    return { updatedVersion: body.updatedVersion, restartRequired: body.restartRequired }
+  }
+
   /** Forward one generate request to the host proxy. */
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     const response = await fetch(GENERATE_API, {

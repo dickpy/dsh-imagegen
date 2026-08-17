@@ -26,6 +26,7 @@ export const inject = ['webServer', 'systemPrompt']
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
 export { generateImage, ImageGenError } from './engine.ts'
+export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
 
 /** The branded settings namespace of this plugin (the card edits it). */
 export const ImageGenSettingsNamespace = settingsNamespace(IMAGEGEN_SETTINGS_NAMESPACE)

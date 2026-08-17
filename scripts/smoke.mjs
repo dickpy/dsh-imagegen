@@ -47,6 +47,30 @@ await check('A2 Config schema validates + marks apiKey secret', () => {
   // schema node, which the settings seam's redactor walks.
   assert.equal(host.Config.dict?.apiKey?.meta?.role, 'secret')
 })
+await check('A3 updater parses stable Releases and caches checks', async () => {
+  assert.equal(host.compareVersions('v1.0.3', '1.0.2') > 0, true)
+  assert.equal(host.compareVersions('1.0.2', '1.0.2'), 0)
+  assert.equal(host.profileFromProcess(['node', 'dsh', '--profile', 'desktop'], {}), 'desktop')
+  host.clearUpdateCache()
+  let calls = 0
+  const fetchRelease = async () => {
+    calls += 1
+    return new Response(JSON.stringify({
+      tag_name: 'v9.9.9',
+      html_url: 'https://github.com/dickpy/dsh-imagegen/releases/tag/v9.9.9',
+      published_at: '2026-08-17T00:00:00Z',
+      draft: false,
+      prerelease: false,
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  const first = await host.checkForUpdate(fetchRelease, 1000)
+  const second = await host.checkForUpdate(fetchRelease, 1001)
+  assert.equal(first.latestVersion, '9.9.9')
+  assert.equal(first.updateAvailable, true)
+  assert.equal(second, first)
+  assert.equal(calls, 1)
+  host.clearUpdateCache()
+})
 
 // ---------------------------------------------- B. engine vs mock upstream
 const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex')

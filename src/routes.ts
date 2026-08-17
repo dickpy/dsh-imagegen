@@ -11,7 +11,8 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import { generateImage, type UpstreamConfig } from './engine.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
-import { GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
+import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
+import { GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -301,6 +302,44 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
             ? (error as { code: string }).code
             : 'generate-failed'
           writeJson(res, 200, { ok: false, code, message })
+        }
+      },
+    },
+    // ----------------------------------------------- update check
+    {
+      kind: 'exact',
+      path: UPDATE_API.check,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          writeJson(res, 200, { ok: true, update: await checkForUpdate() })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'update-check-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ----------------------------------------------- update apply
+    {
+      kind: 'exact',
+      path: UPDATE_API.apply,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const version = body !== undefined && typeof body.version === 'string' ? body.version.trim() : ''
+        if (version === '') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'update version is required' })
+          return
+        }
+        try {
+          const latest = await checkForUpdate()
+          if (!latest.updateAvailable || latest.latestVersion !== version) {
+            writeJson(res, 200, { ok: false, code: 'update-not-available', message: `version ${version} is not the latest available release` })
+            return
+          }
+          await installUpdate(version)
+          writeJson(res, 200, { ok: true, currentVersion: CURRENT_VERSION, updatedVersion: version, restartRequired: true })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'update-failed', message: messageOf(error) })
         }
       },
     },
