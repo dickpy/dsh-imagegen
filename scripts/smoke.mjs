@@ -549,7 +549,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(connectionStatus?.getAttribute('data-connected'), 'false', 'missing key is shown as disconnected')
     // The settings card registered into the official plugin-config slot.
     assert.equal(registered.length, 1)
-    assert.equal(registered[0].id, 'imagegen')
+    assert.equal(registered[0].key, 'dsh-imagegen')
     assert.equal(registered[0].name, 'settings.plugin.item')
 
     // --- save-flow regression: a secret field's save must report success ---
