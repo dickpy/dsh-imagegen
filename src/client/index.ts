@@ -44,7 +44,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * same shape so this package can register without depending on the
      * sibling UI package.
      */
-    'settings.plugin.item': { kind: 'list'; scope: 'root'; owner: ImageGenPluginItemOwnerProps }
+    'settings.plugin.item': { kind: 'keyed'; scope: 'root'; owner: ImageGenPluginItemOwnerProps }
   }
 }
 
@@ -87,8 +87,7 @@ export function apply(ctx: ClientContext): void {
   const settingsCard = new ImageGenSettingsCardController(scope)
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
-    id: 'imagegen',
-    order: 30,
+    key: 'dsh-imagegen',
     locale: NS,
     inject: () => settingsCard.inject(),
   }, ImageGenSettingsCard))
