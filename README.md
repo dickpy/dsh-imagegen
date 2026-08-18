@@ -48,13 +48,13 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 把下面提示词直接粘贴给 **DSH**（或 Codex / 其他 coding agent）执行即可：
 
 ```text
-用 dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.6 安装 AI 生图插件（profile 名按实际修改），完成后重启 dsh web。
+用 dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.7 安装 AI 生图插件（profile 名按实际修改），完成后重启 dsh web。
 ```
 
 ### 方式二：npm 安装（推荐）
 
 ```bash
-dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.6
+dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.7
 ```
 
 dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cordis.patch.yml），重启 dsh web 即可。
@@ -62,10 +62,10 @@ dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cord
 ### 方式三：聚合包（tarball）安装
 
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载发布产物
-（如 `dickpy-dsh-imagegen-1.0.6.tgz`），然后：
+（如 `dickpy-dsh-imagegen-1.0.7.tgz`），然后：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.6.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.7.tgz
 ```
 
 重启 dsh web。
