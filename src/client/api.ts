@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GENERATE_API, HISTORY_API, UPDATE_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type UpdateInfo } from '../protocol.ts'
+import { GENERATE_API, HISTORY_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -96,5 +96,25 @@ export class ImageGenApi {
     const response = await fetch(HISTORY_API.clear, { method: 'POST' })
     const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
     return body.entries
+  }
+
+  /** Fetch the prompt-template library (bundled snapshot or refreshed copy). */
+  async templatesList(): Promise<TemplateListResult> {
+    const response = await fetch(TEMPLATES_API.list, { method: 'POST' })
+    const body = await readEnvelope<TemplateListResult & { ok: true }>(response)
+    return {
+      cases: body.cases,
+      total: body.total,
+      origin: body.origin,
+      repository: body.repository,
+      fetchedAt: body.fetchedAt,
+    }
+  }
+
+  /** Re-download the template library from the upstream mirror (host-side). */
+  async templatesRefresh(): Promise<TemplateRefreshResult> {
+    const response = await fetch(TEMPLATES_API.refresh, { method: 'POST' })
+    const body = await readEnvelope<TemplateRefreshResult & { ok: true }>(response)
+    return { total: body.total, fetchedAt: body.fetchedAt }
   }
 }

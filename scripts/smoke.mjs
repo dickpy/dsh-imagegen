@@ -253,13 +253,50 @@ const history = {
   },
   async readImage() { return undefined },
 }
+const templateImage = Buffer.from('template-image')
+let templateRefreshes = 0
+const templates = {
+  async list() {
+    return {
+      cases: [{
+        id: 1,
+        title: 'Poster template',
+        prompt: 'Create a bright product poster',
+        category: 'Posters & Typography',
+        categoryZh: '海报与排版',
+        styles: [],
+        scenes: [],
+        sourceLabel: '@author',
+        sourceUrl: 'https://example.test/author',
+        githubUrl: 'https://example.test/repo#1',
+        image: 'case1.png',
+        featured: true,
+      }],
+      total: 1,
+      origin: 'bundled',
+      repository: 'example/templates',
+      fetchedAt: '2026-08-19T00:00:00.000Z',
+    }
+  },
+  async refresh() {
+    templateRefreshes += 1
+    return { total: 1, fetchedAt: '2026-08-19T00:00:01.000Z' }
+  },
+  async readImage(file) {
+    return file === 'case1.png' ? { data: templateImage, mime: 'image/png' } : undefined
+  },
+}
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   history,
+  templates,
 })
 const server = createServer((req, res) => {
-  const route = routes.find(r => r.path === new URL(req.url ?? '/', 'http://x').pathname)
+  const pathname = new URL(req.url ?? '/', 'http://x').pathname
+  const route = routes.find(r => r.kind === 'exact'
+    ? r.path === pathname
+    : pathname === r.path || pathname.startsWith(`${r.path}/`))
   if (route === undefined) {
     res.writeHead(404)
     res.end()
@@ -333,6 +370,25 @@ await check('C3 generate route persists history server-side and enforces loopbac
     request.end('{}')
   })
   assert.equal(foreignStatus, 403)
+})
+
+await check('C4 template routes serve the bundled gallery, refresh it, and proxy only known images', async () => {
+  const { body: list } = await post('/api/dsh-imagegen/templates/list', {})
+  assert.equal(list.ok, true)
+  assert.equal(list.total, 1)
+  assert.equal(list.cases[0].prompt, 'Create a bright product poster')
+
+  const { body: refreshed } = await post('/api/dsh-imagegen/templates/refresh', {})
+  assert.equal(refreshed.ok, true)
+  assert.equal(refreshed.total, 1)
+  assert.equal(templateRefreshes, 1)
+
+  const image = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/case1.png`)
+  assert.equal(image.status, 200)
+  assert.equal(image.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), templateImage)
+  const unknown = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/not-allowed.png`)
+  assert.equal(unknown.status, 404)
 })
 
 await new Promise(resolve => server.close(resolve))
@@ -433,6 +489,32 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
             revision: 1,
             secrets: [{ path: ['apiKey'], set: keyState.set }],
           },
+        }),
+      }
+    }
+    if (path.endsWith('/templates/list')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          cases: [{
+            id: 1,
+            title: 'Template poster',
+            prompt: 'A reusable template prompt',
+            category: 'Posters & Typography',
+            categoryZh: '海报与排版',
+            styles: [],
+            scenes: [],
+            sourceLabel: '@author',
+            sourceUrl: '',
+            githubUrl: '',
+            image: '',
+            featured: false,
+          }],
+          total: 1,
+          origin: 'bundled',
+          repository: 'example/templates',
+          fetchedAt: '2026-08-19T00:00:00.000Z',
         }),
       }
     }
@@ -551,6 +633,26 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(registered.length, 1)
     assert.equal(registered[0].key, 'dsh-imagegen')
     assert.equal(registered[0].name, 'settings.plugin.item')
+
+    // Template-library regression: choose a card, use its prompt, and verify
+    // the text editor receives it while the modal closes.
+    const templateTrigger = [...jsdomDocument.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('模板库'))
+    assert.ok(templateTrigger !== undefined, 'template library trigger rendered')
+    templateTrigger.click()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const templateCard = [...jsdomDocument.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('Template poster'))
+    assert.ok(templateCard !== undefined, 'template card rendered')
+    templateCard.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const useTemplate = [...jsdomDocument.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('使用此提示词'))
+    assert.ok(useTemplate !== undefined, 'use-template action rendered')
+    useTemplate.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(jsdomDocument.querySelector('textarea')?.value, 'A reusable template prompt')
+    assert.equal(jsdomDocument.querySelector('[role="dialog"][aria-label="提示词模板库"]'), null, 'template modal closed after use')
 
     // --- save-flow regression: a secret field's save must report success ---
     // The redacted wire view never returns the key, so the form judges the

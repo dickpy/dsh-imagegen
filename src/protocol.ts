@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.0.7'
+export const PLUGIN_VERSION = '1.0.9'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -41,6 +41,64 @@ export const HISTORY_API = {
 
 /** Maximum number of history entries retained host-side (oldest evicted). */
 export const HISTORY_MAX = 50
+
+/**
+ * Same-origin route family for the bundled prompt-template library
+ * (awesome-gpt-image-2 mirror). The case list ships inside the package and is
+ * served by the host; reference images are proxied through the `image` prefix
+ * route and cached on disk so repeated views never hit the network again.
+ */
+export const TEMPLATES_API = {
+  list: '/api/dsh-imagegen/templates/list',
+  refresh: '/api/dsh-imagegen/templates/refresh',
+  image: '/api/dsh-imagegen/templates/image',
+} as const
+
+/** One prompt-library case as the browser consumes it. */
+export interface TemplateCase {
+  /** Upstream case number (stable across refreshes). */
+  id: number
+  /** Short case title. */
+  title: string
+  /** Full reusable prompt text. */
+  prompt: string
+  /** English category name (grouping key). */
+  category: string
+  /** Chinese category display name. */
+  categoryZh: string
+  /** Style tags. */
+  styles: string[]
+  /** Scene tags. */
+  scenes: string[]
+  /** Original author handle, e.g. @vista8. */
+  sourceLabel: string
+  /** Original author link. */
+  sourceUrl: string
+  /** awesome-gpt-image-2 repo anchor link. */
+  githubUrl: string
+  /** Reference-image file name served through the image route ('' when none). */
+  image: string
+  /** Whether the source gallery featured the case. */
+  featured: boolean
+}
+
+/** Template-library list payload. */
+export interface TemplateListResult {
+  cases: TemplateCase[]
+  total: number
+  /** Where the served list came from. */
+  origin: 'bundled' | 'refreshed'
+  /** Upstream repository the library mirrors. */
+  repository: string
+  /** ISO time of the last successful refresh / bundle snapshot. */
+  fetchedAt: string
+}
+
+/** Template-library refresh outcome. */
+export interface TemplateRefreshResult {
+  total: number
+  fetchedAt: string
+}
 
 /** Generation modes. */
 export type GenerateMode = 'text' | 'edit'

@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
+import { TemplateLibrary } from './TemplateLibrary.tsx'
 import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import css from './panel.module.css'
@@ -146,6 +147,7 @@ export function ImageGenPanel(props: {
   const [updating, setUpdating] = useState(false)
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const previewStage = useRef<HTMLDivElement>(null)
   const elapsed = useElapsed(generating, startedAt)
@@ -508,6 +510,15 @@ export function ImageGenPanel(props: {
                 onChange={(event) => { setPrompt(event.target.value) }}
               />
               <div className={css.promptFooter}>
+                <button
+                  type="button"
+                  className={css.templatesButton}
+                  title={tt('templates.title')}
+                  onClick={() => { setLibraryOpen(true) }}
+                >
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
+                  {tt('templates.open')}
+                </button>
                 <span className={css.promptCount}>{tt('prompt.count', { count: prompt.length })}</span>
               </div>
             </section>
@@ -740,6 +751,20 @@ export function ImageGenPanel(props: {
           )}
         </aside>
       </div>
+
+      {/* ------------------------------------------------ template library */}
+      {libraryOpen ? (
+        <TemplateLibrary
+          api={api}
+          onClose={() => { setLibraryOpen(false) }}
+          onUse={(text) => {
+            setMode('text')
+            setPrompt(text)
+            setError(null)
+            setLibraryOpen(false)
+          }}
+        />
+      ) : null}
 
       {/* -------------------------------------------------- preview overlay */}
       {preview !== null && previewImage !== null

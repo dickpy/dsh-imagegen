@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-111827)](https://github.com/dickpy/dsh-imagegen)
 
-DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全地代理 OpenAI 兼容的图像生成接口，为 DSH 提供文生图、图生图编辑、生成历史和一体化设置页。
+DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全地代理 OpenAI 兼容的图像生成接口，为 DSH 提供文生图、图生图编辑、生成历史、提示词模板库和一体化设置页。
 
 > 默认模型为 `gpt-image-2`，也兼容提供 `/images/generations` 和 `/images/edits` 的 OpenAI 兼容端点。
 
@@ -35,6 +35,7 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 - **结果操作**：结果区固定为四分格：单图铺满，双图占上排，三图占三格，四图为 2×2；支持下载、全屏预览、可滚动缩放、前后切换、复制优化提示词，以及一键将当前图片添加到图生图。
 - **持久化历史**：保存提示词、参数和图片；支持查看、恢复、单条删除和清空，最多保留 50 条。
 - **跨设备查看**：历史保存在 DSH 宿主侧，连接同一 DSH 的浏览器或设备共享同一份记录。
+- **提示词模板库**：提示词框左下角可打开模板库，浏览 441 个 `gpt-image-2` 案例的展示图；支持搜索、分类筛选、查看完整提示词、复制，以及一键将模板回填到生图输入框。参考图通过宿主同源代理按需加载并缓存，也可手动缓存全部图片供离线浏览。
 - **原生 DSH 体验**：侧栏入口、主题适配和设置卡片均遵循 DSH Web GUI 的 UI 规范。
 - **在线更新**：插件会检查 GitHub Releases，发现新版本时在工作台显示在线更新按钮；安装完成后重启 DSH 即可加载新版本。
 
@@ -48,13 +49,13 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 把下面提示词直接粘贴给 **DSH**（或 Codex / 其他 coding agent）执行即可：
 
 ```text
-用 dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.7 安装 AI 生图插件（profile 名按实际修改），完成后重启 dsh web。
+用 dsh plugin --profile web add @dickpy/dsh-imagegen 安装 AI 生图插件（profile 名按实际修改），完成后重启 dsh web。
 ```
 
 ### 方式二：npm 安装（推荐）
 
 ```bash
-dsh plugin --profile web add @dickpy/dsh-imagegen@1.0.7
+dsh plugin --profile web add @dickpy/dsh-imagegen
 ```
 
 dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cordis.patch.yml），重启 dsh web 即可。
@@ -62,10 +63,10 @@ dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cord
 ### 方式三：聚合包（tarball）安装
 
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载发布产物
-（如 `dickpy-dsh-imagegen-1.0.7.tgz`），然后：
+（如 `dickpy-dsh-imagegen-1.0.9.tgz`），然后：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.7.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.9.tgz
 ```
 
 重启 dsh web。
@@ -112,6 +113,7 @@ dsh plugin --profile web add link:/绝对路径/dsh-imagegen
 - API 请求由 DSH 宿主进程代理，浏览器不直接连接上游 API，因此不暴露 API 密钥，也没有浏览器 CORS 问题。
 - API 密钥保存在宿主侧 `~/.dsh/settings.yaml`；设置桥会对密钥进行脱敏。
 - 历史数据存放在 `~/.dsh/dsh-imagegen/`：图片独立落盘，`index.json` 保存索引。
+- 模板库的提示词快照随插件发布；展示图从 `vibeui.top` 通过本机宿主按需拉取，并缓存到 `~/.dsh/dsh-imagegen/template-images/`。模板库仅在手动刷新或首次加载展示图时访问该站点。
 - 插件通过专用 loopback 路由 `/api/dsh-imagegen/settings/{describe,mutate}` 访问设置，不需要修改 DSH 源码或依赖第三方命名空间白名单。
 
 ## 项目结构
@@ -122,7 +124,9 @@ dsh plugin --profile web add link:/绝对路径/dsh-imagegen
 | `src/routes.ts` | `/api/dsh-imagegen/*` 宿主路由 |
 | `src/engine.ts` | 上游图像生成代理与响应归一化 |
 | `src/history-store.ts` | 历史记录和图片持久化 |
+| `src/templates-store.ts` | 模板快照、在线刷新和展示图本地缓存 |
 | `src/client/ImageGenPanel.tsx` | 生图工作台、结果、历史与大图预览 |
+| `src/client/TemplateLibrary.tsx` | 模板图库、搜索筛选、详情和一键回填 |
 | `src/client/SettingsCard.tsx` | 插件配置卡片 |
 
 ## 开发

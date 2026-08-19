@@ -11,8 +11,9 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import { generateImage, type UpstreamConfig } from './engine.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
+import { listTemplates, readTemplateImage, refreshTemplates } from './templates-store.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
-import { GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
+import { GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, TEMPLATES_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -39,6 +40,12 @@ export interface ImageGenRoutesDeps {
     append: (entry: HistoryEntryInput) => Promise<HistoryEntry[]>
     remove: (id: string) => Promise<HistoryEntry[]>
     clear: () => Promise<HistoryEntry[]>
+    readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
+  }
+  /** Overrideable template-library backend, primarily for host integration tests. */
+  templates?: {
+    list: () => Promise<TemplateListResult>
+    refresh: () => Promise<TemplateRefreshResult>
     readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
   }
 }
@@ -182,6 +189,11 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     remove: removeHistory,
     clear: clearHistory,
     readImage: readHistoryImage,
+  }
+  const templates = deps.templates ?? {
+    list: listTemplates,
+    refresh: refreshTemplates,
+    readImage: readTemplateImage,
   }
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
@@ -438,6 +450,66 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           'content-type': found.mime,
           'content-length': found.data.length,
           'cache-control': 'private, max-age=3600',
+        })
+        res.end(found.data)
+      },
+    },
+    // --------------------------------------------------- templates list
+    {
+      kind: 'exact',
+      path: TEMPLATES_API.list,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          const result = await templates.list()
+          writeJson(res, 200, { ok: true, ...result })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'templates-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ------------------------------------------------- templates refresh
+    {
+      kind: 'exact',
+      path: TEMPLATES_API.refresh,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          const result = await templates.refresh()
+          writeJson(res, 200, { ok: true, ...result })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'templates-refresh-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // -------------------------------------- templates image (prefix, proxied)
+    {
+      kind: 'prefix',
+      path: TEMPLATES_API.image,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) {
+          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+          return
+        }
+        if (req.method !== 'GET') {
+          writeJson(res, 405, { error: `method not allowed: ${req.method}` })
+          return
+        }
+        const file = imageFileFrom(req.url, TEMPLATES_API.image)
+        if (file === undefined) {
+          writeJson(res, 404, { error: 'not found' })
+          return
+        }
+        const found = await templates.readImage(file)
+        if (found === undefined) {
+          writeJson(res, 404, { error: 'not found' })
+          return
+        }
+        res.writeHead(200, {
+          'content-type': found.mime,
+          'content-length': found.data.length,
+          // Cached on disk by the host; reference images are immutable per name.
+          'cache-control': 'private, max-age=86400',
         })
         res.end(found.data)
       },
