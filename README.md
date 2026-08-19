@@ -22,6 +22,12 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 
 ![AI 生图工作台单图结果布局](docs/images/image-generation-studio-single.png)
 
+### 提示词模板库
+
+模板库提供 441 个 `gpt-image-2` 案例的展示图、分类筛选和完整提示词；打开详情后可以复制提示词，或一键回填到生图输入框。
+
+![提示词模板库展示](docs/images/prompt-template-library.png)
+
 ### 独立配置卡片
 
 在 DSH 的“设置 -> 插件 -> 可配置”中填写 API 地址和密钥。密钥只保存在宿主侧设置文件，浏览器端不会获取明文。
