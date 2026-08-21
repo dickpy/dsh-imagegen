@@ -34,9 +34,16 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 
 ![插件配置卡片（显示当前版本）](docs/images/plugin-settings.png)
 
+### 画廊工作区
+
+画廊标签页提供左侧分类筛选和右侧作品墙：可在瀑布流与整齐网格之间切换，纵向滚动浏览收藏，点击任意图片打开大图预览。
+
+![画廊工作区：分类筛选、瀑布流和大图预览](docs/images/gallery-workspace.png)
+
 ## 功能
 
 - **文生图与图生图**：输入提示词生成图片，或上传 PNG、JPG、WEBP 参考图进行编辑。
+- **Grok Imagine 支持**：支持 xAI `grok-imagine-image` 文生图与图生图；将 API 地址设置为 `https://api.x.ai/v1` 即可使用官方比例、分辨率和 JSON 图片协议。
 - **可调生成参数**：尺寸、清晰度、生成数量和细节等级均可在界面中选择；未指定的参数保持自动。
 - **结果操作**：结果区固定为四分格：单图铺满，双图占上排，三图占三格，四图为 2×2；支持下载、全屏预览、可滚动缩放、前后切换、复制优化提示词，以及一键将当前图片添加到图生图。
 - **画廊收藏**：结果卡片、全屏预览与历史记录条目上都有「加入画廊」，可把满意的图片收藏起来；切到画廊后进入左侧分类筛选、右侧瀑布流/整齐网格的作品墙，支持按生成模式、模型、画面比例筛选、按发布时间排序、预览、移出、清空与恢复参数。画廊持久化在宿主侧 `~/.dsh/dsh-imagegen/gallery/`，无数量上限，且内容相同的图片不会重复加入。
@@ -70,10 +77,10 @@ dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cord
 ### 方式三：聚合包（tarball）安装
 
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载发布产物
-（如 `dickpy-dsh-imagegen-1.0.9.tgz`），然后：
+（如 `dickpy-dsh-imagegen-1.0.20.tgz`），然后：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.9.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.20.tgz
 ```
 
 重启 dsh web。

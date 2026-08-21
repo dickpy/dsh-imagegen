@@ -1,7 +1,7 @@
 {
   "name": "@dickpy/dsh-imagegen",
   "description": "AI 鐢熷浘 (image generation) plugin for the dsh web GUI: text-to-image and image-to-image through a configurable OpenAI-compatible endpoint (gpt-image-2 / grok-imagine-image / dall-e-3, with native xAI Grok Imagine request shaping), with a settings card for api_url / api_key and a sidebar entry opening a split-pane generation studio.",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
