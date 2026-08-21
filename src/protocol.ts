@@ -1,14 +1,14 @@
 /**
  * Wire contract shared by the host and client halves of dsh-imagegen: the
  * settings namespace, the route paths, and the generate payload/result shapes.
- * Pure types + constants — safe for the client bundle to inline.
+ * Pure types + constants 鈥?safe for the client bundle to inline.
  */
 
 /** Settings namespace this plugin owns (host settings seam + bridge). */
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.0.10'
+export const PLUGIN_VERSION = '1.0.19'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -37,6 +37,19 @@ export const HISTORY_API = {
   remove: '/api/dsh-imagegen/history/remove',
   clear: '/api/dsh-imagegen/history/clear',
   image: '/api/dsh-imagegen/history/image',
+} as const
+
+/**
+ * Same-origin route family for the user-curated gallery (favorites). Entries
+ * reuse the history wire shape and persist under ~/.dsh/dsh-imagegen/gallery/;
+ * unlike history there is no size cap 鈥?the user adds images on purpose.
+ */
+export const GALLERY_API = {
+  list: '/api/dsh-imagegen/gallery/list',
+  append: '/api/dsh-imagegen/gallery/append',
+  remove: '/api/dsh-imagegen/gallery/remove',
+  clear: '/api/dsh-imagegen/gallery/clear',
+  image: '/api/dsh-imagegen/gallery/image',
 } as const
 
 /** Maximum number of history entries retained host-side (oldest evicted). */
@@ -103,7 +116,7 @@ export interface TemplateRefreshResult {
 /** Generation modes. */
 export type GenerateMode = 'text' | 'edit'
 
-/** A client → host generate request (what the panel collects). */
+/** A client 鈫?host generate request (what the panel collects). */
 export interface GenerateRequest {
   /** text-to-image (images/generations) or image-to-image (images/edits). */
   mode: GenerateMode
@@ -111,9 +124,12 @@ export interface GenerateRequest {
   model: string
   /** The prompt (up to 2000 chars in the UI). */
   prompt: string
-  /** Canvas size: 'auto' or a pixel size like '1024x1024'. */
+  /** Canvas size as an aspect ratio: 'auto' or e.g. '1:1' / '16:9' / '21:9'.
+   *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok,
+   *  the closest pixel size for OpenAI-compatible endpoints). */
   size: string
-  /** Quality: 'auto' | 'low' | 'medium' | 'high'. */
+  /** Clarity tier: 'auto' | '1k' | '2k' | '4k'. The host maps it onto the
+   *  model's own vocabulary (resolution for Grok, quality for OpenAI). */
   quality: string
   /** Number of images, 1-4. */
   n: number

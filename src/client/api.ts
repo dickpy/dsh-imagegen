@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GENERATE_API, HISTORY_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
+import { GALLERY_API, GENERATE_API, HISTORY_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -94,6 +94,43 @@ export class ImageGenApi {
   /** Clear the entire history. */
   async historyClear(): Promise<HistoryEntry[]> {
     const response = await fetch(HISTORY_API.clear, { method: 'POST' })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+
+  /** List the host-persisted gallery (newest first). */
+  async galleryList(): Promise<HistoryEntry[]> {
+    const response = await fetch(GALLERY_API.list, { method: 'POST' })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+
+  /** Append one image to the gallery. The host assigns the id and skips the
+   *  append when a content-identical image is already in the gallery. */
+  async galleryAppend(entry: HistoryEntryInput): Promise<{ entries: HistoryEntry[]; added: boolean }> {
+    const response = await fetch(GALLERY_API.append, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry }),
+    })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[]; added: boolean }>(response)
+    return { entries: body.entries, added: body.added }
+  }
+
+  /** Remove one gallery entry by id. */
+  async galleryRemove(id: string): Promise<HistoryEntry[]> {
+    const response = await fetch(GALLERY_API.remove, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
+    return body.entries
+  }
+
+  /** Clear the entire gallery. */
+  async galleryClear(): Promise<HistoryEntry[]> {
+    const response = await fetch(GALLERY_API.clear, { method: 'POST' })
     const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
     return body.entries
   }

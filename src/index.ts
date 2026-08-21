@@ -26,6 +26,7 @@ export const inject = ['webServer', 'systemPrompt']
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
 export { generateImage, ImageGenError } from './engine.ts'
+export { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery } from './gallery-store.ts'
 export { listTemplates, readTemplateImage, refreshTemplates, clearTemplateMemo } from './templates-store.ts'
 export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
 
@@ -59,7 +60,7 @@ const DEFAULT_ANNOUNCE = true
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：对接 OpenAI 兼容图像生成 API（模型 gpt-image-2），支持文生图（/images/generations）与图生图（/images/edits，上传参考图）；API 地址与密钥在 GUI「设置 → 插件 → 可配置」中配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条 gpt-image-2 提示词案例（含中文标题、分类、参考图，可搜索/按分类筛选），参考图经宿主代理按需缓存到本地；用户可一键把模板提示词填入提示词框再生成。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / gpt-image-2 / 文生图 / 图生图 / 提示词模板」时即指本插件，请据此协作。'
+export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：对接 OpenAI 兼容图像生成 API（模型 gpt-image-2 / grok-imagine-image），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok 模型按官方 JSON image_url 协议发送）；API 地址与密钥在 GUI「设置 → 插件 → 可配置」中配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载；可一键把满意的图片加入「画廊」（工作台顶部 文生图 / 图生图 / 画廊 三个标签页，画廊在右侧展示，收藏持久化在本地 ~/.dsh/dsh-imagegen/gallery/）。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条 gpt-image-2 提示词案例（含中文标题、分类、参考图，可搜索/按分类筛选），参考图经宿主代理按需缓存到本地；用户可一键把模板提示词填入提示词框再生成。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / gpt-image-2 / grok-imagine-image / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
 
 /** Effective config (schema defaults applied). */
 interface EffectiveConfig {

@@ -113,6 +113,7 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 }
 
 .panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -149,12 +150,23 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   white-space: nowrap;
 }
 
-.panelSubtitle {
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* GitHub icon button next to the title (opens the repo). */
+.githubLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary);
+  text-decoration: none;
+  transition: color 0.12s, background 0.12s;
+}
+
+.githubLink:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
 }
 
 /* --- connection status and update notice -------------------------------------- */
@@ -721,6 +733,10 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 .modelSelect {
   width: 100%;
   height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 0 12px;
   font-size: 13px;
   color: var(--dsw-alias-label-primary);
@@ -730,6 +746,7 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   outline: none;
   font-family: inherit;
   cursor: pointer;
+  text-align: left;
 }
 
 .modelSelect:focus-visible {
@@ -738,6 +755,59 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 
 .modelSelect:disabled {
   opacity: 0.55;
+  cursor: default;
+}
+
+/* Model dropdown trigger + upward-opening menu. */
+.modelMenu {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+/* The list opens UPWARD (absolute above the trigger) so it never hides
+   behind the footer edge below. */
+.modelMenuList {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.modelMenuItem {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modelMenuItem:hover {
+  background: var(--dsw-alias-bg-hover);
+}
+
+.modelMenuItem[data-selected] {
+  color: var(--dsw-alias-brand-primary);
+  font-weight: 600;
+  background: var(--dsw-alias-bg-layer-1);
 }
 
 .generateButton {
@@ -912,6 +982,42 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 
 .download:hover {
   background: var(--dsw-alias-bg-base);
+}
+
+/* Add-to-gallery pill (top-left, mirrors .download; shows on card hover). */
+.galleryAdd {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-mask-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+  backdrop-filter: blur(4px);
+}
+
+.imageCard:hover .galleryAdd {
+  opacity: 1;
+}
+
+.galleryAdd:hover {
+  background: var(--dsw-alias-bg-base);
+}
+
+.galleryAdd:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* Hover hint for the click-to-zoom behavior. */
@@ -1217,9 +1323,99 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   to { transform: rotate(360deg); }
 }
 
+/* Transient "added to gallery" toast, centered above the canvas bottom. */
+.galleryToast {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-mask-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  animation: dshImageGenToastIn 160ms ease-out;
+}
+
+@keyframes dshImageGenToastIn {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .download, .spinner, .bigSpinner {
     transition: none;
     animation-duration: 1.5s;
   }
+}
+
+/* --- gallery workspace -------------------------------------------------------- */
+.config[data-gallery='true'] .configScroll > *:not(:first-child),
+.config[data-gallery='true'] .footer,
+.canvas[data-gallery='true'] > .canvasState,
+.canvas[data-gallery='true'] > .canvasError,
+.canvas[data-gallery='true'] > .canvasBody,
+.studio:has(.config[data-gallery='true']) > .history { display: none; }
+.config[data-gallery='true'] .configScroll { display: flex; flex: none; overflow: visible; order: 1; }
+.config[data-gallery='true'] .galleryFilters { order: 2; flex: 1; min-height: 0; }
+.galleryFilters { padding: 18px 14px; overflow-y: auto; overflow-x: hidden; }
+.galleryFilterHeading { margin: 0 4px 10px; color: var(--dsw-alias-label-tertiary); font-size: 12px; font-weight: 600; }
+.galleryFilter { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 34px; padding: 0 10px; border: 0; border-radius: 9px; color: var(--dsw-alias-label-secondary); background: transparent; cursor: pointer; text-align: left; }
+.galleryFilter:hover, .galleryFilter[data-active] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent); }
+.galleryFilterCount { min-width: 20px; padding: 1px 6px; border-radius: 999px; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); font-size: 11px; text-align: center; }
+.galleryFilterDivider { height: 1px; margin: 18px 4px; background: var(--dsw-alias-border-l1); }
+.galleryRatioList { display: flex; flex-wrap: wrap; gap: 6px; }
+.galleryRatio { padding: 6px 10px; border: 0; border-radius: 999px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); cursor: pointer; font-size: 12px; }
+.galleryRatio[data-active] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 13%, transparent); }
+.galleryFilterNote { margin: 20px 4px 0; color: var(--dsw-alias-label-quaternary); font-size: 11px; line-height: 1.5; }
+.galleryWorkspace { position: absolute; inset: 0; display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; padding: 22px 24px 26px; box-sizing: border-box; }
+.galleryToolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex: none; min-width: 0; margin-bottom: 18px; }
+.galleryHeading { display: inline; margin: 0; color: var(--dsw-alias-label-primary); font-size: 20px; font-weight: 700; }
+.galleryCount { margin-left: 8px; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
+.galleryToolbarActions { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.galleryViewToggle { display: flex; padding: 3px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); }
+.galleryViewToggle button, .gallerySort, .galleryClear { min-height: 30px; padding: 0 10px; border: 0; border-radius: 7px; color: var(--dsw-alias-label-secondary); background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+.galleryViewToggle button[data-active], .galleryViewToggle button:hover, .gallerySort:hover, .galleryClear:hover { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 11%, transparent); }
+.gallerySort { border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
+.galleryClear { border: 1px solid var(--dsw-alias-border-l1); }
+.galleryMasonry { display: grid; flex: 1 1 auto; width: 100%; height: 0; max-width: 100%; min-width: 0; min-height: 0; box-sizing: border-box; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 16px; overflow-y: scroll; overflow-x: hidden; overscroll-behavior: contain; padding: 2px 8px 16px 2px; scrollbar-width: thin; scrollbar-color: var(--dsw-alias-border-l2) transparent; }
+.galleryMasonry::-webkit-scrollbar { width: 8px; }
+.galleryMasonry::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l2); border-radius: 999px; }
+.galleryCard { display: block; width: 100%; margin: 0; overflow: hidden; border: 1px solid var(--dsw-alias-border-l1); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 5px 18px rgb(24 32 54 / 7%); }
+.galleryImageButton { position: relative; display: block; width: 100%; padding: 0; border: 0; background: var(--dsw-alias-bg-base); cursor: zoom-in; }
+.galleryImage { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+.galleryMasonry[data-view='masonry'] .galleryCard:nth-child(3n + 1) .galleryImage { aspect-ratio: 4 / 5; }
+.galleryMasonry[data-view='masonry'] .galleryCard:nth-child(3n + 2) .galleryImage { aspect-ratio: 4 / 3; }
+.galleryMasonry[data-view='masonry'] .galleryCard:nth-child(3n) .galleryImage { aspect-ratio: 3 / 4; }
+.galleryBadge { position: absolute; top: 10px; left: 10px; padding: 4px 9px; border-radius: 999px; color: #fff; background: rgb(18 23 36 / 76%); font-size: 11px; backdrop-filter: blur(4px); }
+.galleryCardFooter { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px 12px; }
+.galleryAvatar { display: grid; flex: none; width: 27px; height: 27px; place-items: center; border-radius: 50%; color: #fff; background: var(--dsw-alias-brand-primary); font-size: 12px; font-weight: 700; }
+.galleryCardInfo { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.galleryCardInfo strong, .galleryCardInfo small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.galleryCardInfo strong { color: var(--dsw-alias-label-primary); font-size: 12px; }
+.galleryCardInfo small { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.galleryRemove { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; color: var(--dsw-alias-label-tertiary); background: transparent; cursor: pointer; font-size: 18px; }
+.galleryRemove:hover { color: var(--dsw-alias-state-error); background: var(--dsw-alias-bg-layer-2); }
+
+@media (max-width: 1100px) {
+  .galleryMasonry { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .studio { flex-direction: column; overflow: auto; }
+  .config { width: auto; max-width: none; height: auto; min-height: 0; }
+  .config[data-gallery='true'] { flex: none; }
+  .canvas { min-height: 560px; }
+  .galleryToolbar { align-items: flex-start; flex-direction: column; }
+  .galleryToolbarActions { width: 100%; flex-wrap: wrap; }
+  .galleryMasonry { grid-template-columns: 1fr; }
 }

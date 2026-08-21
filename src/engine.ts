@@ -42,6 +42,33 @@ const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024
 /** Sizes dall-e-3 accepts; anything else falls back to its square default. */
 const DALLE3_SIZES = new Set(['1024x1024', '1792x1024', '1024x1792'])
 
+/** Whether the model is an xAI Grok Imagine model (grok-imagine-image,
+ *  grok-imagine-image-2.0, …). Grok Imagine speaks JSON on both endpoints
+ *  and exposes its own aspect-ratio / response-format knobs instead of the
+ *  OpenAI size/quality/detail passthrough. */
+function isGrokImagine(model: string): boolean {
+  return /^grok-imagine(?:-|$)/.test(model)
+}
+
+/** The panel's aspect ratios mapped to the closest OpenAI pixel size
+ *  (gpt-image-2 / generic OpenAI-compatible endpoints). */
+const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
+  '1:1': '1024x1024',
+  '3:4': '1024x1536',
+  '4:3': '1536x1024',
+  '9:16': '1024x1792',
+  '2:3': '1024x1536',
+  '3:2': '1536x1024',
+  '16:9': '1792x1024',
+  '21:9': '1792x1024',
+}
+
+/** Panel ratios that need renaming for a model's vocabulary. Grok documents
+ *  20:9 as its ultra-wide ratio, so the panel's 21:9 label is sent as 20:9. */
+const GROK_ASPECT_ALIASES: Readonly<Record<string, string>> = {
+  '21:9': '20:9',
+}
+
 /** Content-type extension hints for URL-fetched images. */
 function mimeOfExtension(path: string): string | undefined {
   const match = /\.([a-z0-9]+)$/i.exec(path)
@@ -87,17 +114,44 @@ function effectiveParams(request: GenerateRequest): {
   size?: string
   quality?: string
   detail?: string
+  aspect_ratio?: string
+  resolution?: string
+  response_format?: string
 } {
   const model = request.model.trim() === '' ? 'gpt-image-2' : request.model.trim()
   // dall-e-3 has no quality/detail knobs and only produces one image.
   if (model === 'dall-e-3') {
-    const size = DALLE3_SIZES.has(request.size) ? request.size : '1024x1024'
+    const pixel = OPENAI_SIZE_BY_RATIO[request.size]
+    const size = (pixel !== undefined && DALLE3_SIZES.has(pixel)) ? pixel : '1024x1024'
     return { model, size }
   }
+  // Grok Imagine: the panel's aspect ratios are sent as-is (21:9 aliased to
+  // the documented 20:9), the clarity tiers become the resolution parameter
+  // (the API documents 1k / 2k only, so 4k falls back to 2k), and base64
+  // output keeps the temporary signed result URLs from expiring before the
+  // host downloads them.
+  if (isGrokImagine(model)) {
+    return {
+      model,
+      ...request.size !== '' && request.size !== 'auto'
+        ? { aspect_ratio: GROK_ASPECT_ALIASES[request.size] ?? request.size }
+        : {},
+      ...request.quality !== '' && request.quality !== 'auto'
+        ? { resolution: request.quality === '4k' ? '2k' : request.quality }
+        : {},
+      response_format: 'b64_json',
+    }
+  }
+  // OpenAI-compatible endpoints: nearest pixel size, clarity tiers mapped to
+  // the quality levels (1k→low / 2k→medium / 4k→high), detail passthrough.
   return {
     model,
-    ...request.size !== '' && request.size !== 'auto' ? { size: request.size } : {},
-    ...request.quality !== '' && request.quality !== 'auto' ? { quality: request.quality } : {},
+    ...request.size !== '' && request.size !== 'auto' && OPENAI_SIZE_BY_RATIO[request.size] !== undefined
+      ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
+      : {},
+    ...request.quality === '1k' ? { quality: 'low' } : {},
+    ...request.quality === '2k' ? { quality: 'medium' } : {},
+    ...request.quality === '4k' ? { quality: 'high' } : {},
     ...request.detail !== '' ? { detail: request.detail } : {},
   }
 }
@@ -178,14 +232,27 @@ async function requestOneImage(
     if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
       throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
     }
-    const form = new FormData()
-    form.append('image', new Blob([bytes], { type: parsed.mime }), `reference.${extensionOf(parsed.mime)}`)
-    form.append('prompt', request.prompt)
-    form.append('model', params.model)
-    if (params.size !== undefined) form.append('size', params.size)
-    if (params.quality !== undefined) form.append('quality', params.quality)
-    if (params.detail !== undefined) form.append('detail', params.detail)
-    body = form
+    // Grok Imagine /images/edits takes a JSON image_url object (a base64 data
+    // URI is accepted) instead of OpenAI's multipart form-data upload.
+    if (isGrokImagine(params.model)) {
+      headers['content-type'] = 'application/json'
+      body = JSON.stringify({
+        model: params.model,
+        prompt: request.prompt,
+        image: { url: request.image, type: 'image_url' },
+        ...params.aspect_ratio !== undefined ? { aspect_ratio: params.aspect_ratio } : {},
+        response_format: 'b64_json',
+      })
+    } else {
+      const form = new FormData()
+      form.append('image', new Blob([bytes], { type: parsed.mime }), `reference.${extensionOf(parsed.mime)}`)
+      form.append('prompt', request.prompt)
+      form.append('model', params.model)
+      if (params.size !== undefined) form.append('size', params.size)
+      if (params.quality !== undefined) form.append('quality', params.quality)
+      if (params.detail !== undefined) form.append('detail', params.detail)
+      body = form
+    }
   } else {
     headers['content-type'] = 'application/json'
     body = JSON.stringify({ prompt: request.prompt, ...params } as Record<string, unknown>)

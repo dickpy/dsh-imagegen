@@ -18,25 +18,33 @@ import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, Histo
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import css from './panel.module.css'
 
-/** The model dropdown offers exactly the plugin's namesake model. */
-const MODELS = ['gpt-image-2'] as const
+/** Models offered by the dropdown. Anything OpenAI-compatible that answers
+ *  /images/generations (+ /images/edits) works; grok-imagine-image is handled
+ *  specially host-side (JSON /images/edits, aspect_ratio, b64_json). */
+const MODELS = ['gpt-image-2', 'grok-imagine-image'] as const
 
-/** All size options for gpt-image-2. */
-const SIZES = ['auto', '1024x1024', '1536x1024', '1024x1536', '512x512', '1792x1024', '1024x1792'] as const
+/** Size options, presented as aspect ratios (auto = let the model decide).
+ *  The host maps each ratio onto the model's own vocabulary: aspect_ratio for
+ *  Grok Imagine, the closest pixel size for OpenAI-compatible endpoints. */
+const SIZES = ['auto', '1:1', '3:4', '4:3', '9:16', '2:3', '3:2', '16:9', '21:9'] as const
 
 /** Size option keys in the locale dictionary. */
-const SIZE_KEYS: Record<string, 'size.auto' | 'size.square' | 'size.landscape' | 'size.portrait' | 'size.small' | 'size.wide' | 'size.tall'> = {
+const SIZE_KEYS: Record<string, 'size.auto' | 'size.square' | 'size.portrait34' | 'size.landscape43' | 'size.portrait916' | 'size.portrait23' | 'size.landscape32' | 'size.wide169' | 'size.ultrawide21'> = {
   auto: 'size.auto',
-  '1024x1024': 'size.square',
-  '1536x1024': 'size.landscape',
-  '1024x1536': 'size.portrait',
-  '512x512': 'size.small',
-  '1792x1024': 'size.wide',
-  '1024x1792': 'size.tall',
+  '1:1': 'size.square',
+  '3:4': 'size.portrait34',
+  '4:3': 'size.landscape43',
+  '9:16': 'size.portrait916',
+  '2:3': 'size.portrait23',
+  '3:2': 'size.landscape32',
+  '16:9': 'size.wide169',
+  '21:9': 'size.ultrawide21',
 }
 
-/** Quality options. */
-const QUALITIES = ['auto', 'low', 'medium', 'high'] as const
+/** Quality options, shown as output-resolution tiers (auto = let the model
+ *  decide). The host maps them: resolution for Grok, quality level for
+ *  OpenAI-compatible endpoints (1k→low, 2k→medium, 4k→high). */
+const QUALITIES = ['auto', '1k', '2k', '4k'] as const
 
 /** Detail options ('' = omit the passthrough). */
 const DETAILS = ['', 'standard', 'high'] as const
@@ -46,6 +54,36 @@ const REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 const PREVIEW_SCALE_MIN = 0.5
 const PREVIEW_SCALE_MAX = 3
 const PREVIEW_SCALE_STEP = 0.25
+
+/** Legacy pixel sizes saved by older versions, mapped onto the current
+ *  aspect-ratio vocabulary so restoring old history entries still works. */
+const LEGACY_SIZE_TO_RATIO: Record<string, string> = {
+  '512x512': '1:1',
+  '1024x1024': '1:1',
+  '1536x1024': '3:2',
+  '1024x1536': '2:3',
+  '1792x1024': '16:9',
+  '1024x1792': '9:16',
+}
+
+/** Legacy quality levels saved by older versions, mapped onto resolution. */
+const LEGACY_QUALITY_TO_RES: Record<string, string> = {
+  low: '1k',
+  medium: '2k',
+  high: '4k',
+}
+
+/** Normalize a saved size value into a current dropdown option. */
+function normalizeSize(value: string): string {
+  if ((SIZES as readonly string[]).includes(value)) return value
+  return LEGACY_SIZE_TO_RATIO[value] ?? 'auto'
+}
+
+/** Normalize a saved quality value into a current dropdown option. */
+function normalizeQuality(value: string): string {
+  if ((QUALITIES as readonly string[]).includes(value)) return value
+  return LEGACY_QUALITY_TO_RES[value] ?? 'auto'
+}
 
 function clampPreviewScale(scale: number): number {
   return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, scale))
@@ -113,6 +151,11 @@ function formatTime(timestamp: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** Studio tabs: the two generation modes plus the gallery view. */
+type PanelTab = GenerateMode | 'gallery'
+
+type GalleryFilter = 'all' | 'text' | 'edit' | 'gpt-image-2' | 'grok-imagine-image'
+
 /** Render the studio. */
 export function ImageGenPanel(props: {
   api: ImageGenApi
@@ -126,13 +169,14 @@ export function ImageGenPanel(props: {
   const keySet = useKeySet(scope)
   const connected = enabled && configured && keySet
 
-  const [mode, setMode] = useState<GenerateMode>('text')
+  const [tab, setTab] = useState<PanelTab>('text')
   const [prompt, setPrompt] = useState('')
   const [size, setSize] = useState<string>('auto')
   const [quality, setQuality] = useState<string>('auto')
   const [count, setCount] = useState(1)
   const [detail, setDetail] = useState('')
   const [model, setModel] = useState<string>(MODELS[0])
+  const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -140,6 +184,14 @@ export function ImageGenPanel(props: {
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
+  const [gallery, setGallery] = useState<HistoryEntry[]>([])
+  const [galleryViewingId, setGalleryViewingId] = useState<string | null>(null)
+  const [galleryAdding, setGalleryAdding] = useState(false)
+  const [galleryMessage, setGalleryMessage] = useState<string | null>(null)
+  const [galleryFilter, setGalleryFilter] = useState<GalleryFilter>('all')
+  const [galleryRatio, setGalleryRatio] = useState('all')
+  const [galleryView, setGalleryView] = useState<'masonry' | 'grid'>('masonry')
+  const [gallerySort, setGallerySort] = useState<'newest' | 'oldest'>('newest')
   const [preview, setPreview] = useState<{ images: GeneratedImage[]; index: number } | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
   const [promptCopied, setPromptCopied] = useState(false)
@@ -152,15 +204,45 @@ export function ImageGenPanel(props: {
   const previewStage = useRef<HTMLDivElement>(null)
   const elapsed = useElapsed(generating, startedAt)
 
-  // Load the host-persisted history once on mount (it lives in ~/.dsh on the
-  // DSH host, so every browser/device sees the same list).
+  const filteredGallery = gallery
+    .filter(entry => {
+      if (galleryFilter === 'all') return true
+      if (galleryFilter === 'text' || galleryFilter === 'edit') return entry.mode === galleryFilter
+      return entry.model === galleryFilter
+    })
+    .filter(entry => galleryRatio === 'all' || normalizeSize(entry.size) === galleryRatio)
+    .slice()
+    .sort((a, b) => gallerySort === 'newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt)
+
+  // Load the host-persisted history and gallery once on mount (they live in
+  // ~/.dsh on the DSH host, so every browser/device sees the same lists).
   useEffect(() => {
     let disposed = false
     api.historyList()
       .then(entries => { if (!disposed) setHistory(entries) })
       .catch(() => { /* history unavailable — leave the list empty */ })
+    api.galleryList()
+      .then(entries => { if (!disposed) setGallery(entries) })
+      .catch(() => { /* gallery unavailable — leave the list empty */ })
     return () => { disposed = true }
   }, [api])
+
+  // Close the model dropdown when clicking anywhere outside it.
+  const modelMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!modelOpen) return
+    const onPointer = (event: MouseEvent | FocusEvent): void => {
+      const target = event.target
+      if (target instanceof Node && modelMenuRef.current?.contains(target)) return
+      setModelOpen(false)
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('focusin', onPointer)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('focusin', onPointer)
+    }
+  }, [modelOpen])
 
   // Release checks are host-mediated and intentionally best-effort: a GitHub
   // outage must never make the image-generation studio unavailable.
@@ -218,20 +300,20 @@ export function ImageGenPanel(props: {
       setError(tt('prompt.required'))
       return
     }
-    if (mode === 'edit' && refImage === null) {
+    if (tab === 'edit' && refImage === null) {
       setError(tt('edit.required'))
       return
     }
     const request: GenerateRequest = {
-      mode,
+      mode: tab === 'gallery' ? 'text' : tab,
       model,
       prompt: promptText,
       size,
       quality,
       n: count,
       detail,
-      ...mode === 'edit' && refImage !== null ? { image: refImage.dataUrl } : {},
-      ...mode === 'edit' && refImage !== null ? { refName: refImage.name } : {},
+      ...tab === 'edit' && refImage !== null ? { image: refImage.dataUrl } : {},
+      ...tab === 'edit' && refImage !== null ? { refName: refImage.name } : {},
     }
     setGenerating(true)
     setError(null)
@@ -241,6 +323,7 @@ export function ImageGenPanel(props: {
       const result = await api.generate(request)
       setImages(result.images)
       setViewingHistoryId(null)
+      setGalleryViewingId(null)
       if (result.history !== undefined) setHistory(result.history)
       if (result.historyError !== undefined) setError(result.historyError)
     } catch (caught) {
@@ -309,6 +392,7 @@ export function ImageGenPanel(props: {
       setImages(await historyImagesToGenerated(entry.images))
       setError(null)
       setViewingHistoryId(entry.id)
+      setGalleryViewingId(null)
     } catch (caught) {
       setError(errorMessage(caught))
     }
@@ -318,10 +402,10 @@ export function ImageGenPanel(props: {
   const restoreHistoryEntry = async (entry: HistoryEntry): Promise<void> => {
     try {
       const restored = await historyImagesToGenerated(entry.images)
-      setMode(entry.mode)
+      setTab(entry.mode)
       setPrompt(entry.prompt)
-      setSize((SIZES as readonly string[]).includes(entry.size) ? entry.size : 'auto')
-      setQuality((QUALITIES as readonly string[]).includes(entry.quality) ? entry.quality : 'auto')
+      setSize(normalizeSize(entry.size))
+      setQuality(normalizeQuality(entry.quality))
       setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
       setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
       setModel((MODELS as readonly string[]).includes(entry.model) ? entry.model : MODELS[0])
@@ -329,6 +413,7 @@ export function ImageGenPanel(props: {
       setImages(restored)
       setError(null)
       setViewingHistoryId(entry.id)
+      setGalleryViewingId(null)
     } catch (caught) {
       setError(errorMessage(caught))
     }
@@ -356,8 +441,119 @@ export function ImageGenPanel(props: {
     }
   }
 
+  /** Add one generated image to the gallery (host deduplicates by content).
+   *  `entry` makes the action available from a history/gallery list item (its
+   *  metadata + first image are saved); otherwise the current form state is
+   *  used. */
+  const addToGallery = async (image: GeneratedImage, entry?: HistoryEntry): Promise<void> => {
+    if (galleryAdding || tab === 'gallery') return
+    const source = entry ?? viewingEntry ?? {
+      mode: tab === 'edit' ? 'edit' as GenerateMode : 'text' as GenerateMode,
+      model,
+      prompt: prompt.trim(),
+      size,
+      quality,
+      detail,
+      ...refImage !== null ? { refName: refImage.name } : {},
+    }
+    setGalleryAdding(true)
+    try {
+      const result = await api.galleryAppend({
+        id: '', // the host assigns a fresh id
+        createdAt: Date.now(),
+        mode: source.mode,
+        model: source.model,
+        prompt: source.prompt,
+        size: source.size,
+        quality: source.quality,
+        detail: source.detail,
+        n: 1,
+        images: [image],
+        ...source.refName === undefined ? {} : { refName: source.refName },
+      })
+      setGallery(result.entries)
+      setGalleryMessage(result.added ? tt('gallery.added') : tt('gallery.already'))
+      window.setTimeout(() => { setGalleryMessage(null) }, 2200)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setGalleryAdding(false)
+    }
+  }
+
+  /** Add one history entry's first image to the gallery (fetches it from the
+   *  history image route, then delegates to addToGallery). */
+  const addHistoryEntryToGallery = async (entry: HistoryEntry): Promise<void> => {
+    if (galleryAdding || entry.images.length === 0) return
+    try {
+      const [image] = await historyImagesToGenerated(entry.images.slice(0, 1))
+      if (image === undefined) return
+      await addToGallery(image, entry)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    }
+  }
+
+  /** View a gallery image in the canvas. */
+  const viewGalleryEntry = async (entry: HistoryEntry): Promise<void> => {
+    try {
+      const restored = await historyImagesToGenerated(entry.images)
+      setImages(restored)
+      setError(null)
+      setViewingHistoryId(null)
+      setGalleryViewingId(entry.id)
+      if (restored.length > 0) openPreview(restored, 0)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    }
+  }
+
+  /** Restore a gallery entry's parameters (and its images) into the form. */
+  const restoreGalleryEntry = async (entry: HistoryEntry): Promise<void> => {
+    try {
+      const restored = await historyImagesToGenerated(entry.images)
+      setTab(entry.mode)
+      setPrompt(entry.prompt)
+      setSize(normalizeSize(entry.size))
+      setQuality(normalizeQuality(entry.quality))
+      setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
+      setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
+      setModel((MODELS as readonly string[]).includes(entry.model) ? entry.model : MODELS[0])
+      setRefImage(null)
+      setImages(restored)
+      setError(null)
+      setViewingHistoryId(null)
+      setGalleryViewingId(null)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    }
+  }
+
+  /** Remove one gallery entry. */
+  const deleteGalleryEntry = async (id: string): Promise<void> => {
+    setGallery(gallery.filter(entry => entry.id !== id))
+    if (galleryViewingId === id) setGalleryViewingId(null)
+    try {
+      setGallery(await api.galleryRemove(id))
+    } catch {
+      // Keep the optimistic local removal.
+    }
+  }
+
+  /** Remove every gallery entry. */
+  const clearGalleryAll = async (): Promise<void> => {
+    setGallery([])
+    setGalleryViewingId(null)
+    try {
+      setGallery(await api.galleryClear())
+    } catch {
+      // Keep the cleared local state.
+    }
+  }
+
   const generateDisabled = generating || !enabled || !configured
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
+  const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
   const previewFrameScale = Math.max(1, previewScale)
   const previewImageScale = previewScale / previewFrameScale
@@ -386,7 +582,7 @@ export function ImageGenPanel(props: {
 
   const addPreviewToEdit = (): void => {
     if (previewImage === null || preview === null) return
-    setMode('edit')
+    setTab('edit')
     setRefImage({
       dataUrl: srcOf(previewImage),
       name: `dsh-image-${preview.index + 1}.${extensionOf(previewImage.mime)}`,
@@ -401,7 +597,16 @@ export function ImageGenPanel(props: {
       <header className={css.panelHeader}>
         <span className={css.panelHeading}>
           <h2 className={css.panelTitle}>{tt('panel.title')}</h2>
-          <span className={css.panelSubtitle}>{tt('panel.subtitle')}</span>
+          <a
+            className={css.githubLink}
+            href="https://github.com/dickpy/dsh-imagegen"
+            target="_blank"
+            rel="noreferrer"
+            title={tt('panel.githubTip')}
+            aria-label={tt('panel.githubTip')}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          </a>
         </span>
         <button
           type="button"
@@ -430,30 +635,52 @@ export function ImageGenPanel(props: {
 
       <div className={css.studio}>
         {/* ---------------------------------------------------- config sidebar */}
-        <aside className={css.config}>
+        <aside className={css.config} data-gallery={tab === 'gallery' ? 'true' : undefined}>
+          {tab === 'gallery' ? (
+            <div className={css.galleryFilters}>
+              <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
+              {([
+                ['all', 'gallery.all'],
+                ['text', 'mode.text'],
+                ['edit', 'mode.edit'],
+                ['gpt-image-2', 'gallery.gpt'],
+                ['grok-imagine-image', 'gallery.grok'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={css.galleryFilter}
+                  data-active={galleryFilter === value ? '' : undefined}
+                  onClick={() => { setGalleryFilter(value) }}
+                >
+                  <span>{tt(label as never)}</span>
+                  <span className={css.galleryFilterCount}>{gallery.filter(entry => value === 'all' || value === 'text' || value === 'edit' ? (value === 'all' ? true : entry.mode === value) : entry.model === value).length}</span>
+                </button>
+              ))}
+              <div className={css.galleryFilterDivider} />
+              <div className={css.galleryFilterHeading}>{tt('gallery.ratio')}</div>
+              <div className={css.galleryRatioList}>
+                {(['all', '1:1', '3:4', '4:3', '16:9'] as const).map(ratio => (
+                  <button key={ratio} type="button" className={css.galleryRatio} data-active={galleryRatio === ratio ? '' : undefined} onClick={() => { setGalleryRatio(ratio) }}>
+                    {ratio === 'all' ? tt('gallery.all') : ratio}
+                  </button>
+                ))}
+              </div>
+              <div className={css.galleryFilterNote}>{tt('gallery.filterHint')}</div>
+            </div>
+          ) : null}
           <div className={css.configScroll}>
-            {/* mode tabs */}
+            {/* mode / gallery tabs */}
             <section className={css.card}>
               <div className={css.modeRow} role="tablist" aria-label={tt('panel.title')}>
-                <Pill
-                  active={mode === 'text'}
-                  onClick={() => { setMode('text') }}
-                  className={css.modePill}
-                >
-                  {tt('mode.text')}
-                </Pill>
-                <Pill
-                  active={mode === 'edit'}
-                  onClick={() => { setMode('edit') }}
-                  className={css.modePill}
-                >
-                  {tt('mode.edit')}
-                </Pill>
+                <Pill active={tab === 'text'} onClick={() => { setTab('text') }} className={css.modePill}>{tt('mode.text')}</Pill>
+                <Pill active={tab === 'edit'} onClick={() => { setTab('edit') }} className={css.modePill}>{tt('mode.edit')}</Pill>
+                <Pill active={tab === 'gallery'} onClick={() => { setTab('gallery') }} className={css.modePill}>{tt('gallery.title')}</Pill>
               </div>
             </section>
 
             {/* reference image (edit mode) */}
-            {mode === 'edit' ? (
+            {tab === 'edit' ? (
               <section className={css.card}>
                 {refImage === null
                   ? (
@@ -500,8 +727,8 @@ export function ImageGenPanel(props: {
               </section>
             ) : null}
 
-            {/* prompt */}
-            <section className={css.card}>
+                {/* prompt */}
+                <section className={css.card}>
               <textarea
                 className={css.prompt}
                 value={prompt}
@@ -591,17 +818,39 @@ export function ImageGenPanel(props: {
 
           {/* footer: model + generate — a fixed sibling of the scroll area, so
               it never overlaps the cards scrolling above it. */}
-          <section className={css.footer}>
+            <section className={css.footer}>
             <label className={css.modelWrap}>
               <span className={css.modelLabel}>{tt('model.label')}</span>
-              <select
-                className={css.modelSelect}
-                value={model}
-                disabled={generating}
-                onChange={(event) => { setModel(event.target.value) }}
-              >
-                {MODELS.map(option => <option key={option} value={option}>{option}</option>)}
-              </select>
+              <span ref={modelMenuRef} className={css.modelMenu} data-open={modelOpen ? 'true' : 'false'}>
+                <button
+                  type="button"
+                  className={css.modelSelect}
+                  disabled={generating}
+                  aria-haspopup="listbox"
+                  aria-expanded={modelOpen}
+                  onClick={() => { setModelOpen(open => !open) }}
+                >
+                  <span>{model}</span>
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 10.5L4 6h8z"/></svg>
+                </button>
+                {modelOpen ? (
+                  <div className={css.modelMenuList} role="listbox" aria-label={tt('model.label')}>
+                    {MODELS.map(option => (
+                      <button
+                        key={option}
+                        type="button"
+                        role="option"
+                        aria-selected={model === option}
+                        className={css.modelMenuItem}
+                        data-selected={model === option ? '' : undefined}
+                        onClick={() => { setModel(option); setModelOpen(false) }}
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </span>
             </label>
             <Button
               variant="primary"
@@ -616,12 +865,63 @@ export function ImageGenPanel(props: {
                   {tt('generating')}
                 </span>
               ) : tt('generate')}
-            </Button>
-          </section>
+              </Button>
+            </section>
         </aside>
 
         {/* --------------------------------------------------------- canvas */}
-        <section className={css.canvas}>
+        <section className={css.canvas} data-gallery={tab === 'gallery' ? 'true' : undefined}>
+          {tab === 'gallery' ? (
+            <div className={css.galleryWorkspace}>
+              <header className={css.galleryToolbar}>
+                <div>
+                  <h3 className={css.galleryHeading}>{tt('gallery.all')}</h3>
+                  <span className={css.galleryCount}>{tt('gallery.count', { count: filteredGallery.length })}</span>
+                </div>
+                <div className={css.galleryToolbarActions}>
+                  <div className={css.galleryViewToggle} role="group" aria-label={tt('gallery.viewMode')}>
+                    <button type="button" data-active={galleryView === 'masonry' ? '' : undefined} onClick={() => { setGalleryView('masonry') }} title={tt('gallery.masonry')}>
+                      <span aria-hidden="true">▦</span> {tt('gallery.masonry')}
+                    </button>
+                    <button type="button" data-active={galleryView === 'grid' ? '' : undefined} onClick={() => { setGalleryView('grid') }} title={tt('gallery.grid')}>
+                      <span aria-hidden="true">▤</span> {tt('gallery.grid')}
+                    </button>
+                  </div>
+                  <select className={css.gallerySort} value={gallerySort} onChange={event => { setGallerySort(event.target.value as 'newest' | 'oldest') }} aria-label={tt('gallery.sort')}>
+                    <option value="newest">{tt('gallery.newest')}</option>
+                    <option value="oldest">{tt('gallery.oldest')}</option>
+                  </select>
+                  {gallery.length > 0 ? <button type="button" className={css.galleryClear} onClick={() => { void clearGalleryAll() }}>{tt('gallery.clear')}</button> : null}
+                </div>
+              </header>
+              {filteredGallery.length === 0 ? (
+                <div className={css.historyEmpty}>{tt('gallery.empty')}</div>
+              ) : (
+                <div className={css.galleryMasonry} data-view={galleryView}>
+                  {filteredGallery.map(entry => {
+                    const image = entry.images[0]
+                    if (image === undefined) return null
+                    return (
+                      <article key={entry.id} className={css.galleryCard}>
+                        <button type="button" className={css.galleryImageButton} onClick={() => { void viewGalleryEntry(entry) }} title={tt('preview.open')}>
+                          <img className={css.galleryImage} src={image.url} alt={entry.prompt} />
+                          <span className={css.galleryBadge}>{entry.mode === 'edit' ? tt('mode.edit') : tt('mode.text')}</span>
+                        </button>
+                        <div className={css.galleryCardFooter}>
+                          <span className={css.galleryAvatar}>{entry.model.startsWith('grok') ? 'G' : 'D'}</span>
+                          <span className={css.galleryCardInfo}>
+                            <strong>{entry.prompt || tt('gallery.untitled')}</strong>
+                            <small>{entry.model} · {normalizeSize(entry.size)} · {formatTime(entry.createdAt)}</small>
+                          </span>
+                          <button type="button" className={css.galleryRemove} onClick={() => { void deleteGalleryEntry(entry.id) }} title={tt('gallery.delete')}>×</button>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
           {generating ? (
             <div className={css.canvasState} role="status">
               <span className={css.bigSpinner} />
@@ -648,8 +948,12 @@ export function ImageGenPanel(props: {
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>
-                {viewingEntry !== null ? (
-                  <span className={css.canvasHistoryTag}>{tt('history.viewing', { time: formatTime(viewingEntry.createdAt) })}</span>
+                {viewingEntry !== null || viewingGalleryEntry !== null ? (
+                  <span className={css.canvasHistoryTag}>
+                    {viewingEntry !== null
+                      ? tt('history.viewing', { time: formatTime(viewingEntry.createdAt) })
+                      : tt('gallery.viewing', { time: formatTime(viewingGalleryEntry!.createdAt) })}
+                  </span>
                 ) : null}
               </div>
               <div className={css.grid} data-count={images.length}>
@@ -682,6 +986,16 @@ export function ImageGenPanel(props: {
                       <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M13 13l-3.2-3.2"/><path d="M7 5.4v3.2M5.4 7h3.2"/></svg>
                       {tt('preview.open')}
                     </span>
+                      <button
+                        type="button"
+                        className={css.galleryAdd}
+                        title={tt('gallery.add')}
+                        disabled={galleryAdding}
+                        onClick={(event) => { event.stopPropagation(); void addToGallery(image) }}
+                      >
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 5.8v4.4M5.8 8h4.4"/></svg>
+                        {tt('gallery.add')}
+                      </button>
                     <a
                       className={css.download}
                       href={srcOf(image)}
@@ -697,8 +1011,61 @@ export function ImageGenPanel(props: {
           ) : null}
         </section>
 
-        {/* -------------------------------------------------------- history */}
-        <aside className={css.history}>
+        {/* ------------------------ right column: gallery (tab) or history */}
+        {tab === 'gallery' ? (
+          <aside className={css.history}>
+            <header className={css.historyHeader}>
+              <span className={css.historyTitle}>{tt('gallery.title')}</span>
+              {gallery.length > 0 ? (
+                <button type="button" className={css.historyClear} onClick={() => { void clearGalleryAll() }}>
+                  {tt('gallery.clear')}
+                </button>
+              ) : null}
+            </header>
+
+            {gallery.length === 0 ? (
+              <div className={css.historyEmpty}>{tt('gallery.empty')}</div>
+            ) : (
+              <div className={css.historyList}>
+                {gallery.map(entry => (
+                  <div
+                    key={entry.id}
+                    className={css.historyItem}
+                    data-active={entry.id === galleryViewingId ? '' : undefined}
+                  >
+                    <button
+                      type="button"
+                      className={css.historyMain}
+                      onClick={() => { void viewGalleryEntry(entry) }}
+                    >
+                      {entry.images.length > 0 ? (
+                        <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
+                      ) : (
+                        <span className={css.historyThumbPlaceholder} />
+                      )}
+                      <span className={css.historyInfo}>
+                        <span className={css.historyPrompt}>{entry.prompt}</span>
+                        <span className={css.historyMeta}>
+                          {tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
+                          {' · '}{formatTime(entry.createdAt)}
+                        </span>
+                      </span>
+                    </button>
+                    <span className={css.historyActions}>
+                      <button type="button" className={css.historyAction} onClick={() => { void restoreGalleryEntry(entry) }}>
+                        {tt('history.restore')}
+                      </button>
+                      <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteGalleryEntry(entry.id) }}>
+                        {tt('gallery.delete')}
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </aside>
+        ) : (
+          <aside className={css.history}>
           <header className={css.historyHeader}>
             <span className={css.historyTitle}>{tt('history.title')}</span>
             {history.length > 0 ? (
@@ -738,6 +1105,17 @@ export function ImageGenPanel(props: {
                     </span>
                   </button>
                   <span className={css.historyActions}>
+                    {entry.images.length > 0 ? (
+                      <button
+                        type="button"
+                        className={css.historyAction}
+                        disabled={galleryAdding}
+                        title={tt('gallery.add')}
+                        onClick={() => { void addHistoryEntryToGallery(entry) }}
+                      >
+                        {tt('gallery.add')}
+                      </button>
+                    ) : null}
                     <button type="button" className={css.historyAction} onClick={() => { void restoreHistoryEntry(entry) }}>
                       {tt('history.restore')}
                     </button>
@@ -749,7 +1127,8 @@ export function ImageGenPanel(props: {
               ))}
             </div>
           )}
-        </aside>
+          </aside>
+        )}
       </div>
 
       {/* ------------------------------------------------ template library */}
@@ -758,7 +1137,7 @@ export function ImageGenPanel(props: {
           api={api}
           onClose={() => { setLibraryOpen(false) }}
           onUse={(text) => {
-            setMode('text')
+            setTab('text')
             setPrompt(text)
             setError(null)
             setLibraryOpen(false)
@@ -839,6 +1218,9 @@ export function ImageGenPanel(props: {
               <div className={css.lightboxMeta}>
                 <span className={css.lightboxIndex}>{tt('preview.index', { index: preview.index + 1, total: preview.images.length })}</span>
                 <span className={css.lightboxActions}>
+                  <button type="button" className={css.lightboxEdit} disabled={galleryAdding} onClick={() => { void addToGallery(previewImage) }}>
+                    {tt('gallery.add')}
+                  </button>
                   <button type="button" className={css.lightboxEdit} onClick={addPreviewToEdit}>
                     {tt('preview.addToEdit')}
                   </button>
@@ -856,6 +1238,14 @@ export function ImageGenPanel(props: {
           document.body,
         )
         : null}
+
+      {/* ------------------------------------------------- gallery toast */}
+      {galleryMessage !== null ? (
+        <div className={css.galleryToast} role="status">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 5.8v4.4M5.8 8h4.4"/></svg>
+          {galleryMessage}
+        </div>
+      ) : null}
     </div>
   )
 }
