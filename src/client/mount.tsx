@@ -3,11 +3,16 @@
  *
  * The `conversation` slot is single-occupant (ui-conversation) and external
  * plugins cannot declare slots, so the panel takes over the center column at
- * the DOM level: a container is appended inside the `[data-pane="conversation"]`
- * grid item (an extra trailing child React never manages), and a stylesheet
- * rule hides the conversation content while the panel is active. Toggling is
- * a data attribute on <html> — no React involvement, so the conversation
- * subtree underneath stays mounted and stateful.
+ * the DOM level: a container is appended inside the conversation grid item
+ * (an extra trailing child React never manages), and a stylesheet rule hides
+ * the conversation content while the panel is active. Toggling is a data
+ * attribute on <html> — no React involvement, so the conversation subtree
+ * underneath stays mounted and stateful.
+ *
+ * Shell compatibility: the center column is `[data-pane="conversation"]` on
+ * legacy shells and `[class*="centerCol"]` on the rc.6+ AppFrame layout (the
+ * same dual selector the dsh-ssh / task-board panels use); both are queried
+ * and both get the `position: relative` base in panel.module.css.
  */
 
 import { createRoot, type Root } from 'react-dom/client'
@@ -20,7 +25,7 @@ import css from './panel.module.css'
 /** The injected panel container (kept in the DOM, hidden when inactive). */
 export const PANEL_VIEW_SELECTOR = '[data-dsh-imagegen-view]'
 
-const CONVERSATION_COLUMN_SELECTOR = '[data-pane="conversation"]'
+const CONVERSATION_COLUMN_SELECTOR = '[data-pane="conversation"], [class*="centerCol"]'
 const ACTIVE_ATTR = 'data-dsh-imagegen-active'
 /** Sibling panels' activation attributes, removed when this panel opens. */
 const OTHER_ACTIVE_ATTRS = ['data-dsh-taskboard-active', 'data-dsh-ssh-active']

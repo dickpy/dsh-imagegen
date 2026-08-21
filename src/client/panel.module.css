@@ -10,7 +10,13 @@
 
 /* --- center-column takeover (global rules, attribute-scoped) ----------------- */
 
-[data-pane='conversation'] {
+/* The panel container rides inside the conversation grid item as an extra
+   trailing child; hidden unless the panel is active. The position rule covers
+   both shells: the legacy `[data-pane="conversation"]` and the rc.6+
+   AppFrame class-based column ([class*="centerCol"]) — without a positioned
+   ancestor the absolutely-positioned view resolves against the frame. */
+[data-pane='conversation'],
+[class*='centerCol'] {
   position: relative;
 }
 
