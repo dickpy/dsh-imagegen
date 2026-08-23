@@ -13,12 +13,17 @@
 `dsh-imagegen` 是 DSH 的原生 AI 图像工作台。它把可配置的 OpenAI 兼容生图接口、Agent 工具调用、后台任务、文生图、图生图、多模型比较和作品管理放进同一条工作流。你不需要在生成期间守着界面，也不需要把图片在多个工具之间来回搬运。
 
 <p align="center">
-  <a href="#what-it-solves"><kbd>能解决什么</kbd></a>
-  <a href="#agent-workflow"><kbd>Agent 对话生图</kbd></a>
-  <a href="#model-comparison"><kbd>多模型对比</kbd></a>
-  <a href="#gallery"><kbd>画廊管理</kbd></a>
-  <a href="#quick-start"><kbd>快速开始</kbd></a>
-  <a href="#configuration"><kbd>配置模型</kbd></a>
+  <strong>
+    <a href="#what-it-solves">能解决什么</a>&nbsp;&nbsp;&nbsp;|
+    <a href="#agent-workflow">Agent 对话生图</a>&nbsp;&nbsp;&nbsp;|
+    <a href="#model-comparison">多模型对比</a>
+  </strong>
+  <br />
+  <strong>
+    <a href="#gallery">画廊管理</a>&nbsp;&nbsp;&nbsp;|
+    <a href="#quick-start">快速开始</a>&nbsp;&nbsp;&nbsp;|
+    <a href="#configuration">配置模型</a>
+  </strong>
 </p>
 
 <a id="what-it-solves"></a>
@@ -39,9 +44,23 @@
 
 接着，你可以基于结果继续提出修改。Agent 会携带该图片的引用调用图生图，不必重新上传文件，也不必重新描述全部上下文。它适合快速探索视觉方向、反复打磨 UI 视觉稿、海报或产品素材。
 
-![Agent 在对话中生成图片并将成图回贴](docs/images/agent-chat-generate.png)
+![Agent 在对话中提交海报生成任务，成图自动回贴到消息流](docs/images/agent-chat-poster-workflow.png)
 
-![Agent 基于已生成图片继续执行图生图编辑](docs/images/agent-chat-edit.png)
+### 可直接使用的案例提示词
+
+**第一轮：让 Agent 生成一张项目海报**
+
+```text
+帮我为 dsh-imagegen 设计一张 16:9 横版项目海报。深色未来感背景，青蓝和紫色霓虹光效；画面中心展示 AI 生图工作台，包含赛博城市、人物肖像、雪山和抽象流体四张示例图；下方展示 Agent 对话生图、多模型对比和画廊三个能力区。整体干净、专业、有产品发布感，不要杂乱的小字。
+```
+
+**第二轮：基于刚才的成图继续修改**
+
+```text
+保留当前海报的整体构图和深色科技风。把中心的赛博城市替换成更明亮的夜景，增强青蓝与紫色的边缘光；底部“Agent 对话生图”区域更突出，其他两项保持弱一级。不要重新生成一张完全不同的海报。
+```
+
+Agent 会把上一轮图片作为参考图提交图生图任务，因此第二轮只需要描述变化，而不必再次上传图片或重复全部需求。
 
 **对话中可用的能力**
 
