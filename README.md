@@ -132,7 +132,7 @@ Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`。安装后�
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载 tgz 后执行：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.2.0.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.2.1.tgz
 ```
 
 <a id="configuration"></a>
