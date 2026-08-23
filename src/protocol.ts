@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.1.0'
+export const PLUGIN_VERSION = '1.2.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -23,6 +23,11 @@ export const GENERATE_API = '/api/dsh-imagegen/generate'
 export const PROMPT_ENHANCE_API = {
   models: '/api/dsh-imagegen/prompt-enhance/models',
   enhance: '/api/dsh-imagegen/prompt-enhance',
+} as const
+
+/** Host-mediated candidate discovery for the configured image API. */
+export const IMAGE_MODEL_API = {
+  models: '/api/dsh-imagegen/image-models',
 } as const
 
 /** Host-resident generation queue endpoints. */

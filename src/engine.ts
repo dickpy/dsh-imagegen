@@ -69,6 +69,27 @@ const GROK_ASPECT_ALIASES: Readonly<Record<string, string>> = {
   '21:9': '20:9',
 }
 
+/**
+ * One request-scoped timeout that is cleared as soon as its fetch settles.
+ * AbortSignal.timeout() cannot be disposed early; using it inside a long-lived
+ * task queue leaves an otherwise idle Node process holding every timeout.
+ */
+function requestSignal(source: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController()
+  const abortFromSource = () => { controller.abort(source?.reason) }
+  if (source?.aborted === true) abortFromSource()
+  else source?.addEventListener('abort', abortFromSource, { once: true })
+  const timeout = setTimeout(() => { controller.abort(new DOMException('The operation timed out.', 'TimeoutError')) }, timeoutMs)
+  timeout.unref()
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout)
+      source?.removeEventListener('abort', abortFromSource)
+    },
+  }
+}
+
 /** Content-type extension hints for URL-fetched images. */
 function mimeOfExtension(path: string): string | undefined {
   const match = /\.([a-z0-9]+)$/i.exec(path)
@@ -181,16 +202,19 @@ async function normalizeItem(
     if (parsed === undefined) throw new ImageGenError('upstream returned a malformed data: url')
     return { b64: parsed.base64, mime: parsed.mime, revisedPrompt }
   }
+  const budget = requestSignal(undefined, IMAGE_FETCH_TIMEOUT_MS)
   let response: Response
   try {
     response = await fetch(url, {
       headers: {
         ...upstream.apiKey === '' ? {} : { authorization: `Bearer ${upstream.apiKey}` },
       },
-      signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS),
+      signal: budget.signal,
     })
   } catch (error) {
     throw new ImageGenError(`failed to fetch the generated image url: ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    budget.dispose()
   }
   if (!response.ok) {
     throw new ImageGenError(`failed to fetch the generated image url: HTTP ${response.status}`)
@@ -259,13 +283,14 @@ async function requestOneImage(
     body = JSON.stringify({ prompt: request.prompt, ...params } as Record<string, unknown>)
   }
 
+  const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
   let response: Response
   try {
     response = await fetch(`${baseUrl}/images/${request.mode === 'edit' ? 'edits' : 'generations'}`, {
       method: 'POST',
       headers,
       body,
-      signal: signal === undefined ? AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
+      signal: budget.signal,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -273,6 +298,8 @@ async function requestOneImage(
       throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
     }
     throw new ImageGenError(`无法连接上游接口：${message}`, 'upstream-unreachable')
+  } finally {
+    budget.dispose()
   }
 
   let payload: unknown

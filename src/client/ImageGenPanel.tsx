@@ -16,12 +16,8 @@ import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import type { GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
+import { DEFAULT_IMAGE_MODELS, normalizeImageModels } from '../image-models.ts'
 import css from './panel.module.css'
-
-/** Models offered by the dropdown. Anything OpenAI-compatible that answers
- *  /images/generations (+ /images/edits) works; grok-imagine-image is handled
- *  specially host-side (JSON /images/edits, aspect_ratio, b64_json). */
-const MODELS = ['gpt-image-2', 'grok-imagine-image'] as const
 
 /** Size options, presented as aspect ratios (auto = let the model decide).
  *  The host maps each ratio onto the model's own vocabulary: aspect_ratio for
@@ -153,7 +149,7 @@ function formatTime(timestamp: number): string {
 /** Studio tabs: the two generation modes plus the gallery view. */
 type PanelTab = GenerateMode | 'gallery'
 
-type GalleryFilter = 'all' | 'text' | 'edit' | 'gpt-image-2' | 'grok-imagine-image'
+type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string }
 
 /** Render the studio. */
@@ -169,6 +165,7 @@ export function ImageGenPanel(props: {
   const apiKeySet = useSecretSet(scope, 'apiKey')
   const promptKeySet = useSecretSet(scope, 'promptApiKey')
   const connected = enabled && configured && apiKeySet
+  const imageModels = normalizeImageModels(config?.imageModels)
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [prompt, setPrompt] = useState('')
@@ -176,9 +173,9 @@ export function ImageGenPanel(props: {
   const [quality, setQuality] = useState<string>('auto')
   const [count, setCount] = useState(1)
   const [detail, setDetail] = useState('')
-  const [model, setModel] = useState<string>(MODELS[0])
+  const [model, setModel] = useState<string>(DEFAULT_IMAGE_MODELS[0])
   const [compareEnabled, setCompareEnabled] = useState(false)
-  const [compareModels, setCompareModels] = useState<string[]>([...MODELS])
+  const [compareModels, setCompareModels] = useState<string[]>([...DEFAULT_IMAGE_MODELS])
   const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
@@ -222,6 +219,17 @@ export function ImageGenPanel(props: {
   const previewStage = useRef<HTMLDivElement>(null)
   const elapsed = useElapsed(generating, startedAt)
 
+  // A saved settings change is authoritative. Keep the active selection and
+  // comparison choices in that allow-list without disturbing valid choices.
+  const imageModelKey = imageModels.join('\u0000')
+  useEffect(() => {
+    setModel(previous => imageModels.includes(previous) ? previous : imageModels[0])
+    setCompareModels(previous => {
+      const retained = previous.filter(candidate => imageModels.includes(candidate))
+      return retained.length > 0 ? retained : [imageModels[0]]
+    })
+  }, [imageModelKey])
+
   const filteredGallery = gallery
     .filter(entry => {
       if (galleryFilter === 'all') return true
@@ -235,6 +243,7 @@ export function ImageGenPanel(props: {
     .sort((a, b) => gallerySort === 'newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt)
 
   const galleryTagOptions = [...new Set(gallery.flatMap(entry => entry.tags ?? []))].sort((a, b) => a.localeCompare(b))
+  const galleryModels = [...new Set([...imageModels, ...gallery.map(entry => entry.model)])]
 
   const filteredHistory = history.filter(entry => {
     const query = historyQuery.trim().toLocaleLowerCase()
@@ -399,7 +408,7 @@ export function ImageGenPanel(props: {
     }
     const request: GenerateRequest = {
       mode: tab === 'gallery' ? 'text' : tab,
-      model,
+      model: imageModels.includes(model) ? model : imageModels[0],
       prompt: promptText,
       size,
       quality,
@@ -410,7 +419,7 @@ export function ImageGenPanel(props: {
     }
     setError(null)
     try {
-      const targetModels = compareEnabled ? compareModels : [model]
+      const targetModels = (compareEnabled ? compareModels : [request.model]).filter(candidate => imageModels.includes(candidate))
       if (targetModels.length === 0) {
         setError(tt('compare.selectRequired'))
         return
@@ -497,7 +506,7 @@ export function ImageGenPanel(props: {
       setQuality(normalizeQuality(entry.quality))
       setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
       setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
-      setModel((MODELS as readonly string[]).includes(entry.model) ? entry.model : MODELS[0])
+      setModel(imageModels.includes(entry.model) ? entry.model : imageModels[0])
       setRefImage(null)
       setImages(restored)
       setError(null)
@@ -607,7 +616,7 @@ export function ImageGenPanel(props: {
       setQuality(normalizeQuality(entry.quality))
       setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
       setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
-      setModel((MODELS as readonly string[]).includes(entry.model) ? entry.model : MODELS[0])
+      setModel(imageModels.includes(entry.model) ? entry.model : imageModels[0])
       setRefImage(null)
       setImages(restored)
       setError(null)
@@ -794,13 +803,12 @@ export function ImageGenPanel(props: {
           {tab === 'gallery' ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
-              {([
-                ['all', 'gallery.all'],
-                ['text', 'mode.text'],
-                ['edit', 'mode.edit'],
-                ['gpt-image-2', 'gallery.gpt'],
-                ['grok-imagine-image', 'gallery.grok'],
-              ] as const).map(([value, label]) => (
+              {[
+                ['all', tt('gallery.all')],
+                ['text', tt('mode.text')],
+                ['edit', tt('mode.edit')],
+                ...galleryModels.map(value => [value, value]),
+              ].map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
@@ -808,7 +816,7 @@ export function ImageGenPanel(props: {
                   data-active={galleryFilter === value ? '' : undefined}
                   onClick={() => { setGalleryFilter(value) }}
                 >
-                  <span>{tt(label as never)}</span>
+                  <span>{label}</span>
                   <span className={css.galleryFilterCount}>{gallery.filter(entry => value === 'all' || value === 'text' || value === 'edit' ? (value === 'all' ? true : entry.mode === value) : entry.model === value).length}</span>
                 </button>
               ))}
@@ -1012,7 +1020,7 @@ export function ImageGenPanel(props: {
                 </button>
                 {modelOpen ? (
                   <div className={css.modelMenuList} role="listbox" aria-label={tt('model.label')}>
-                    {MODELS.map(option => (
+                    {imageModels.map(option => (
                       <button
                         key={option}
                         type="button"
@@ -1036,7 +1044,7 @@ export function ImageGenPanel(props: {
               </label>
               {compareEnabled ? (
                 <div className={css.compareModelChoices} role="group" aria-label={tt('compare.models')}>
-                  {MODELS.map(option => (
+                  {imageModels.map(option => (
                     <label key={option}>
                       <input type="checkbox" checked={compareModels.includes(option)} onChange={() => { setCompareModels(previous => previous.includes(option) ? previous.filter(value => value !== option) : [...previous, option]) }} />
                       <span>{option}</span>

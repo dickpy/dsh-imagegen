@@ -102,6 +102,18 @@ export function textField(field: string): FieldSpec {
   }
 }
 
+/** A newline/comma-separated model list, persisted as a normalized string array. */
+export function stringListField(field: string): FieldSpec {
+  return {
+    field,
+    format: value => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').join('\n') : '',
+    parse: (text) => {
+      const values = [...new Set(text.split(/[\n,]/).map(item => item.trim()).filter(Boolean))]
+      return values.length === 0 ? { kind: 'clear' } : { kind: 'set', value: values }
+    },
+  }
+}
+
 /** A boolean field, edited through true/false draft text. */
 export function booleanField(field: string): FieldSpec {
   return {

@@ -13,8 +13,13 @@ import z from 'schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the systemPrompt Context merge (announcement section).
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-attachment'
 import { IMAGEGEN_SETTINGS_NAMESPACE } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
+import { ImageGenerationRuntime } from './generation-runtime.ts'
+import { registerAgentImageTools } from './agent-image-tools.ts'
+import { DEFAULT_IMAGE_MODELS, normalizeImageModels } from './image-models.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'imagegen'
@@ -26,6 +31,8 @@ export const inject = ['webServer', 'systemPrompt']
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
 export { generateImage, ImageGenError } from './engine.ts'
+export { ImageGenerationRuntime } from './generation-runtime.ts'
+export { registerAgentImageTools } from './agent-image-tools.ts'
 export { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 export { listTemplates, readTemplateImage, refreshTemplates, clearTemplateMemo } from './templates-store.ts'
 export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
@@ -39,10 +46,14 @@ export interface Config {
   enabled?: boolean
   /** Announce the plugin in every agent's system prompt. */
   announceToAgent?: boolean
+  /** Allow Agents to submit and retrieve image-generation tasks. */
+  allowAgentImageGeneration?: boolean
   /** Base URL of the OpenAI-compatible endpoint, e.g. https://api.openai.com/v1 */
   apiUrl?: string
   /** Bearer API key (stored as a secret field on the settings seam). */
   apiKey?: string
+  /** Explicit allow-list of image models selected for this API endpoint. */
+  imageModels?: string[]
   /** Optional OpenAI-compatible chat endpoint for prompt enhancement. */
   promptApiUrl?: string
   /** Optional secret for the prompt enhancement endpoint. */
@@ -54,8 +65,10 @@ export interface Config {
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   announceToAgent: z.boolean().default(true),
+  allowAgentImageGeneration: z.boolean().default(true),
   apiUrl: z.string().default(''),
   apiKey: z.string().role('secret').default(''),
+  imageModels: z.array(z.string()).default([...DEFAULT_IMAGE_MODELS]),
   promptApiUrl: z.string().default(''),
   promptApiKey: z.string().role('secret').default(''),
   promptModel: z.string().default(''),
@@ -64,19 +77,27 @@ export const Config: z<Config> = z.object({
 /** Schema defaults, re-read for hand-built contexts (the loader applies them normally). */
 const DEFAULT_ENABLED = true
 const DEFAULT_ANNOUNCE = true
+const DEFAULT_ALLOW_AGENT_IMAGE_GENERATION = true
 
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：对接 OpenAI 兼容图像生成 API（模型 gpt-image-2 / grok-imagine-image），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok 模型按官方 JSON image_url 协议发送）；API 地址与密钥在 GUI「设置 → 插件 → 可配置」中配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载；可一键把满意的图片加入「画廊」（工作台顶部 文生图 / 图生图 / 画廊 三个标签页，画廊在右侧展示，收藏持久化在本地 ~/.dsh/dsh-imagegen/gallery/）。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条 gpt-image-2 提示词案例（含中文标题、分类、参考图，可搜索/按分类筛选），参考图经宿主代理按需缓存到本地；用户可一键把模板提示词填入提示词框再生成。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / gpt-image-2 / grok-imagine-image / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
+export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：对接 OpenAI 兼容图像生成 API，模型由用户在「设置 → 插件 → AI 生图」中检测或手动配置的生图模型列表决定；支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送）。API 地址与密钥在 GUI 设置中配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。模型只能使用已配置的生图模型；模型出现在 /models 中不等于其网关原生支持生图协议，遇到 Qwen、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条提示词案例，可搜索、筛选与复用。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；任务后台异步执行，完成后插件会自动唤醒原对话，并以可直接查看和复用的图片附件回贴结果，因此不要反复轮询。仅在用户明确要求进度或需要恢复任务时，才使用 `get_image_generation_task` 查询状态。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
+
+/** Add the live allow-list so an Agent can honor a user's model choice. */
+function guidanceFor(imageModels: string[]): string {
+  return `${IMAGEGEN_GUIDANCE} 当前允许调用的生图模型：${imageModels.join('、')}。用户指定其中某个模型时，工具参数 model 必须使用该精确名称；未指定时使用列表中的第一个。`
+}
 
 /** Effective config (schema defaults applied). */
 interface EffectiveConfig {
   enabled: boolean
   announceToAgent: boolean
+  allowAgentImageGeneration: boolean
   apiUrl: string
   apiKey: string
+  imageModels: string[]
   promptApiUrl: string
   promptApiKey: string
   promptModel: string
@@ -96,13 +117,23 @@ export function apply(ctx: Context, config?: Config): void {
     return {
       enabled: value.enabled ?? DEFAULT_ENABLED,
       announceToAgent: value.announceToAgent ?? DEFAULT_ANNOUNCE,
+      allowAgentImageGeneration: value.allowAgentImageGeneration ?? DEFAULT_ALLOW_AGENT_IMAGE_GENERATION,
       apiUrl: value.apiUrl ?? '',
       apiKey: value.apiKey ?? '',
+      imageModels: normalizeImageModels(value.imageModels),
       promptApiUrl: value.promptApiUrl ?? '',
       promptApiKey: value.promptApiKey ?? '',
       promptModel: value.promptModel ?? '',
     }
   }
+
+  // Browser endpoints and Agent tools share the exact same serial queue. This
+  // keeps image persistence, cancellation, and retries coherent across both
+  // entry points while a tool call itself returns immediately with a task id.
+  const runtime = new ImageGenerationRuntime(() => {
+    const value = resolve()
+    return { apiUrl: value.apiUrl, apiKey: value.apiKey }
+  })
 
   // The route family mounts once, gated on the settings seam (the bridge
   // serves it; without the seam there is nothing to expose). Route handlers
@@ -127,12 +158,27 @@ export function apply(ctx: Context, config?: Config): void {
               model: value.promptModel,
             }
           },
+          resolveImageModels: () => resolve().imageModels,
+          runtime,
         })
         const disposers = routes.map(route => ctx.webServer.register(route))
         return () => { for (const dispose of disposers) dispose() }
       },
       'dsh-imagegen: routes',
     )
+  })
+
+  ctx.inject(['tools', 'attachments'], (tctx) => {
+    tctx.effect(() => registerAgentImageTools(tctx, runtime, () => {
+      const value = resolve()
+      return {
+        enabled: value.enabled,
+        allowAgentImageGeneration: value.allowAgentImageGeneration,
+        apiUrl: value.apiUrl,
+        apiKey: value.apiKey,
+        imageModels: value.imageModels,
+      }
+    }), 'dsh-imagegen: agent image tools')
   })
 
   // System-prompt announcement (toggled by settings changes).
@@ -147,7 +193,7 @@ export function apply(ctx: Context, config?: Config): void {
     disposeSection = ctx.systemPrompt.section({
       name: 'plugin:dsh-imagegen',
       order: SECTION_ORDER,
-      text: IMAGEGEN_GUIDANCE,
+      text: guidanceFor(value.imageModels),
     })
   }
 

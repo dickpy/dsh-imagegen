@@ -9,18 +9,19 @@
 import { useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
+import { CardForm, booleanField, secretField, stringListField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
-import { PLUGIN_VERSION } from '../protocol.ts'
-import { PROMPT_ENHANCE_API } from '../protocol.ts'
+import { IMAGE_MODEL_API, PROMPT_ENHANCE_API } from '../protocol.ts'
 import css from './settings-card.module.css'
 
 /** The fields this card edits (the namespace's full schema). */
 export interface ImageGenSettings {
   enabled?: boolean
   announceToAgent?: boolean
+  allowAgentImageGeneration?: boolean
   apiUrl?: string
   apiKey?: string
+  imageModels?: string[]
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
@@ -32,10 +33,12 @@ export interface ImageGenSettingsCardState extends CardShell {
   enabled: CardFieldState
   /** System-prompt announcement flag. */
   announceToAgent: CardFieldState
+  allowAgentImageGeneration: CardFieldState
   /** API base URL. */
   apiUrl: CardFieldState
   /** API key draft (the stored value is never rendered). */
   apiKey: CardFieldState
+  imageModels: CardFieldState
   promptApiUrl: CardFieldState
   promptApiKey: CardFieldState
   promptModel: CardFieldState
@@ -60,8 +63,10 @@ export class ImageGenSettingsCardController {
     this.form = new CardForm(scope, [
       booleanField('enabled'),
       booleanField('announceToAgent'),
+      booleanField('allowAgentImageGeneration'),
       textField('apiUrl'),
       secretField('apiKey'),
+      stringListField('imageModels'),
       textField('promptApiUrl'),
       secretField('promptApiKey'),
       textField('promptModel'),
@@ -77,8 +82,10 @@ export class ImageGenSettingsCardController {
       ...this.form.shell(),
       enabled: this.form.field('enabled'),
       announceToAgent: this.form.field('announceToAgent'),
+      allowAgentImageGeneration: this.form.field('allowAgentImageGeneration'),
       apiUrl: this.form.field('apiUrl'),
       apiKey: this.form.field('apiKey'),
+      imageModels: this.form.field('imageModels'),
       promptApiUrl: this.form.field('promptApiUrl'),
       promptApiKey: this.form.field('promptApiKey'),
       promptModel: this.form.field('promptModel'),
@@ -119,9 +126,19 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
   const keySet = props.useImageGenKeySet(snapshot => snapshot)
   const [open, setOpen] = useState(false)
-  const [models, setModels] = useState<string[]>([])
-  const [loadingModels, setLoadingModels] = useState(false)
-  const [modelsError, setModelsError] = useState<string | null>(null)
+  const [promptModels, setPromptModels] = useState<string[]>([])
+  const [loadingPromptModels, setLoadingPromptModels] = useState(false)
+  const [promptModelsError, setPromptModelsError] = useState<string | null>(null)
+  const [imageModelCandidates, setImageModelCandidates] = useState<string[]>([])
+  const [loadingImageModels, setLoadingImageModels] = useState(false)
+  const [imageModelsError, setImageModelsError] = useState<string | null>(null)
+  const [manualModelsOpen, setManualModelsOpen] = useState(false)
+  const [manualModel, setManualModel] = useState('')
+  const [enhancementOpen, setEnhancementOpen] = useState(false)
+  const [manualPromptModelOpen, setManualPromptModelOpen] = useState(false)
+  const [manualPromptModel, setManualPromptModel] = useState('')
+  const [promptApiOpen, setPromptApiOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   if (!state.available) return null
   const title = t('settings.title')
   const blocked = !state.dirty || state.invalid || state.saving
@@ -178,10 +195,16 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
         ? (
           <div className={css.body}>
             {!state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null}
-            <div className={css.versionRow}>
-              <span className={css.versionLabel}>{t('settings.currentVersion')}</span>
-              <code className={css.versionValue}>v{PLUGIN_VERSION}</code>
-            </div>
+            <ValueField
+              id="dsh-imagegen-settings-apiurl"
+              label={t('settings.apiUrl')}
+              hint={t('settings.apiUrlHint')}
+              placeholder="https://api.openai.com/v1"
+              {...fieldProps}
+              {...state.apiUrl}
+              onEdit={(text) => { props.edit('apiUrl', text) }}
+              onReset={() => { props.resetField('apiUrl') }}
+            />
             <ValueField
               id="dsh-imagegen-settings-apikey"
               label={t('settings.apiKey')}
@@ -197,19 +220,187 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               onClear={() => { props.resetField('apiKey') }}
               canClear={keySet}
             />
-            <ValueField
-              id="dsh-imagegen-settings-apiurl"
-              label={t('settings.apiUrl')}
-              hint={t('settings.apiUrlHint')}
-              placeholder="https://api.openai.com/v1"
-              {...fieldProps}
-              {...state.apiUrl}
-              onEdit={(text) => { props.edit('apiUrl', text) }}
-              onReset={() => { props.resetField('apiUrl') }}
-            />
             <div className={css.sectionDivider} />
-            <h3 className={css.sectionTitle}>{t('settings.promptEnhanceTitle')}</h3>
+            <section className={css.modelSection} aria-label={t('settings.imageModelsTitle')}>
+              <div className={css.sectionHeader}>
+                <div>
+                  <h3 className={css.sectionTitle}>{t('settings.imageModelsTitle')}</h3>
+                  <p className={css.sectionHint}>{t('settings.imageModelsHint')}</p>
+                </div>
+                <button
+                  type="button"
+                  className={css.modelFetch}
+                  disabled={disabled || loadingImageModels}
+                  onClick={() => {
+                    setLoadingImageModels(true)
+                    setImageModelsError(null)
+                    void fetch(IMAGE_MODEL_API.models, { method: 'POST' })
+                      .then(async response => {
+                        const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
+                        if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+                        setImageModelCandidates(body.models ?? [])
+                      })
+                      .catch(error => { setImageModelsError(error instanceof Error ? error.message : String(error)) })
+                      .finally(() => { setLoadingImageModels(false) })
+                  }}
+                >
+                  {loadingImageModels ? t('settings.imageModelsLoading') : t('settings.imageModelsFetch')}
+                </button>
+              </div>
+              <div className={css.modelSummary}>
+                {splitModels(state.imageModels.text).map(model => (
+                  <span key={model} className={css.modelChip}>
+                    <span>{model}</span>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      aria-label={`${t('settings.removeModel')}: ${model}`}
+                      onClick={() => { props.edit('imageModels', splitModels(state.imageModels.text).filter(value => value !== model).join('\n')) }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualModelsOpen(open => !open) }}>
+                  {manualModelsOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
+                </button>
+              </div>
+              {manualModelsOpen ? (
+                <div className={css.manualModelRow}>
+                  <input
+                    className={css.input}
+                    value={manualModel}
+                    placeholder={t('settings.addModelPlaceholder')}
+                    disabled={disabled}
+                    onChange={event => { setManualModel(event.target.value) }}
+                    onKeyDown={event => {
+                      if (event.key !== 'Enter') return
+                      event.preventDefault()
+                      const next = manualModel.trim()
+                      if (next === '') return
+                      props.edit('imageModels', [...splitModels(state.imageModels.text), next].join('\n'))
+                      setManualModel('')
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={css.addModel}
+                    disabled={disabled || manualModel.trim() === ''}
+                    onClick={() => {
+                      props.edit('imageModels', [...splitModels(state.imageModels.text), manualModel.trim()].join('\n'))
+                      setManualModel('')
+                    }}
+                  >
+                    {t('settings.addModelConfirm')}
+                  </button>
+                </div>
+              ) : null}
+              {imageModelCandidates.length > 0 ? (
+                <div className={css.modelCandidateList} role="group" aria-label={t('settings.imageModelsCandidates')}>
+                  <span className={css.modelCandidateLabel}>{t('settings.imageModelsCandidates')}</span>
+                  {imageModelCandidates.map(candidate => {
+                    const selected = splitModels(state.imageModels.text).includes(candidate)
+                    return (
+                      <label key={candidate} className={css.modelCandidate} data-selected={selected ? '' : undefined}>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={disabled}
+                          onChange={() => {
+                            const selectedModels = splitModels(state.imageModels.text)
+                            const next = selected ? selectedModels.filter(model => model !== candidate) : [...selectedModels, candidate]
+                            props.edit('imageModels', next.join('\n'))
+                          }}
+                        />
+                        <span>{candidate}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              ) : null}
+              {imageModelsError !== null ? <p className={css.failed} role="status">{imageModelsError}</p> : null}
+            </section>
+            <button
+              type="button"
+              className={css.disclosure}
+              aria-expanded={enhancementOpen}
+              onClick={() => { setEnhancementOpen(open => !open) }}
+            >
+              <span>{t('settings.promptEnhanceTitle')}</span>
+              <span>{t('settings.optional')}</span>
+              <span aria-hidden="true">{enhancementOpen ? '⌃' : '⌄'}</span>
+            </button>
+            {enhancementOpen ? <section className={css.optionalContent} aria-label={t('settings.promptEnhanceTitle')}>
             <p className={css.sectionHint}>{t('settings.promptEnhanceHint')}</p>
+            <div className={css.sectionHeader}>
+              <div>
+                <h3 className={css.sectionTitle}>{t('settings.promptModel')}</h3>
+                <p className={css.sectionHint}>{t('settings.promptModelDetectionHint')}</p>
+              </div>
+              <button
+                type="button"
+                className={css.modelFetch}
+                disabled={disabled || loadingPromptModels}
+                onClick={() => {
+                  setLoadingPromptModels(true)
+                  setPromptModelsError(null)
+                  void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
+                    .then(async response => {
+                      const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
+                      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+                      setPromptModels(body.models ?? [])
+                    })
+                    .catch(error => { setPromptModelsError(error instanceof Error ? error.message : String(error)) })
+                    .finally(() => { setLoadingPromptModels(false) })
+                }}
+              >
+                {loadingPromptModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
+              </button>
+            </div>
+            <div className={css.modelSummary}>
+              {state.promptModel.text.trim() !== '' ? (
+                <span className={css.modelChip}>
+                  <span>{state.promptModel.text}</span>
+                  <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${state.promptModel.text}`} onClick={() => { props.edit('promptModel', '') }}>×</button>
+                </span>
+              ) : null}
+              <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open) }}>
+                {manualPromptModelOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
+              </button>
+            </div>
+            {manualPromptModelOpen ? (
+              <div className={css.manualModelRow}>
+                <input className={css.input} value={manualPromptModel} placeholder={t('settings.addPromptModelPlaceholder')} disabled={disabled} onChange={event => { setManualPromptModel(event.target.value) }} />
+                <button type="button" className={css.addModel} disabled={disabled || manualPromptModel.trim() === ''} onClick={() => { props.edit('promptModel', manualPromptModel); setManualPromptModel('') }}>
+                  {t('settings.addModelConfirm')}
+                </button>
+              </div>
+            ) : null}
+            {promptModels.length > 0 ? (
+              <div className={css.modelCandidateList} role="radiogroup" aria-label={t('settings.promptModelsCandidates')}>
+                <span className={css.modelCandidateLabel}>{t('settings.promptModelsCandidates')}</span>
+                {promptModels.map(candidate => (
+                  <button
+                    key={candidate}
+                    type="button"
+                    role="radio"
+                    className={css.modelCandidate}
+                    aria-checked={state.promptModel.text === candidate}
+                    data-selected={state.promptModel.text === candidate ? '' : undefined}
+                    disabled={disabled}
+                    onClick={() => { props.edit('promptModel', candidate) }}
+                  >
+                    {candidate}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {promptModelsError !== null ? <p className={css.failed} role="status">{promptModelsError}</p> : null}
+            <button type="button" className={css.inlineDisclosure} aria-expanded={promptApiOpen} onClick={() => { setPromptApiOpen(open => !open) }}>
+              <span>{t('settings.promptApiAdvanced')}</span>
+              <span aria-hidden="true">{promptApiOpen ? '⌃' : '⌄'}</span>
+            </button>
+            {promptApiOpen ? <div className={css.optionalContent}>
             <ValueField
               id="dsh-imagegen-settings-prompt-apiurl"
               label={t('settings.promptApiUrl')}
@@ -232,44 +423,13 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               onEdit={(text) => { props.edit('promptApiKey', text) }}
               onReset={() => { props.resetField('promptApiKey') }}
             />
-            <ValueField
-              id="dsh-imagegen-settings-prompt-model"
-              label={t('settings.promptModel')}
-              hint={t('settings.promptModelHint')}
-              placeholder="gpt-4.1-mini"
-              {...fieldProps}
-              {...state.promptModel}
-              onEdit={(text) => { props.edit('promptModel', text) }}
-              onReset={() => { props.resetField('promptModel') }}
-            />
-            <div className={css.modelFetchRow}>
-              <button
-                type="button"
-                className={css.modelFetch}
-                disabled={disabled || loadingModels}
-                onClick={() => {
-                  setLoadingModels(true)
-                  setModelsError(null)
-                  void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
-                    .then(async response => {
-                      const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
-                      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-                      setModels(body.models ?? [])
-                    })
-                    .catch(error => { setModelsError(error instanceof Error ? error.message : String(error)) })
-                    .finally(() => { setLoadingModels(false) })
-                }}
-              >
-                {loadingModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
-              </button>
-              {models.length > 0 ? (
-                <select className={css.modelChoices} value="" onChange={event => { if (event.target.value !== '') props.edit('promptModel', event.target.value) }}>
-                  <option value="">{t('settings.promptModelsSelect')}</option>
-                  {models.map(model => <option key={model} value={model}>{model}</option>)}
-                </select>
-              ) : null}
-            </div>
-            {modelsError !== null ? <p className={css.failed} role="status">{modelsError}</p> : null}
+            </div> : null}
+            </section> : null}
+            <button type="button" className={css.disclosure} aria-expanded={moreOpen} onClick={() => { setMoreOpen(open => !open) }}>
+              <span>{t('settings.moreOptions')}</span>
+              <span aria-hidden="true">{moreOpen ? '⌃' : '⌄'}</span>
+            </button>
+            {moreOpen ? <div className={css.optionalContent}>
             <BooleanField
               id="dsh-imagegen-settings-enabled"
               label={t('settings.enabled')}
@@ -294,6 +454,19 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               onEdit={(text) => { props.edit('announceToAgent', text) }}
               onReset={() => { props.resetField('announceToAgent') }}
             />
+            <BooleanField
+              id="dsh-imagegen-settings-agent-generation"
+              label={t('settings.allowAgentImageGeneration')}
+              hint={t('settings.allowAgentImageGenerationHint')}
+              inheritLabel={t('settings.inherit')}
+              onLabel={t('settings.on')}
+              offLabel={t('settings.off')}
+              {...fieldProps}
+              {...state.allowAgentImageGeneration}
+              onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
+              onReset={() => { props.resetField('allowAgentImageGeneration') }}
+            />
+            </div> : null}
             <div className={css.footer}>
               {state.failed ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
               <button
@@ -360,6 +533,8 @@ function ValueField(props: FieldProps & {
   onClear?: () => void
   /** Whether a stored secret exists (enables the clear control). */
   canClear?: boolean
+  /** Render a multiline input for newline-separated configuration values. */
+  multiline?: boolean
 }) {
   return (
     <div className={css.field}>
@@ -393,22 +568,38 @@ function ValueField(props: FieldProps & {
           )
           : null}
       </div>
-      <input
-        id={props.id}
-        className={props.invalid ? css.inputInvalid : css.input}
-        type={props.secret === true ? 'password' : 'text'}
-        autoComplete={props.secret === true ? 'off' : undefined}
-        {...props.invalid ? { 'aria-invalid': true } : {}}
-        value={props.text}
-        placeholder={props.placeholder ?? ''}
-        disabled={props.disabled}
-        onChange={(event) => { props.onEdit(event.target.value) }}
-      />
+      {props.multiline === true ? (
+        <textarea
+          id={props.id}
+          className={props.invalid ? css.textareaInvalid : css.textarea}
+          {...props.invalid ? { 'aria-invalid': true } : {}}
+          value={props.text}
+          placeholder={props.placeholder ?? ''}
+          disabled={props.disabled}
+          onChange={(event) => { props.onEdit(event.target.value) }}
+        />
+      ) : (
+        <input
+          id={props.id}
+          className={props.invalid ? css.inputInvalid : css.input}
+          type={props.secret === true ? 'password' : 'text'}
+          autoComplete={props.secret === true ? 'off' : undefined}
+          {...props.invalid ? { 'aria-invalid': true } : {}}
+          value={props.text}
+          placeholder={props.placeholder ?? ''}
+          disabled={props.disabled}
+          onChange={(event) => { props.onEdit(event.target.value) }}
+        />
+      )}
       <p className={props.invalid ? css.invalid : css.hint}>
         {props.invalid ? props.invalidLabel : props.hint}
       </p>
     </div>
   )
+}
+
+function splitModels(value: string): string[] {
+  return [...new Set(value.split(/[\n,]/).map(model => model.trim()).filter(Boolean))]
 }
 
 /** A staged boolean field: 继承 / 开 / 关. */

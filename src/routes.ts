@@ -9,14 +9,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
-import { generateImage, type UpstreamConfig } from './engine.ts'
-import { enhancePrompt, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
-import { GenerationTaskQueue } from './task-queue.ts'
+import type { UpstreamConfig } from './engine.ts'
+import { enhancePrompt, listOpenAIModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
+import { normalizeImageModels } from './image-models.ts'
+import { ImageGenerationRuntime } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 import { listTemplates, readTemplateImage, refreshTemplates } from './templates-store.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
-import { GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
+import { GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -39,6 +40,8 @@ export interface ImageGenRoutesDeps {
   resolve: () => UpstreamConfig
   /** Resolve the optional chat-model configuration for prompt enhancement. */
   resolvePrompt?: () => PromptModelConfig
+  /** Models explicitly selected for this image API endpoint. */
+  resolveImageModels?: () => string[]
   /** Overrideable history backend, primarily for host integration tests. */
   history?: {
     list: () => Promise<HistoryEntry[]>
@@ -62,6 +65,8 @@ export interface ImageGenRoutesDeps {
     refresh: () => Promise<TemplateRefreshResult>
     readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
   }
+  /** Shared host queue, used by Agent tools and browser task endpoints. */
+  runtime?: ImageGenerationRuntime
 }
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
@@ -122,7 +127,7 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
   if (prompt === '') return undefined
   return {
     mode: body.mode === 'edit' ? 'edit' : 'text',
-    model: typeof body.model === 'string' ? body.model : 'gpt-image-2',
+    model: typeof body.model === 'string' ? body.model : '',
     prompt,
     size: typeof body.size === 'string' ? body.size : 'auto',
     quality: typeof body.quality === 'string' ? body.quality : 'auto',
@@ -234,28 +239,16 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     readImage: readTemplateImage,
   }
   const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
-  const runGeneration = async (request: GenerateRequest, signal?: AbortSignal) => {
-    const result = await generateImage(deps.resolve(), request, { signal })
-    try {
-      const entries = await history.append({
-        id: randomUUID(),
-        createdAt: Date.now(),
-        mode: request.mode,
-        model: request.model,
-        prompt: request.prompt,
-        size: request.size,
-        quality: request.quality,
-        detail: request.detail,
-        n: request.n,
-        images: result.images,
-        ...request.refName === undefined ? {} : { refName: request.refName },
-      })
-      return { ...result, history: entries }
-    } catch (error) {
-      return { ...result, historyError: messageOf(error) }
-    }
+  const resolveImageModels = deps.resolveImageModels ?? (() => normalizeImageModels(undefined))
+  const parseConfiguredRequest = (body: Record<string, unknown>): GenerateRequest | undefined => {
+    const request = parseGenerateRequest(body)
+    if (request === undefined) return undefined
+    const models = normalizeImageModels(resolveImageModels())
+    const model = request.model.trim() === '' ? models[0] : request.model.trim()
+    if (!models.includes(model)) throw new Error(`image model "${model}" is not configured; choose one of: ${models.join(', ')}`)
+    return { ...request, model }
   }
-  const taskQueue = new GenerationTaskQueue((request, signal) => runGeneration(request, signal))
+  const runtime = deps.runtime ?? new ImageGenerationRuntime(deps.resolve, history)
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'forbidden: loopback-only' })
@@ -269,6 +262,19 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   }
 
   return [
+    // -------------------------------------------- image model discovery
+    {
+      kind: 'exact',
+      path: IMAGE_MODEL_API.models,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          writeJson(res, 200, { ok: true, models: await listOpenAIModels(deps.resolve()) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'image-models-failed', message: messageOf(error) })
+        }
+      },
+    },
     // ----------------------------------------------- prompt enhancement
     {
       kind: 'exact',
@@ -360,13 +366,14 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           writeJson(res, 200, { ok: false, code: 'bad-request', message: 'unreadable JSON body' })
           return
         }
-        const request = parseGenerateRequest(body)
+        let request: GenerateRequest | undefined
+        try { request = parseConfiguredRequest(body) } catch (error) { writeJson(res, 200, { ok: false, code: 'image-model-not-configured', message: messageOf(error) }); return }
         if (request === undefined) {
           writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' })
           return
         }
         try {
-          writeJson(res, 200, { ok: true, ...await runGeneration(request) })
+          writeJson(res, 200, { ok: true, ...await runtime.run(request) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const code = error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
@@ -382,21 +389,22 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
-        const request = body === undefined ? undefined : parseGenerateRequest(body)
+        let request: GenerateRequest | undefined
+        try { request = body === undefined ? undefined : parseConfiguredRequest(body) } catch (error) { writeJson(res, 200, { ok: false, code: 'image-model-not-configured', message: messageOf(error) }); return }
         if (request === undefined) { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' }); return }
-        writeJson(res, 200, { ok: true, task: taskQueue.submit(request) })
+        writeJson(res, 200, { ok: true, task: runtime.queue.submit(request) })
       },
     },
     {
       kind: 'exact', path: TASK_API.list,
-      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: taskQueue.list() }) },
+      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: runtime.queue.list() }) },
     },
     {
       kind: 'exact', path: TASK_API.cancel,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
-        const task = typeof body?.id === 'string' ? taskQueue.cancel(body.id) : undefined
+        const task = typeof body?.id === 'string' ? runtime.queue.cancel(body.id) : undefined
         if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'task not found' }); return }
         writeJson(res, 200, { ok: true, task })
       },
@@ -406,7 +414,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
-        const task = typeof body?.id === 'string' ? taskQueue.retry(body.id) : undefined
+        const task = typeof body?.id === 'string' ? runtime.queue.retry(body.id) : undefined
         if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'task not found' }); return }
         writeJson(res, 200, { ok: true, task })
       },

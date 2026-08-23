@@ -20,8 +20,10 @@ import { SETTINGS_API } from '../protocol.ts'
 export interface ImageGenConfig {
   enabled?: boolean
   announceToAgent?: boolean
+  allowAgentImageGeneration?: boolean
   apiUrl?: string
   apiKey?: string
+  imageModels?: string[]
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string

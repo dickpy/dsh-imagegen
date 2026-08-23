@@ -6,6 +6,12 @@ export interface PromptModelConfig {
   model: string
 }
 
+/** Credentials shared by OpenAI-compatible `/models` discovery. */
+export interface ModelListConfig {
+  apiUrl: string
+  apiKey: string
+}
+
 function endpoint(base: string, suffix: string): string {
   return `${base.replace(/\/+$/, '')}${suffix}`
 }
@@ -28,15 +34,21 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
   return body as Record<string, unknown>
 }
 
-/** List chat models exposed by an OpenAI-compatible endpoint. */
-export async function listPromptModels(config: PromptModelConfig): Promise<string[]> {
-  if (config.apiUrl.trim() === '') throw new Error('prompt enhancement API URL is required')
+/** List candidates exposed by an OpenAI-compatible endpoint. */
+export async function listOpenAIModels(config: ModelListConfig): Promise<string[]> {
+  if (config.apiUrl.trim() === '') throw new Error('API URL is required')
   const response = await fetch(endpoint(config.apiUrl, '/models'), { headers: headers(config.apiKey) })
   const body = await responseJson(response)
   const data = Array.isArray(body.data) ? body.data : []
-  return data
-    .flatMap(item => item !== null && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string' ? [(item as { id: string }).id] : [])
+  return [...new Set(data
+    .flatMap(item => item !== null && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string' ? [(item as { id: string }).id.trim()] : [])
+    .filter(Boolean))]
     .sort((a, b) => a.localeCompare(b))
+}
+
+/** List chat models exposed by an OpenAI-compatible endpoint. */
+export async function listPromptModels(config: PromptModelConfig): Promise<string[]> {
+  return listOpenAIModels(config)
 }
 
 /** Expand a concise image request into a production-ready image prompt. */

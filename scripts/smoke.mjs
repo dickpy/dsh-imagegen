@@ -43,6 +43,8 @@ await check('A2 Config schema validates + marks apiKey secret', () => {
   const resolved = host.Config({ apiUrl: 'https://x/v1', apiKey: 'sk-1' })
   assert.equal(resolved.apiKey, 'sk-1')
   assert.equal(resolved.enabled, true)
+  assert.equal(resolved.allowAgentImageGeneration, true)
+  assert.deepEqual(resolved.imageModels, ['gpt-image-2', 'grok-imagine-image'])
   // Config is the schemastery schema itself: the secret role lives on the
   // schema node, which the settings seam's redactor walks.
   assert.equal(host.Config.dict?.apiKey?.meta?.role, 'secret')
@@ -76,6 +78,12 @@ await check('A3 updater parses stable Releases and caches checks', async () => {
 const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex')
 const upstream = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  if (url.pathname === '/v1/models') {
+    assert.equal(req.headers.authorization, 'Bearer sk-test')
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ id: 'grok-imagine-image' }, { id: 'gpt-image-2' }, { id: 'gpt-image-2' }] }))
+    return
+  }
   if (url.pathname === '/v1/images/generations') {
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
@@ -372,7 +380,18 @@ await check('C3 generate route persists history server-side and enforces loopbac
   assert.equal(foreignStatus, 403)
 })
 
-await check('C4 template routes serve the bundled gallery, refresh it, and proxy only known images', async () => {
+await check('C4 image model discovery and configured-model allow-list work', async () => {
+  const discovered = await post('/api/dsh-imagegen/image-models', {})
+  assert.equal(discovered.body.ok, true)
+  assert.deepEqual(discovered.body.models, ['gpt-image-2', 'grok-imagine-image'])
+  const rejected = await post('/api/dsh-imagegen/tasks/submit', {
+    mode: 'text', model: 'not-configured', prompt: 'a cat', size: 'auto', quality: 'auto', n: 1, detail: '',
+  })
+  assert.equal(rejected.body.ok, false)
+  assert.equal(rejected.body.code, 'image-model-not-configured')
+})
+
+await check('C5 template routes serve the bundled gallery, refresh it, and proxy only known images', async () => {
   const { body: list } = await post('/api/dsh-imagegen/templates/list', {})
   assert.equal(list.ok, true)
   assert.equal(list.total, 1)
@@ -389,6 +408,93 @@ await check('C4 template routes serve the bundled gallery, refresh it, and proxy
   assert.deepEqual(Buffer.from(await image.arrayBuffer()), templateImage)
   const unknown = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/not-allowed.png`)
   assert.equal(unknown.status, 404)
+})
+
+await check('C6 Agent tools queue, retrieve attachments, edit, and enforce the allow setting', async () => {
+  const tools = new Map()
+  const saved = new Map()
+  let serial = 0
+  const attachmentStore = {
+    async saveImages(images) {
+      return images.map((image) => {
+        const attachmentId = `attachment-${++serial}`
+        const ref = { attachmentId, mediaType: image.mediaType, bytes: image.data.byteLength, width: 1, height: 1, name: image.name }
+        saved.set(attachmentId, { ref, data: image.data })
+        return ref
+      })
+    },
+    async readImage(ref) {
+      const storedImage = saved.get(ref.attachmentId)
+      assert.ok(storedImage, 'the returned source_image must resolve through the attachment store')
+      return storedImage
+    },
+  }
+  let enabled = true
+  const notifications = []
+  const agent = {
+    send(message, target, wakeup) {
+      notifications.push({ message, target, wakeup })
+    },
+  }
+  const runtime = new host.ImageGenerationRuntime(
+    () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
+    { append: async () => [] },
+  )
+  const dispose = host.registerAgentImageTools({
+    tools: { register: definition => { tools.set(definition.name, definition); return () => { tools.delete(definition.name) } } },
+    attachments: attachmentStore,
+  }, runtime, () => ({ enabled: true, allowAgentImageGeneration: enabled, apiUrl: 'configured', apiKey: 'configured', imageModels: ['gpt-image-2'] }))
+  try {
+    const generated = await tools.get('generate_image').execute({ prompt: 'a cat', size: '1:1', quality: '4k', detail: 'standard' }, { agent })
+    assert.ok(generated.status === 'queued' || generated.status === 'running')
+    // No task-status query is required: completion wakes the originating Agent
+    // with persistent image attachment blocks, which the conversation renders.
+    for (let attempt = 0; attempt < 40 && notifications.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(notifications.length, 1, 'completion wakes the Agent exactly once')
+    assert.equal(notifications[0].target, 'next-turn')
+    assert.equal(notifications[0].wakeup, true)
+    assert.equal(notifications[0].message.source.kind, 'user', 'completion uses the conversation image-rendering path')
+    assert.equal(notifications[0].message.content.filter(block => block.type === 'image').length, 2, 'the notification carries visible image attachments')
+    let complete
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      complete = await tools.get('get_image_generation_task').execute({ task_id: generated.task_id }, {})
+      if (complete.status === 'completed') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(complete.status, 'completed')
+    assert.equal(complete.images.length, 2)
+    assert.equal(saved.size, 2, 'polling reuses the completion attachments instead of saving duplicate files')
+    const rendered = tools.get('get_image_generation_task').output.render({ task_id: generated.task_id }, complete)
+    assert.equal(rendered.filter(block => block.type === 'image').length, 2, 'completed tool results paste images into the conversation')
+
+    await assert.rejects(
+      tools.get('generate_image').execute({ prompt: 'a cat', model: 'grok-imagine-image' }, { agent }),
+      /not configured/,
+    )
+
+    const edited = await tools.get('edit_image').execute({ prompt: 'edit this', source_image: complete.images[0], size: '3:2', quality: '2k' }, { signal: new AbortController().signal, agent })
+    assert.ok(edited.status === 'queued' || edited.status === 'running')
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (runtime.queue.list().find(task => task.id === edited.task_id)?.status === 'completed') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(runtime.queue.list().find(task => task.id === edited.task_id)?.status, 'completed')
+    for (let attempt = 0; attempt < 40 && notifications.length < 2; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(notifications.length, 2, 'image edits also wake the Agent on completion')
+    assert.equal(notifications[1].message.content.filter(block => block.type === 'image').length, 1)
+
+    enabled = false
+    await assert.rejects(
+      tools.get('generate_image').execute({ prompt: 'a cat' }, {}),
+      /disabled in Settings/,
+    )
+  } finally {
+    dispose()
+  }
 })
 
 await new Promise(resolve => server.close(resolve))

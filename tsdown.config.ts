@@ -52,7 +52,15 @@ const nodeConfig: UserConfig = {
   dts: false,
   clean: false,
   deps: {
-    neverBundle: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-settings', 'schemastery'],
+    neverBundle: [
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/dsh-settings',
+      '@deepseek-ai/dsh-tools',
+      '@deepseek-ai/dsh-attachment',
+      '@deepseek-ai/dsh-llm',
+      '@deepseek-ai/dsh-llm/message',
+      'schemastery',
+    ],
   },
 }
 
