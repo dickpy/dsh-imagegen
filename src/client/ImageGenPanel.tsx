@@ -213,6 +213,7 @@ export function ImageGenPanel(props: {
   const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
+  const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -1152,16 +1153,25 @@ export function ImageGenPanel(props: {
             </div>
           ) : null}
           {tab !== 'gallery' && tasks.length > 0 ? (
-            <section className={css.taskTray} aria-label={tt('tasks.title')}>
-              <header className={css.taskTrayHeader}>{tt('tasks.title')} <span>{tasks.filter(task => task.status === 'queued' || task.status === 'running').length}</span></header>
-              {tasks.slice(0, 5).map(task => (
-                <div key={task.id} className={css.taskRow} data-status={task.status}>
-                  <span className={css.taskStatus}>{tt(`tasks.${task.status}` as never)}</span>
-                  <span className={css.taskPrompt}>{task.request.prompt}</span>
-                  {(task.status === 'queued' || task.status === 'running') ? <button type="button" onClick={() => { void api.taskCancel(task.id) }}>{tt('tasks.cancel')}</button> : null}
-                  {task.status === 'failed' || task.status === 'cancelled' ? <button type="button" onClick={() => { void api.taskRetry(task.id) }}>{tt('tasks.retry')}</button> : null}
-                </div>
-              ))}
+            <section className={css.taskTray} data-open={taskTrayOpen ? 'true' : 'false'} aria-label={tt('tasks.title')}>
+              <header className={css.taskTrayHeader}>
+                <button type="button" className={css.taskTrayToggle} aria-expanded={taskTrayOpen} onClick={() => { setTaskTrayOpen(open => !open) }}>
+                  <span>{tt('tasks.title')}</span>
+                  <span className={css.taskTrayCount}>{tasks.filter(task => task.status === 'queued' || task.status === 'running').length}</span>
+                  <span className={css.taskTrayChevron} aria-hidden="true">{taskTrayOpen ? '⌃' : '⌄'}</span>
+                </button>
+                {taskTrayOpen ? <button type="button" className={css.taskTrayClose} aria-label={tt('preview.close')} onClick={() => { setTaskTrayOpen(false) }}>×</button> : null}
+              </header>
+              <div className={css.taskRows}>
+                {tasks.slice(0, 5).map(task => (
+                  <div key={task.id} className={css.taskRow} data-status={task.status}>
+                    <span className={css.taskStatus}>{tt(`tasks.${task.status}` as never)}</span>
+                    <span className={css.taskPrompt}>{task.request.prompt}</span>
+                    {(task.status === 'queued' || task.status === 'running') ? <button type="button" onClick={() => { void api.taskCancel(task.id) }}>{tt('tasks.cancel')}</button> : null}
+                    {task.status === 'failed' || task.status === 'cancelled' ? <button type="button" onClick={() => { void api.taskRetry(task.id) }}>{tt('tasks.retry')}</button> : null}
+                  </div>
+                ))}
+              </div>
             </section>
           ) : null}
           {tab !== 'gallery' && comparison !== null ? (
