@@ -247,6 +247,48 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.sectionDivider {
+  height: 1px;
+  margin: 18px 0 14px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.sectionTitle {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.sectionHint {
+  margin: -4px 0 2px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.modelFetchRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.modelFetch,
+.modelChoices {
+  min-height: 32px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.modelFetch { padding: 0 10px; cursor: pointer; }
+.modelFetch:hover:not(:disabled) { color: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); }
+.modelFetch:disabled { opacity: 0.5; cursor: default; }
+.modelChoices { min-width: 0; flex: 1; padding: 0 8px; }
+
 /* --- footer (mirror of the official card footer) ------------------------------ */
 
 .footer {

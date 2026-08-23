@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.0.20'
+export const PLUGIN_VERSION = '1.1.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -18,6 +18,20 @@ export const SETTINGS_API = {
 
 /** The image-generation proxy route. */
 export const GENERATE_API = '/api/dsh-imagegen/generate'
+
+/** Host-mediated OpenAI-compatible prompt enhancement endpoints. */
+export const PROMPT_ENHANCE_API = {
+  models: '/api/dsh-imagegen/prompt-enhance/models',
+  enhance: '/api/dsh-imagegen/prompt-enhance',
+} as const
+
+/** Host-resident generation queue endpoints. */
+export const TASK_API = {
+  submit: '/api/dsh-imagegen/tasks/submit',
+  list: '/api/dsh-imagegen/tasks/list',
+  cancel: '/api/dsh-imagegen/tasks/cancel',
+  retry: '/api/dsh-imagegen/tasks/retry',
+} as const
 
 /** Host-mediated GitHub Release update routes. */
 export const UPDATE_API = {
@@ -49,6 +63,7 @@ export const GALLERY_API = {
   append: '/api/dsh-imagegen/gallery/append',
   remove: '/api/dsh-imagegen/gallery/remove',
   clear: '/api/dsh-imagegen/gallery/clear',
+  tags: '/api/dsh-imagegen/gallery/tags',
   image: '/api/dsh-imagegen/gallery/image',
 } as const
 
@@ -122,7 +137,7 @@ export interface GenerateRequest {
   mode: GenerateMode
   /** Upstream model name, e.g. gpt-image-2. */
   model: string
-  /** The prompt (up to 2000 chars in the UI). */
+  /** The prompt. Upstream providers may impose their own length limits. */
   prompt: string
   /** Canvas size as an aspect ratio: 'auto' or e.g. '1:1' / '16:9' / '21:9'.
    *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok,
@@ -165,6 +180,19 @@ export interface GenerateResult {
   historyError?: string
 }
 
+export type GenerationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface GenerationTask {
+  id: string
+  request: GenerateRequest
+  status: GenerationTaskStatus
+  createdAt: number
+  startedAt?: number
+  finishedAt?: number
+  result?: GenerateResult
+  error?: string
+}
+
 /** GitHub Release update information shown by the client. */
 export interface UpdateInfo {
   currentVersion: string
@@ -198,6 +226,8 @@ export interface HistoryEntry {
   images: HistoryImageRef[]
   /** Reference-image filename (edit mode), kept for display only. */
   refName?: string
+  /** User-managed gallery labels (unused by history entries). */
+  tags?: string[]
 }
 
 /** A history entry the client submits for persistence (images still carry base64). */

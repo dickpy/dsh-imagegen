@@ -22,6 +22,9 @@ export interface ImageGenConfig {
   announceToAgent?: boolean
   apiUrl?: string
   apiKey?: string
+  promptApiUrl?: string
+  promptApiKey?: string
+  promptModel?: string
 }
 
 /** Wire shape of one namespace view from the bridge. */
@@ -79,6 +82,8 @@ class BridgeScopeController<T> implements SettingsScope<T> {
   private readonly store: SnapshotStore<SettingsScopeSnapshot<T>>
   /** Whether the namespace currently holds a stored secret (e.g. apiKey). */
   private readonly keySet: SnapshotStore<boolean>
+  /** Individual secret presence bits, keyed by the settings field name. */
+  private readonly secretSets: SnapshotStore<Record<string, boolean>>
   private tail: Promise<void> = Promise.resolve()
   private disposed = false
 
@@ -96,6 +101,7 @@ class BridgeScopeController<T> implements SettingsScope<T> {
       mode: 'host',
     })
     this.keySet = createSnapshotStore(false)
+    this.secretSets = createSnapshotStore({})
   }
 
   getSnapshot(): SettingsScopeSnapshot<T> {
@@ -110,6 +116,16 @@ class BridgeScopeController<T> implements SettingsScope<T> {
   /** Observe the secret-set flag. */
   subscribeKeySet(listener: () => void): () => void {
     return this.keySet.subscribe(listener)
+  }
+
+  /** Whether a specific secret field currently has a stored value. */
+  getSecretSetSnapshot(field: string): boolean {
+    return this.secretSets.getSnapshot()[field] === true
+  }
+
+  /** Observe changes to individual secret-field presence bits. */
+  subscribeSecretSets(listener: () => void): () => void {
+    return this.secretSets.subscribe(listener)
   }
 
   subscribe(listener: () => void): () => void {
@@ -164,6 +180,7 @@ class BridgeScopeController<T> implements SettingsScope<T> {
         draft.writable = writable === true
       })
       this.keySet.set(false)
+      this.secretSets.set({})
       return
     }
     this.accept(view, writable)
@@ -200,7 +217,9 @@ class BridgeScopeController<T> implements SettingsScope<T> {
       // card binds without a narrowing decoder.
       draft.value = view.value as T
     })
-    this.keySet.set(Array.isArray(view.secrets) && view.secrets.some(secret => secret.set))
+    const secretSets = Object.fromEntries((view.secrets ?? []).map(secret => [secret.path.join('.'), secret.set]))
+    this.keySet.set(Object.values(secretSets).some(Boolean))
+    this.secretSets.set(secretSets)
   }
 }
 
@@ -210,6 +229,8 @@ export interface ImageGenScope extends SettingsScope<ImageGenConfig> {
   load(): Promise<void>
   getKeySetSnapshot(): boolean
   subscribeKeySet(listener: () => void): () => void
+  getSecretSetSnapshot(field: string): boolean
+  subscribeSecretSets(listener: () => void): () => void
 }
 
 /**

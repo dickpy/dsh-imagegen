@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GALLERY_API, GENERATE_API, HISTORY_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
+import { GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, TASK_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -73,6 +73,37 @@ export class ImageGenApi {
     }
   }
 
+  /** Ask the configured chat model to expand a concise image prompt. */
+  async enhancePrompt(prompt: string): Promise<string> {
+    const response = await fetch(PROMPT_ENHANCE_API.enhance, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    })
+    const body = await readEnvelope<{ ok: true; prompt: string }>(response)
+    return body.prompt
+  }
+
+  async taskSubmit(request: GenerateRequest): Promise<GenerationTask> {
+    const response = await fetch(TASK_API.submit, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) })
+    return (await readEnvelope<{ ok: true; task: GenerationTask }>(response)).task
+  }
+
+  async taskList(): Promise<GenerationTask[]> {
+    const response = await fetch(TASK_API.list, { method: 'POST' })
+    return (await readEnvelope<{ ok: true; tasks: GenerationTask[] }>(response)).tasks
+  }
+
+  async taskCancel(id: string): Promise<GenerationTask> {
+    const response = await fetch(TASK_API.cancel, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })
+    return (await readEnvelope<{ ok: true; task: GenerationTask }>(response)).task
+  }
+
+  async taskRetry(id: string): Promise<GenerationTask> {
+    const response = await fetch(TASK_API.retry, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })
+    return (await readEnvelope<{ ok: true; task: GenerationTask }>(response)).task
+  }
+
   /** List the host-persisted history (newest first). */
   async historyList(): Promise<HistoryEntry[]> {
     const response = await fetch(HISTORY_API.list, { method: 'POST' })
@@ -133,6 +164,11 @@ export class ImageGenApi {
     const response = await fetch(GALLERY_API.clear, { method: 'POST' })
     const body = await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)
     return body.entries
+  }
+
+  async gallerySetTags(id: string, tags: string[]): Promise<HistoryEntry[]> {
+    const response = await fetch(GALLERY_API.tags, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, tags }) })
+    return (await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)).entries
   }
 
   /** Fetch the prompt-template library (bundled snapshot or refreshed copy). */

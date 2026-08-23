@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-111827)](https://github.com/dickpy/dsh-imagegen)
 
-DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全地代理 OpenAI 兼容的图像生成接口，为 DSH 提供文生图、图生图编辑、生成历史、提示词模板库和一体化设置页。
+DeepSeek Harness (DSH) Web GUI 的 AI 生图工作台。它通过宿主进程安全地代理 OpenAI 兼容的图像生成接口，把提示词增强、文生图、图生图、后台任务、多模型对比、历史记录与画廊管理放进同一个 DSH 原生界面。
 
 > 默认模型为 `gpt-image-2`，也内置对 xAI `grok-imagine-image`（Grok Imagine）的支持；同时兼容提供 `/images/generations` 和 `/images/edits` 的 OpenAI 兼容端点。
 
@@ -12,7 +12,7 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 
 ### AI 生图工作台
 
-三栏工作台将参数、生成结果和历史记录放在同一视图中；生成的图片可预览、下载，并从历史记录恢复参数。
+三栏工作台将参数、生成结果和历史记录放在同一视图中。任务提交后可继续操作；生成的图片可预览、下载，并从历史记录恢复参数。
 
 **四图结果布局**
 
@@ -21,6 +21,12 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 **单图结果布局**
 
 ![AI 生图工作台单图结果布局](docs/images/image-generation-studio-single.png)
+
+### 多模型并列对比
+
+打开「多模型对比」后，为同一提示词勾选多个模型。任务会进入后台队列，完成后在画布中并列展示，支持进入全屏对比，直观看出不同模型在构图、质感与文字处理上的差异。
+
+![gpt-image-2 与 grok-imagine-image 的多模型并列结果对比](docs/images/multi-model-comparison.png)
 
 ### 提示词模板库
 
@@ -36,7 +42,7 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 
 ### 画廊工作区
 
-画廊标签页提供左侧分类筛选和右侧作品墙：可在瀑布流与整齐网格之间切换，纵向滚动浏览收藏，点击任意图片打开大图预览。
+画廊标签页提供左侧分类筛选和右侧作品墙：可在瀑布流与整齐网格之间切换，纵向滚动浏览收藏，点击任意图片打开大图预览。支持关键词搜索、自建标签、标签筛选、批量下载与 JSON 导出。
 
 ![画廊工作区：分类筛选、瀑布流和大图预览](docs/images/gallery-workspace.png)
 
@@ -45,9 +51,12 @@ DeepSeek Harness (DSH) Web GUI 的 AI 生图插件。它通过宿主进程安全
 - **文生图与图生图**：输入提示词生成图片，或上传 PNG、JPG、WEBP 参考图进行编辑。
 - **Grok Imagine 支持**：支持 xAI `grok-imagine-image` 文生图与图生图；将 API 地址设置为 `https://api.x.ai/v1` 即可使用官方比例、分辨率和 JSON 图片协议。
 - **可调生成参数**：尺寸、清晰度、生成数量和细节等级均可在界面中选择；未指定的参数保持自动。
+- **提示词增强**：对简短描述点击「增强」，使用独立配置或复用现有凭据的对话模型扩写为更完整的生图提示词；未配置时自动跳转到 DSH 的 AI 生图配置卡片。
+- **后台生成任务**：生成请求提交到宿主侧队列，面板不再被单次请求阻塞；可查看排队/生成/完成状态，取消任务或重试失败任务。
+- **多模型对比**：默认关闭；开启后可勾选多个模型，以相同提示词和参数分别生成，在画布和全屏视图并列对比结果。
 - **结果操作**：结果区固定为四分格：单图铺满，双图占上排，三图占三格，四图为 2×2；支持下载、全屏预览、可滚动缩放、前后切换、复制优化提示词，以及一键将当前图片添加到图生图。
-- **画廊收藏**：结果卡片、全屏预览与历史记录条目上都有「加入画廊」，可把满意的图片收藏起来；切到画廊后进入左侧分类筛选、右侧瀑布流/整齐网格的作品墙，支持按生成模式、模型、画面比例筛选、按发布时间排序、预览、移出、清空与恢复参数。画廊持久化在宿主侧 `~/.dsh/dsh-imagegen/gallery/`，无数量上限，且内容相同的图片不会重复加入。
-- **持久化历史**：保存提示词、参数和图片；支持查看、恢复、单条删除和清空，最多保留 50 条。
+- **画廊收藏与管理**：结果卡片、全屏预览与历史记录条目上都有「加入画廊」。画廊支持瀑布流/整齐网格、持续纵向滚动、关键词搜索、模式/模型/比例/标签筛选、标签编辑、批量下载与 JSON 元数据导出；收藏持久化在宿主侧 `~/.dsh/dsh-imagegen/gallery/`，无数量上限，且内容相同的图片不会重复加入。
+- **可搜索历史**：保存提示词、参数和图片；支持按关键词、模型与比例筛选，查看、恢复、单条删除和清空，最多保留 50 条。
 - **跨设备查看**：历史与画廊都保存在 DSH 宿主侧，连接同一 DSH 的浏览器或设备共享同一份记录。
 - **提示词模板库**：提示词框左下角可打开模板库，浏览 441 个 `gpt-image-2` 案例的展示图；支持搜索、分类筛选、查看完整提示词、复制，以及一键将模板回填到生图输入框。参考图通过宿主同源代理按需加载并缓存，也可手动缓存全部图片供离线浏览。
 - **原生 DSH 体验**：侧栏入口、主题适配和设置卡片均遵循 DSH Web GUI 的 UI 规范。
@@ -77,10 +86,10 @@ dsh 会自动把插件注册进 profile 的 bundle 清单（无需手动改 cord
 ### 方式三：聚合包（tarball）安装
 
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载发布产物
-（如 `dickpy-dsh-imagegen-1.0.20.tgz`），然后：
+（如 `dickpy-dsh-imagegen-1.1.0.tgz`），然后：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.0.20.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.1.0.tgz
 ```
 
 重启 dsh web。
@@ -107,6 +116,8 @@ dsh plugin --profile web add link:/绝对路径/dsh-imagegen
 | --- | --- |
 | `api_url` | OpenAI 兼容接口根地址，例如 `https://api.openai.com/v1`。插件会自动追加接口路径。 |
 | `api_key` | Bearer API 密钥。界面仅显示是否已配置；输入新值可覆盖，清空后保存可删除。 |
+| 对话 API 地址 / 密钥 | 可选；用于提示词增强，留空时复用生图 API 地址与密钥。 |
+| 对话模型 | 用于提示词增强的 `/chat/completions` 模型；可从设置卡片获取可用模型后选择。 |
 | 启用插件 | 关闭后生图工作台不可用，设置卡片仍可用于重新启用。 |
 | 向 Agent 播报 | 开启后，将插件能力写入 Agent 系统提示词。 |
 
@@ -126,7 +137,7 @@ Grok Imagine 模型（`grok-imagine-image` / `grok-imagine-image-2.0`）的请�
 
 ## 画廊与 Grok Imagine
 
-画廊提供独立的作品浏览工作区：左侧按生成模式、模型和画面比例筛选，右侧以纵向瀑布流或整齐网格展示收藏图片，支持发布时间排序、持续向下滚动、点击卡片打开大图预览、恢复参数、移出和清空。收藏数据由 DSH 宿主持久化到 `~/.dsh/dsh-imagegen/gallery/`，同一图片内容不会重复保存。
+画廊提供独立的作品浏览工作区：左侧按生成模式、模型、画面比例和自建标签筛选，右侧以纵向瀑布流或整齐网格展示收藏图片。支持关键词搜索、标签新建/编辑/筛选、批量下载、JSON 元数据导出、发布时间排序、持续向下滚动、点击卡片打开大图预览、恢复参数、移出和清空。收藏数据由 DSH 宿主持久化到 `~/.dsh/dsh-imagegen/gallery/`，同一图片内容不会重复保存。
 
 插件原生支持 xAI `grok-imagine-image`。将 API 地址设置为 `https://api.x.ai/v1` 后，文生图使用 `/images/generations`，图生图按 Grok Imagine 的 JSON `image_url` 协议调用 `/images/edits`；界面中的比例和清晰度会分别映射为 `aspect_ratio` 与 `resolution`。
 

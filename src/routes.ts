@@ -10,11 +10,13 @@ import { randomUUID } from 'node:crypto'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import { generateImage, type UpstreamConfig } from './engine.ts'
+import { enhancePrompt, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
+import { GenerationTaskQueue } from './task-queue.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
-import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery } from './gallery-store.ts'
+import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 import { listTemplates, readTemplateImage, refreshTemplates } from './templates-store.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
-import { GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, TEMPLATES_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
+import { GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -35,6 +37,8 @@ export interface ImageGenRoutesDeps {
   settings: SettingsSeam
   /** Resolve the current upstream config (composition entry + settings). */
   resolve: () => UpstreamConfig
+  /** Resolve the optional chat-model configuration for prompt enhancement. */
+  resolvePrompt?: () => PromptModelConfig
   /** Overrideable history backend, primarily for host integration tests. */
   history?: {
     list: () => Promise<HistoryEntry[]>
@@ -49,6 +53,7 @@ export interface ImageGenRoutesDeps {
     append: (entry: HistoryEntryInput) => Promise<{ entries: HistoryEntry[]; added: boolean }>
     remove: (id: string) => Promise<HistoryEntry[]>
     clear: () => Promise<HistoryEntry[]>
+    updateTags?: (id: string, tags: string[]) => Promise<HistoryEntry[]>
     readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
   }
   /** Overrideable template-library backend, primarily for host integration tests. */
@@ -110,6 +115,22 @@ async function readJsonBody(req: IncomingMessage, maxBytes = MAX_JSON_BODY_BYTES
 /** Human-readable text from an unknown thrown value. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | undefined {
+  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
+  if (prompt === '') return undefined
+  return {
+    mode: body.mode === 'edit' ? 'edit' : 'text',
+    model: typeof body.model === 'string' ? body.model : 'gpt-image-2',
+    prompt,
+    size: typeof body.size === 'string' ? body.size : 'auto',
+    quality: typeof body.quality === 'string' ? body.quality : 'auto',
+    n: typeof body.n === 'number' ? body.n : 1,
+    detail: typeof body.detail === 'string' ? body.detail : '',
+    ...typeof body.image === 'string' && body.image !== '' ? { image: body.image } : {},
+    ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
+  }
 }
 
 /** Validate a submitted history entry (images carry base64). */
@@ -199,11 +220,12 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     clear: clearHistory,
     readImage: readHistoryImage,
   }
-  const gallery = deps.gallery ?? {
+  const gallery: NonNullable<ImageGenRoutesDeps['gallery']> = deps.gallery ?? {
     list: listGallery,
     append: appendGallery,
     remove: removeGallery,
     clear: clearGallery,
+    updateTags: updateGalleryTags,
     readImage: readGalleryImage,
   }
   const templates = deps.templates ?? {
@@ -211,6 +233,29 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     refresh: refreshTemplates,
     readImage: readTemplateImage,
   }
+  const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
+  const runGeneration = async (request: GenerateRequest, signal?: AbortSignal) => {
+    const result = await generateImage(deps.resolve(), request, { signal })
+    try {
+      const entries = await history.append({
+        id: randomUUID(),
+        createdAt: Date.now(),
+        mode: request.mode,
+        model: request.model,
+        prompt: request.prompt,
+        size: request.size,
+        quality: request.quality,
+        detail: request.detail,
+        n: request.n,
+        images: result.images,
+        ...request.refName === undefined ? {} : { refName: request.refName },
+      })
+      return { ...result, history: entries }
+    } catch (error) {
+      return { ...result, historyError: messageOf(error) }
+    }
+  }
+  const taskQueue = new GenerationTaskQueue((request, signal) => runGeneration(request, signal))
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'forbidden: loopback-only' })
@@ -224,6 +269,37 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   }
 
   return [
+    // ----------------------------------------------- prompt enhancement
+    {
+      kind: 'exact',
+      path: PROMPT_ENHANCE_API.models,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          writeJson(res, 200, { ok: true, models: await listPromptModels(resolvePrompt()) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'prompt-models-failed', message: messageOf(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: PROMPT_ENHANCE_API.enhance,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : ''
+        if (prompt === '') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' })
+          return
+        }
+        try {
+          writeJson(res, 200, { ok: true, prompt: await enhancePrompt(resolvePrompt(), prompt) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'prompt-enhance-failed', message: messageOf(error) })
+        }
+      },
+    },
     // -------------------------------------------------- settings describe
     {
       kind: 'exact',
@@ -284,46 +360,13 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           writeJson(res, 200, { ok: false, code: 'bad-request', message: 'unreadable JSON body' })
           return
         }
-        const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
-        if (prompt === '') {
+        const request = parseGenerateRequest(body)
+        if (request === undefined) {
           writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' })
           return
         }
-        if (prompt.length > 2000) {
-          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt exceeds 2000 characters' })
-          return
-        }
-        const request: GenerateRequest = {
-          mode: body.mode === 'edit' ? 'edit' : 'text',
-          model: typeof body.model === 'string' ? body.model : 'gpt-image-2',
-          prompt,
-          size: typeof body.size === 'string' ? body.size : 'auto',
-          quality: typeof body.quality === 'string' ? body.quality : 'auto',
-          n: typeof body.n === 'number' ? body.n : 1,
-          detail: typeof body.detail === 'string' ? body.detail : '',
-          ...typeof body.image === 'string' && body.image !== '' ? { image: body.image } : {},
-          ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
-        }
         try {
-          const result = await generateImage(deps.resolve(), request)
-          try {
-            const entries = await history.append({
-              id: randomUUID(),
-              createdAt: Date.now(),
-              mode: request.mode,
-              model: request.model,
-              prompt: request.prompt,
-              size: request.size,
-              quality: request.quality,
-              detail: request.detail,
-              n: request.n,
-              images: result.images,
-              ...request.refName === undefined ? {} : { refName: request.refName },
-            })
-            writeJson(res, 200, { ok: true, ...result, history: entries })
-          } catch (error) {
-            writeJson(res, 200, { ok: true, ...result, historyError: messageOf(error) })
-          }
+          writeJson(res, 200, { ok: true, ...await runGeneration(request) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const code = error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
@@ -331,6 +374,41 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
             : 'generate-failed'
           writeJson(res, 200, { ok: false, code, message })
         }
+      },
+    },
+    // ------------------------------------------------ generation task queue
+    {
+      kind: 'exact', path: TASK_API.submit,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const request = body === undefined ? undefined : parseGenerateRequest(body)
+        if (request === undefined) { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' }); return }
+        writeJson(res, 200, { ok: true, task: taskQueue.submit(request) })
+      },
+    },
+    {
+      kind: 'exact', path: TASK_API.list,
+      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: taskQueue.list() }) },
+    },
+    {
+      kind: 'exact', path: TASK_API.cancel,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const task = typeof body?.id === 'string' ? taskQueue.cancel(body.id) : undefined
+        if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'task not found' }); return }
+        writeJson(res, 200, { ok: true, task })
+      },
+    },
+    {
+      kind: 'exact', path: TASK_API.retry,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const task = typeof body?.id === 'string' ? taskQueue.retry(body.id) : undefined
+        if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'task not found' }); return }
+        writeJson(res, 200, { ok: true, task })
       },
     },
     // ----------------------------------------------- update check
@@ -526,6 +604,22 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'gallery-failed', message: messageOf(error) })
         }
+      },
+    },
+    // ----------------------------------------------------- gallery tags
+    {
+      kind: 'exact',
+      path: GALLERY_API.tags,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const id = typeof body?.id === 'string' ? body.id : ''
+        const tags = Array.isArray(body?.tags) ? body.tags.filter((tag): tag is string => typeof tag === 'string') : undefined
+        if (id === '' || tags === undefined || gallery.updateTags === undefined) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'gallery id and tags are required' })
+          return
+        }
+        try { writeJson(res, 200, { ok: true, entries: await gallery.updateTags(id, tags) }) } catch (error) { writeJson(res, 200, { ok: false, code: 'gallery-failed', message: messageOf(error) }) }
       },
     },
     // ---------------------------------------------------- gallery clear

@@ -212,6 +212,7 @@ async function requestOneImage(
   upstream: UpstreamConfig,
   request: GenerateRequest,
   params: ReturnType<typeof effectiveParams>,
+  signal?: AbortSignal,
 ): Promise<GeneratedImage[]> {
   const headers: Record<string, string> = {
     authorization: `Bearer ${upstream.apiKey.trim()}`,
@@ -264,7 +265,7 @@ async function requestOneImage(
       method: 'POST',
       headers,
       body,
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: signal === undefined ? AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -312,14 +313,14 @@ async function requestOneImage(
  * parameter is never sent, because Responses-API-based gateways reject it as
  * `tools[0].n`), then the results are flattened in order.
  */
-export async function generateImage(upstream: UpstreamConfig, request: GenerateRequest): Promise<GenerateResult> {
+export async function generateImage(upstream: UpstreamConfig, request: GenerateRequest, options: { signal?: AbortSignal } = {}): Promise<GenerateResult> {
   const baseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
   const params = effectiveParams(request)
   const count = effectiveCount(request)
   const batches = await Promise.all(
-    Array.from({ length: count }, () => requestOneImage(baseUrl, upstream, request, params)),
+    Array.from({ length: count }, () => requestOneImage(baseUrl, upstream, request, params, options.signal)),
   )
   return { images: batches.flat() }
 }

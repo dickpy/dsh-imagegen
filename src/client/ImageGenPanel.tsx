@@ -14,7 +14,7 @@ import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
-import type { GeneratedImage, GenerateMode, GenerateRequest, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
+import type { GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import css from './panel.module.css'
 
@@ -49,7 +49,6 @@ const QUALITIES = ['auto', '1k', '2k', '4k'] as const
 /** Detail options ('' = omit the passthrough). */
 const DETAILS = ['', 'standard', 'high'] as const
 
-const PROMPT_MAX = 2000
 const REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 const PREVIEW_SCALE_MIN = 0.5
 const PREVIEW_SCALE_MAX = 3
@@ -96,11 +95,11 @@ function useConfig(scope: ImageGenScope): ImageGenConfig | undefined {
   return value
 }
 
-/** Track the redacted api-key presence bit exposed by the settings bridge. */
-function useKeySet(scope: ImageGenScope): boolean {
-  const [keySet, setKeySet] = useState(scope.getKeySetSnapshot())
-  useEffect(() => scope.subscribeKeySet(() => { setKeySet(scope.getKeySetSnapshot()) }), [scope])
-  return keySet
+/** Track one redacted secret field without exposing its value to the panel. */
+function useSecretSet(scope: ImageGenScope, field: string): boolean {
+  const [isSet, setIsSet] = useState(scope.getSecretSetSnapshot(field))
+  useEffect(() => scope.subscribeSecretSets(() => { setIsSet(scope.getSecretSetSnapshot(field)) }), [field, scope])
+  return isSet
 }
 
 /** Tick a seconds counter while `running`. */
@@ -155,6 +154,7 @@ function formatTime(timestamp: number): string {
 type PanelTab = GenerateMode | 'gallery'
 
 type GalleryFilter = 'all' | 'text' | 'edit' | 'gpt-image-2' | 'grok-imagine-image'
+type ComparisonSession = { taskIds: string[]; prompt: string }
 
 /** Render the studio. */
 export function ImageGenPanel(props: {
@@ -166,8 +166,9 @@ export function ImageGenPanel(props: {
   const enabled = config?.enabled ?? true
   const apiUrl = config?.apiUrl ?? ''
   const configured = apiUrl.trim() !== ''
-  const keySet = useKeySet(scope)
-  const connected = enabled && configured && keySet
+  const apiKeySet = useSecretSet(scope, 'apiKey')
+  const promptKeySet = useSecretSet(scope, 'promptApiKey')
+  const connected = enabled && configured && apiKeySet
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [prompt, setPrompt] = useState('')
@@ -176,11 +177,15 @@ export function ImageGenPanel(props: {
   const [count, setCount] = useState(1)
   const [detail, setDetail] = useState('')
   const [model, setModel] = useState<string>(MODELS[0])
+  const [compareEnabled, setCompareEnabled] = useState(false)
+  const [compareModels, setCompareModels] = useState<string[]>([...MODELS])
   const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [error, setError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [enhancing, setEnhancing] = useState(false)
+  const [configGuide, setConfigGuide] = useState<'generation' | 'enhancement' | 'disabled' | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
@@ -190,8 +195,18 @@ export function ImageGenPanel(props: {
   const [galleryMessage, setGalleryMessage] = useState<string | null>(null)
   const [galleryFilter, setGalleryFilter] = useState<GalleryFilter>('all')
   const [galleryRatio, setGalleryRatio] = useState('all')
+  const [galleryTagFilter, setGalleryTagFilter] = useState<string | null>(null)
   const [galleryView, setGalleryView] = useState<'masonry' | 'grid'>('masonry')
   const [gallerySort, setGallerySort] = useState<'newest' | 'oldest'>('newest')
+  const [galleryQuery, setGalleryQuery] = useState('')
+  const [galleryTagInput, setGalleryTagInput] = useState('')
+  const [editingGalleryTagsId, setEditingGalleryTagsId] = useState<string | null>(null)
+  const [galleryTagEditInput, setGalleryTagEditInput] = useState('')
+  const [selectedGalleryIds, setSelectedGalleryIds] = useState<Set<string>>(new Set())
+  const [gallerySelecting, setGallerySelecting] = useState(false)
+  const [historyQuery, setHistoryQuery] = useState('')
+  const [historyModelFilter, setHistoryModelFilter] = useState('all')
+  const [historyRatioFilter, setHistoryRatioFilter] = useState('all')
   const [preview, setPreview] = useState<{ images: GeneratedImage[]; index: number } | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
   const [promptCopied, setPromptCopied] = useState(false)
@@ -200,6 +215,9 @@ export function ImageGenPanel(props: {
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [tasks, setTasks] = useState<GenerationTask[]>([])
+  const [comparison, setComparison] = useState<ComparisonSession | null>(null)
+  const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const previewStage = useRef<HTMLDivElement>(null)
   const elapsed = useElapsed(generating, startedAt)
@@ -211,8 +229,19 @@ export function ImageGenPanel(props: {
       return entry.model === galleryFilter
     })
     .filter(entry => galleryRatio === 'all' || normalizeSize(entry.size) === galleryRatio)
+    .filter(entry => galleryTagFilter === null || (entry.tags ?? []).includes(galleryTagFilter))
+    .filter(entry => galleryQuery.trim() === '' || `${entry.prompt} ${entry.model} ${(entry.tags ?? []).join(' ')}`.toLocaleLowerCase().includes(galleryQuery.trim().toLocaleLowerCase()))
     .slice()
     .sort((a, b) => gallerySort === 'newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt)
+
+  const galleryTagOptions = [...new Set(gallery.flatMap(entry => entry.tags ?? []))].sort((a, b) => a.localeCompare(b))
+
+  const filteredHistory = history.filter(entry => {
+    const query = historyQuery.trim().toLocaleLowerCase()
+    return (query === '' || `${entry.prompt} ${entry.model}`.toLocaleLowerCase().includes(query))
+      && (historyModelFilter === 'all' || entry.model === historyModelFilter)
+      && (historyRatioFilter === 'all' || normalizeSize(entry.size) === historyRatioFilter)
+  })
 
   // Load the host-persisted history and gallery once on mount (they live in
   // ~/.dsh on the DSH host, so every browser/device sees the same lists).
@@ -226,6 +255,29 @@ export function ImageGenPanel(props: {
       .catch(() => { /* gallery unavailable — leave the list empty */ })
     return () => { disposed = true }
   }, [api])
+
+  useEffect(() => {
+    let disposed = false
+    const refresh = (): void => {
+      void api.taskList().then(next => {
+        if (disposed) return
+        setTasks(previous => {
+          const completed = next.find(task => task.status === 'completed'
+            && !previous.some(old => old.id === task.id && old.status === 'completed')
+            && !comparison?.taskIds.includes(task.id))
+          if (completed?.result !== undefined) {
+            setImages(completed.result.images)
+            if (completed.result.history !== undefined) setHistory(completed.result.history)
+            setError(completed.result.historyError ?? null)
+          }
+          return next
+        })
+      }).catch(() => {})
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 1500)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [api, comparison])
 
   // Close the model dropdown when clicking anywhere outside it.
   const modelMenuRef = useRef<HTMLDivElement>(null)
@@ -273,6 +325,39 @@ export function ImageGenPanel(props: {
     }
   }
 
+  const openSettingsGuide = (kind: 'generation' | 'enhancement' | 'disabled'): void => {
+    setConfigGuide(kind)
+    const openPluginSettings = (): void => {
+      const pluginButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => /^(插件|Plugins)$/.test(button.textContent?.trim() ?? ''))
+      pluginButton?.click()
+      window.setTimeout(() => {
+        const imageGenButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => /dsh-imagegen/i.test(button.textContent ?? ''))
+        if (imageGenButton?.getAttribute('aria-expanded') !== 'true') imageGenButton?.click()
+      }, 0)
+    }
+    const settingsButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => /^(设置|Settings)$/.test(button.textContent?.trim() ?? ''))
+    if (settingsButton?.getAttribute('aria-expanded') !== 'true') settingsButton?.click()
+    window.setTimeout(openPluginSettings, 0)
+  }
+
+  const enhanceCurrentPrompt = async (): Promise<void> => {
+    if (prompt.trim() === '' || enhancing) return
+    const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || configured
+    if ((config?.promptModel ?? '').trim() === '' || !promptEndpointConfigured || (!promptKeySet && !apiKeySet)) {
+      openSettingsGuide('enhancement')
+      return
+    }
+    setEnhancing(true)
+    setError(null)
+    try {
+      setPrompt(await api.enhancePrompt(prompt))
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setEnhancing(false)
+    }
+  }
+
   /** Read an uploaded reference image into a data URL. */
   const acceptFile = (file: File | undefined): void => {
     if (file === undefined) return
@@ -295,6 +380,14 @@ export function ImageGenPanel(props: {
   /** Run one generation. */
   const handleGenerate = async (): Promise<void> => {
     if (generating) return
+    if (!enabled) {
+      openSettingsGuide('disabled')
+      return
+    }
+    if (!configured || !apiKeySet) {
+      openSettingsGuide('generation')
+      return
+    }
     const promptText = prompt.trim()
     if (promptText === '') {
       setError(tt('prompt.required'))
@@ -315,22 +408,18 @@ export function ImageGenPanel(props: {
       ...tab === 'edit' && refImage !== null ? { image: refImage.dataUrl } : {},
       ...tab === 'edit' && refImage !== null ? { refName: refImage.name } : {},
     }
-    setGenerating(true)
     setError(null)
-    setImages([])
-    setStartedAt(Date.now())
     try {
-      const result = await api.generate(request)
-      setImages(result.images)
-      setViewingHistoryId(null)
-      setGalleryViewingId(null)
-      if (result.history !== undefined) setHistory(result.history)
-      if (result.historyError !== undefined) setError(result.historyError)
+      const targetModels = compareEnabled ? compareModels : [model]
+      if (targetModels.length === 0) {
+        setError(tt('compare.selectRequired'))
+        return
+      }
+      const submitted = await Promise.all(targetModels.map(targetModel => api.taskSubmit({ ...request, model: targetModel })))
+      setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
+      setComparison(targetModels.length > 1 ? { taskIds: submitted.map(task => task.id), prompt: promptText } : null)
     } catch (caught) {
       setError(errorMessage(caught))
-    } finally {
-      setGenerating(false)
-      setStartedAt(null)
     }
   }
 
@@ -551,10 +640,76 @@ export function ImageGenPanel(props: {
     }
   }
 
-  const generateDisabled = generating || !enabled || !configured
+  const applyGalleryTags = async (): Promise<void> => {
+    const tags = galleryTagInput.split(',').map(tag => tag.trim()).filter(Boolean)
+    if (tags.length === 0 || selectedGalleryIds.size === 0) return
+    try {
+      let next = gallery
+      for (const id of selectedGalleryIds) {
+        const existing = next.find(entry => entry.id === id)?.tags ?? []
+        next = await api.gallerySetTags(id, [...existing, ...tags])
+      }
+      setGallery(next)
+      setGalleryTagInput('')
+    } catch (caught) { setError(errorMessage(caught)) }
+  }
+
+  const startEditingGalleryTags = (entry: HistoryEntry): void => {
+    setEditingGalleryTagsId(entry.id)
+    setGalleryTagEditInput((entry.tags ?? []).join(', '))
+  }
+
+  const saveGalleryTags = async (id: string): Promise<void> => {
+    const tags = galleryTagEditInput.split(',').map(tag => tag.trim()).filter(Boolean)
+    try {
+      setGallery(await api.gallerySetTags(id, tags))
+      setEditingGalleryTagsId(null)
+      setGalleryTagEditInput('')
+    } catch (caught) { setError(errorMessage(caught)) }
+  }
+
+  const toggleGallerySelection = (id: string): void => {
+    setSelectedGalleryIds(previous => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const clearGallerySelection = (): void => {
+    setSelectedGalleryIds(new Set())
+    setGallerySelecting(false)
+  }
+
+  const exportGalleryJson = (): void => {
+    const entries = gallery.filter(entry => selectedGalleryIds.has(entry.id))
+    const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `dsh-imagegen-gallery-${new Date().toISOString().slice(0, 10)}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadGalleryImages = (): void => {
+    gallery.filter(entry => selectedGalleryIds.has(entry.id)).forEach((entry, index) => {
+      const image = entry.images[0]
+      if (image === undefined) return
+      const anchor = document.createElement('a')
+      anchor.href = image.url
+      anchor.download = `dsh-gallery-${index + 1}.${extensionOf(image.mime)}`
+      anchor.click()
+    })
+  }
+
+  const generateDisabled = generating
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
+  const comparisonTasks = comparison === null ? [] : comparison.taskIds.map(id => tasks.find(task => task.id === id)).filter((task): task is GenerationTask => task !== undefined)
+  const comparisonResults = comparisonTasks.filter(task => task.status === 'completed' && task.result !== undefined)
   const previewFrameScale = Math.max(1, previewScale)
   const previewImageScale = previewScale / previewFrameScale
 
@@ -666,6 +821,20 @@ export function ImageGenPanel(props: {
                   </button>
                 ))}
               </div>
+              {galleryTagOptions.length > 0 ? (
+                <>
+                  <div className={css.galleryFilterDivider} />
+                  <div className={css.galleryFilterHeading}>{tt('gallery.tags')}</div>
+                  <div className={css.galleryTagFilterList}>
+                    {galleryTagOptions.map(tag => (
+                      <button key={tag} type="button" className={css.galleryTagFilter} data-active={galleryTagFilter === tag ? '' : undefined} onClick={() => { setGalleryTagFilter(previous => previous === tag ? null : tag) }}>
+                        <span>{tag}</span>
+                        <span>{gallery.filter(entry => (entry.tags ?? []).includes(tag)).length}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
               <div className={css.galleryFilterNote}>{tt('gallery.filterHint')}</div>
             </div>
           ) : null}
@@ -732,7 +901,6 @@ export function ImageGenPanel(props: {
               <textarea
                 className={css.prompt}
                 value={prompt}
-                maxLength={PROMPT_MAX}
                 placeholder={tt('prompt.placeholder')}
                 onChange={(event) => { setPrompt(event.target.value) }}
               />
@@ -745,6 +913,15 @@ export function ImageGenPanel(props: {
                 >
                   <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
                   {tt('templates.open')}
+                </button>
+                <button
+                  type="button"
+                  className={css.enhanceButton}
+                  disabled={prompt.trim() === '' || enhancing}
+                  title={tt('prompt.enhanceHint')}
+                  onClick={() => { void enhanceCurrentPrompt() }}
+                >
+                  {enhancing ? tt('prompt.enhancing') : tt('prompt.enhance')}
                 </button>
                 <span className={css.promptCount}>{tt('prompt.count', { count: prompt.length })}</span>
               </div>
@@ -852,6 +1029,22 @@ export function ImageGenPanel(props: {
                 ) : null}
               </span>
             </label>
+            <div className={css.compareControl}>
+              <label className={css.compareToggle}>
+                <input type="checkbox" checked={compareEnabled} onChange={event => { setCompareEnabled(event.target.checked) }} />
+                <span>{tt('compare.enable')}</span>
+              </label>
+              {compareEnabled ? (
+                <div className={css.compareModelChoices} role="group" aria-label={tt('compare.models')}>
+                  {MODELS.map(option => (
+                    <label key={option}>
+                      <input type="checkbox" checked={compareModels.includes(option)} onChange={() => { setCompareModels(previous => previous.includes(option) ? previous.filter(value => value !== option) : [...previous, option]) }} />
+                      <span>{option}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <Button
               variant="primary"
               size="md"
@@ -879,6 +1072,10 @@ export function ImageGenPanel(props: {
                   <span className={css.galleryCount}>{tt('gallery.count', { count: filteredGallery.length })}</span>
                 </div>
                 <div className={css.galleryToolbarActions}>
+                  <input className={css.gallerySearch} value={galleryQuery} onChange={event => { setGalleryQuery(event.target.value) }} placeholder={tt('gallery.search')} aria-label={tt('gallery.search')} />
+                  <button type="button" className={css.gallerySelectMode} data-active={gallerySelecting ? '' : undefined} aria-pressed={gallerySelecting} onClick={() => { setGallerySelecting(previous => !previous) }}>
+                    {gallerySelecting ? tt('gallery.selectionDone') : tt('gallery.select')}
+                  </button>
                   <div className={css.galleryViewToggle} role="group" aria-label={tt('gallery.viewMode')}>
                     <button type="button" data-active={galleryView === 'masonry' ? '' : undefined} onClick={() => { setGalleryView('masonry') }} title={tt('gallery.masonry')}>
                       <span aria-hidden="true">▦</span> {tt('gallery.masonry')}
@@ -894,6 +1091,16 @@ export function ImageGenPanel(props: {
                   {gallery.length > 0 ? <button type="button" className={css.galleryClear} onClick={() => { void clearGalleryAll() }}>{tt('gallery.clear')}</button> : null}
                 </div>
               </header>
+              {selectedGalleryIds.size > 0 ? (
+                <section className={css.gallerySelectionBar} aria-label={tt('gallery.selected', { count: selectedGalleryIds.size })}>
+                  <strong>{tt('gallery.selected', { count: selectedGalleryIds.size })}</strong>
+                  <input className={css.galleryTagInput} value={galleryTagInput} onChange={event => { setGalleryTagInput(event.target.value) }} placeholder={tt('gallery.tagsPlaceholder')} aria-label={tt('gallery.tagsPlaceholder')} />
+                  <button type="button" className={css.galleryBulkButton} disabled={galleryTagInput.trim() === ''} onClick={() => { void applyGalleryTags() }}>{tt('gallery.tagsApply')}</button>
+                  <button type="button" className={css.galleryBulkButton} onClick={downloadGalleryImages}>{tt('gallery.downloadSelected')}</button>
+                  <button type="button" className={css.galleryBulkButton} onClick={exportGalleryJson}>{tt('gallery.exportJson')}</button>
+                  <button type="button" className={css.gallerySelectionClear} onClick={clearGallerySelection}>{tt('gallery.selectionClear')}</button>
+                </section>
+              ) : null}
               {filteredGallery.length === 0 ? (
                 <div className={css.historyEmpty}>{tt('gallery.empty')}</div>
               ) : (
@@ -902,8 +1109,11 @@ export function ImageGenPanel(props: {
                     const image = entry.images[0]
                     if (image === undefined) return null
                     return (
-                      <article key={entry.id} className={css.galleryCard}>
-                        <button type="button" className={css.galleryImageButton} onClick={() => { void viewGalleryEntry(entry) }} title={tt('preview.open')}>
+                      <article key={entry.id} className={css.galleryCard} data-selected={selectedGalleryIds.has(entry.id) ? '' : undefined}>
+                        <label className={css.gallerySelect} title={tt('gallery.select')}>
+                          <input type="checkbox" checked={selectedGalleryIds.has(entry.id)} onChange={() => { setGallerySelecting(true); toggleGallerySelection(entry.id) }} />
+                        </label>
+                        <button type="button" className={css.galleryImageButton} data-selecting={gallerySelecting ? '' : undefined} onClick={() => { if (gallerySelecting) toggleGallerySelection(entry.id); else void viewGalleryEntry(entry) }} title={gallerySelecting ? tt('gallery.select') : tt('preview.open')}>
                           <img className={css.galleryImage} src={image.url} alt={entry.prompt} />
                           <span className={css.galleryBadge}>{entry.mode === 'edit' ? tt('mode.edit') : tt('mode.text')}</span>
                         </button>
@@ -912,15 +1122,52 @@ export function ImageGenPanel(props: {
                           <span className={css.galleryCardInfo}>
                             <strong>{entry.prompt || tt('gallery.untitled')}</strong>
                             <small>{entry.model} · {normalizeSize(entry.size)} · {formatTime(entry.createdAt)}</small>
+                            <span className={css.galleryTags}>
+                              {(entry.tags ?? []).map(tag => <button key={tag} type="button" onClick={() => { setGalleryTagFilter(tag) }}>{tag}</button>)}
+                              <button type="button" className={css.galleryTagEdit} onClick={() => { startEditingGalleryTags(entry) }} title={tt('gallery.editTags')}>{tt('gallery.tagsEditShort')}</button>
+                            </span>
                           </span>
                           <button type="button" className={css.galleryRemove} onClick={() => { void deleteGalleryEntry(entry.id) }} title={tt('gallery.delete')}>×</button>
                         </div>
+                        {editingGalleryTagsId === entry.id ? (
+                          <form className={css.galleryTagEditor} onSubmit={event => { event.preventDefault(); void saveGalleryTags(entry.id) }}>
+                            <input value={galleryTagEditInput} onChange={event => { setGalleryTagEditInput(event.target.value) }} placeholder={tt('gallery.tagsPlaceholder')} aria-label={tt('gallery.tagsPlaceholder')} autoFocus />
+                            <button type="submit">{tt('gallery.tagsSave')}</button>
+                            <button type="button" onClick={() => { setEditingGalleryTagsId(null); setGalleryTagEditInput('') }}>{tt('gallery.tagsCancel')}</button>
+                          </form>
+                        ) : null}
                       </article>
                     )
                   })}
                 </div>
               )}
             </div>
+          ) : null}
+          {tab !== 'gallery' && tasks.length > 0 ? (
+            <section className={css.taskTray} aria-label={tt('tasks.title')}>
+              <header className={css.taskTrayHeader}>{tt('tasks.title')} <span>{tasks.filter(task => task.status === 'queued' || task.status === 'running').length}</span></header>
+              {tasks.slice(0, 5).map(task => (
+                <div key={task.id} className={css.taskRow} data-status={task.status}>
+                  <span className={css.taskStatus}>{tt(`tasks.${task.status}` as never)}</span>
+                  <span className={css.taskPrompt}>{task.request.prompt}</span>
+                  {(task.status === 'queued' || task.status === 'running') ? <button type="button" onClick={() => { void api.taskCancel(task.id) }}>{tt('tasks.cancel')}</button> : null}
+                  {task.status === 'failed' || task.status === 'cancelled' ? <button type="button" onClick={() => { void api.taskRetry(task.id) }}>{tt('tasks.retry')}</button> : null}
+                </div>
+              ))}
+            </section>
+          ) : null}
+          {tab !== 'gallery' && comparison !== null ? (
+            <section className={css.comparisonBoard} aria-label={tt('compare.title')}>
+              <header><div><strong>{tt('compare.title')}</strong><span>{comparisonResults.length} / {comparisonTasks.length}</span></div><button type="button" disabled={comparisonResults.length === 0} onClick={() => { setComparisonFullscreen(true) }}>{tt('compare.fullscreen')}</button></header>
+              <div className={css.comparisonGrid}>
+                {comparisonTasks.map(task => (
+                  <article key={task.id}>
+                    <strong>{task.request.model}</strong>
+                    {task.result?.images[0] !== undefined ? <img src={srcOf(task.result.images[0])} alt={task.request.model} /> : <span>{tt(`tasks.${task.status}` as never)}</span>}
+                  </article>
+                ))}
+              </div>
+            </section>
           ) : null}
           {generating ? (
             <div className={css.canvasState} role="status">
@@ -1075,11 +1322,23 @@ export function ImageGenPanel(props: {
             ) : null}
           </header>
 
-          {history.length === 0 ? (
+          <div className={css.historyFilters}>
+            <input className={css.historySearch} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value) }} placeholder={tt('history.search')} aria-label={tt('history.search')} />
+            <select value={historyModelFilter} onChange={event => { setHistoryModelFilter(event.target.value) }} aria-label={tt('history.model')}>
+              <option value="all">{tt('history.allModels')}</option>
+              {[...new Set(history.map(entry => entry.model))].map(option => <option key={option} value={option}>{option}</option>)}
+            </select>
+            <select value={historyRatioFilter} onChange={event => { setHistoryRatioFilter(event.target.value) }} aria-label={tt('history.ratio')}>
+              <option value="all">{tt('history.allRatios')}</option>
+              {[...new Set(history.map(entry => normalizeSize(entry.size)))].map(option => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+
+          {filteredHistory.length === 0 ? (
             <div className={css.historyEmpty}>{tt('history.empty')}</div>
           ) : (
             <div className={css.historyList}>
-              {history.map(entry => (
+              {filteredHistory.map(entry => (
                 <div
                   key={entry.id}
                   className={css.historyItem}
@@ -1144,6 +1403,26 @@ export function ImageGenPanel(props: {
           }}
         />
       ) : null}
+
+      {configGuide !== null ? (
+        <div className={css.configGuide} role="dialog" aria-modal="true" aria-label={tt(`config.${configGuide}Title` as never)}>
+          <div className={css.configGuideBody}>
+            <strong>{tt(`config.${configGuide}Title` as never)}</strong>
+            <span>{tt(`config.${configGuide}Hint` as never)}</span>
+            <button type="button" onClick={() => { setConfigGuide(null) }}>{tt('preview.close')}</button>
+          </div>
+        </div>
+      ) : null}
+
+      {comparisonFullscreen && comparison !== null ? createPortal(
+        <div className={css.comparisonFullscreen} role="dialog" aria-modal="true" aria-label={tt('compare.title')} onClick={() => { setComparisonFullscreen(false) }}>
+          <button type="button" className={css.lightboxClose} aria-label={tt('preview.close')} onClick={() => { setComparisonFullscreen(false) }}>×</button>
+          <div className={css.comparisonFullscreenGrid} onClick={event => { event.stopPropagation() }}>
+            {comparisonResults.map(task => (
+              <figure key={task.id}><figcaption>{task.request.model}</figcaption>{task.result!.images.map((image, index) => <img key={index} src={srcOf(image)} alt={task.request.model} />)}</figure>
+            ))}
+          </div>
+        </div>, document.body) : null}
 
       {/* -------------------------------------------------- preview overlay */}
       {preview !== null && previewImage !== null

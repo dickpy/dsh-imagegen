@@ -128,7 +128,7 @@ await check('B1 text generation normalizes b64_json + url items', async () => {
   const result = await host.generateImage(
     { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' },
     // n=1: one request returns two data items (b64_json + url), both normalized.
-    { mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1024x1024', quality: 'high', n: 1, detail: 'standard' },
+    { mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1:1', quality: '4k', n: 1, detail: 'standard' },
   )
   assert.equal(result.images.length, 2)
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
@@ -141,7 +141,7 @@ await check('B1 text generation normalizes b64_json + url items', async () => {
 await check('B2 edit mode sends multipart and normalizes', async () => {
   const result = await host.generateImage(
     { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' },
-    { mode: 'edit', model: 'gpt-image-2', prompt: 'edit this', size: '1536x1024', quality: 'medium', n: 1, detail: '', image: `data:image/png;base64,${pngBytes.toString('base64')}` },
+    { mode: 'edit', model: 'gpt-image-2', prompt: 'edit this', size: '3:2', quality: '2k', n: 1, detail: '', image: `data:image/png;base64,${pngBytes.toString('base64')}` },
   )
   assert.equal(result.images.length, 1)
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
@@ -345,7 +345,7 @@ await check('C2 settings mutate writes + redacts the key', async () => {
 
 await check('C3 generate route persists history server-side and enforces loopback fence', async () => {
   const { status, body } = await post('/api/dsh-imagegen/generate', {
-    mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1024x1024', quality: 'high', n: 1, detail: 'standard',
+    mode: 'text', model: 'gpt-image-2', prompt: 'a cat', size: '1:1', quality: '4k', n: 1, detail: 'standard',
   })
   assert.equal(status, 200)
   assert.equal(body.ok, true)

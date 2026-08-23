@@ -26,7 +26,7 @@ export const inject = ['webServer', 'systemPrompt']
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
 export { generateImage, ImageGenError } from './engine.ts'
-export { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery } from './gallery-store.ts'
+export { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 export { listTemplates, readTemplateImage, refreshTemplates, clearTemplateMemo } from './templates-store.ts'
 export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
 
@@ -43,6 +43,12 @@ export interface Config {
   apiUrl?: string
   /** Bearer API key (stored as a secret field on the settings seam). */
   apiKey?: string
+  /** Optional OpenAI-compatible chat endpoint for prompt enhancement. */
+  promptApiUrl?: string
+  /** Optional secret for the prompt enhancement endpoint. */
+  promptApiKey?: string
+  /** Chat model used to expand short image prompts. */
+  promptModel?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -50,6 +56,9 @@ export const Config: z<Config> = z.object({
   announceToAgent: z.boolean().default(true),
   apiUrl: z.string().default(''),
   apiKey: z.string().role('secret').default(''),
+  promptApiUrl: z.string().default(''),
+  promptApiKey: z.string().role('secret').default(''),
+  promptModel: z.string().default(''),
 })
 
 /** Schema defaults, re-read for hand-built contexts (the loader applies them normally). */
@@ -68,6 +77,9 @@ interface EffectiveConfig {
   announceToAgent: boolean
   apiUrl: string
   apiKey: string
+  promptApiUrl: string
+  promptApiKey: string
+  promptModel: string
 }
 
 /**
@@ -86,6 +98,9 @@ export function apply(ctx: Context, config?: Config): void {
       announceToAgent: value.announceToAgent ?? DEFAULT_ANNOUNCE,
       apiUrl: value.apiUrl ?? '',
       apiKey: value.apiKey ?? '',
+      promptApiUrl: value.promptApiUrl ?? '',
+      promptApiKey: value.promptApiKey ?? '',
+      promptModel: value.promptModel ?? '',
     }
   }
 
@@ -103,6 +118,14 @@ export function apply(ctx: Context, config?: Config): void {
           resolve: () => {
             const value = resolve()
             return { apiUrl: value.apiUrl, apiKey: value.apiKey }
+          },
+          resolvePrompt: () => {
+            const value = resolve()
+            return {
+              apiUrl: value.promptApiUrl.trim() || value.apiUrl,
+              apiKey: value.promptApiKey.trim() || value.apiKey,
+              model: value.promptModel,
+            }
           },
         })
         const disposers = routes.map(route => ctx.webServer.register(route))

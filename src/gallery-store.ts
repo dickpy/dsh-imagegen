@@ -60,6 +60,7 @@ interface StoredEntry {
   images: StoredImage[]
   hash?: string
   refName?: string
+  tags?: string[]
 }
 
 /** The index.json shape. */
@@ -171,6 +172,7 @@ function toWire(entry: StoredEntry): HistoryEntry {
       ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
+    ...entry.tags === undefined ? {} : { tags: entry.tags },
   }
 }
 
@@ -239,6 +241,18 @@ export async function removeGallery(id: string): Promise<HistoryEntry[]> {
     const kept = previous.filter(entry => entry.id !== id)
     await writeIndex(kept)
     return kept.map(toWire)
+  })
+}
+
+/** Replace the user-managed labels for one gallery entry. */
+export async function updateGalleryTags(id: string, tags: string[]): Promise<HistoryEntry[]> {
+  return mutateGallery(async () => {
+    const normalized = [...new Set(tags.map(tag => tag.trim()).filter(Boolean))].slice(0, 20)
+    const entries = await readIndex()
+    const target = entries.find(entry => entry.id === id)
+    if (target !== undefined) target.tags = normalized
+    await writeIndex(entries)
+    return entries.map(toWire)
   })
 }
 

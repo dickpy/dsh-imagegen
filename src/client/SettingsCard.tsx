@@ -12,6 +12,7 @@ import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client
 import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { PLUGIN_VERSION } from '../protocol.ts'
+import { PROMPT_ENHANCE_API } from '../protocol.ts'
 import css from './settings-card.module.css'
 
 /** The fields this card edits (the namespace's full schema). */
@@ -20,6 +21,9 @@ export interface ImageGenSettings {
   announceToAgent?: boolean
   apiUrl?: string
   apiKey?: string
+  promptApiUrl?: string
+  promptApiKey?: string
+  promptModel?: string
 }
 
 /** What the card renders. */
@@ -32,6 +36,9 @@ export interface ImageGenSettingsCardState extends CardShell {
   apiUrl: CardFieldState
   /** API key draft (the stored value is never rendered). */
   apiKey: CardFieldState
+  promptApiUrl: CardFieldState
+  promptApiKey: CardFieldState
+  promptModel: CardFieldState
 }
 
 /** The registration-side face the card's slot entry injects. */
@@ -55,6 +62,9 @@ export class ImageGenSettingsCardController {
       booleanField('announceToAgent'),
       textField('apiUrl'),
       secretField('apiKey'),
+      textField('promptApiUrl'),
+      secretField('promptApiKey'),
+      textField('promptModel'),
     ], {
       // The redacted wire view never returns the key; a save's outcome is
       // judged by the namespace's secrets sidecar instead.
@@ -69,6 +79,9 @@ export class ImageGenSettingsCardController {
       announceToAgent: this.form.field('announceToAgent'),
       apiUrl: this.form.field('apiUrl'),
       apiKey: this.form.field('apiKey'),
+      promptApiUrl: this.form.field('promptApiUrl'),
+      promptApiKey: this.form.field('promptApiKey'),
+      promptModel: this.form.field('promptModel'),
     }
   }
 
@@ -106,6 +119,9 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
   const keySet = props.useImageGenKeySet(snapshot => snapshot)
   const [open, setOpen] = useState(false)
+  const [models, setModels] = useState<string[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
   if (!state.available) return null
   const title = t('settings.title')
   const blocked = !state.dirty || state.invalid || state.saving
@@ -191,6 +207,69 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               onEdit={(text) => { props.edit('apiUrl', text) }}
               onReset={() => { props.resetField('apiUrl') }}
             />
+            <div className={css.sectionDivider} />
+            <h3 className={css.sectionTitle}>{t('settings.promptEnhanceTitle')}</h3>
+            <p className={css.sectionHint}>{t('settings.promptEnhanceHint')}</p>
+            <ValueField
+              id="dsh-imagegen-settings-prompt-apiurl"
+              label={t('settings.promptApiUrl')}
+              hint={t('settings.promptApiUrlHint')}
+              placeholder="https://api.openai.com/v1"
+              {...fieldProps}
+              {...state.promptApiUrl}
+              onEdit={(text) => { props.edit('promptApiUrl', text) }}
+              onReset={() => { props.resetField('promptApiUrl') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-prompt-apikey"
+              label={t('settings.promptApiKey')}
+              hint={t('settings.promptApiKeyHint')}
+              placeholder="sk-…"
+              secret
+              {...fieldProps}
+              {...state.promptApiKey}
+              overridden={false}
+              onEdit={(text) => { props.edit('promptApiKey', text) }}
+              onReset={() => { props.resetField('promptApiKey') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-prompt-model"
+              label={t('settings.promptModel')}
+              hint={t('settings.promptModelHint')}
+              placeholder="gpt-4.1-mini"
+              {...fieldProps}
+              {...state.promptModel}
+              onEdit={(text) => { props.edit('promptModel', text) }}
+              onReset={() => { props.resetField('promptModel') }}
+            />
+            <div className={css.modelFetchRow}>
+              <button
+                type="button"
+                className={css.modelFetch}
+                disabled={disabled || loadingModels}
+                onClick={() => {
+                  setLoadingModels(true)
+                  setModelsError(null)
+                  void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
+                    .then(async response => {
+                      const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
+                      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+                      setModels(body.models ?? [])
+                    })
+                    .catch(error => { setModelsError(error instanceof Error ? error.message : String(error)) })
+                    .finally(() => { setLoadingModels(false) })
+                }}
+              >
+                {loadingModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
+              </button>
+              {models.length > 0 ? (
+                <select className={css.modelChoices} value="" onChange={event => { if (event.target.value !== '') props.edit('promptModel', event.target.value) }}>
+                  <option value="">{t('settings.promptModelsSelect')}</option>
+                  {models.map(model => <option key={model} value={model}>{model}</option>)}
+                </select>
+              ) : null}
+            </div>
+            {modelsError !== null ? <p className={css.failed} role="status">{modelsError}</p> : null}
             <BooleanField
               id="dsh-imagegen-settings-enabled"
               label={t('settings.enabled')}
