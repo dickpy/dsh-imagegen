@@ -25,6 +25,7 @@ import { mountPanel } from './mount.tsx'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { ImageGenSettingsCard, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
+import { registerImageToolviews, type ImageToolViewOwnerProps } from './image-toolview.tsx'
 
 /** Locale namespace this plugin owns. */
 const NS = 'dsh-imagegen'
@@ -45,6 +46,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * sibling UI package.
      */
     'settings.plugin.item': { kind: 'keyed'; scope: 'root'; owner: ImageGenPluginItemOwnerProps }
+    /** Image-generation results render their durable image blocks inline. */
+    'tool.call.toolview': { kind: 'keyed'; scope: 'session'; owner: ImageToolViewOwnerProps }
   }
 }
 
@@ -55,7 +58,7 @@ export interface ImageGenPluginItemOwnerProps {
 }
 
 /** Required services (fiber inject waiting — the runtime must be up first). */
-export const inject = ['slots', 'locale', 'connection']
+export const inject = ['slots', 'locale', 'connection', 'sessions']
 
 /**
  * Mount the studio, its sidebar entry, and the settings card.
@@ -63,6 +66,7 @@ export const inject = ['slots', 'locale', 'connection']
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-imagegen: dictionaries')
+  registerImageToolviews(ctx)
 
   const connection = ctx.get('connection') as ConnectionHandle | undefined
   const loopback = connection?.isLoopback === true

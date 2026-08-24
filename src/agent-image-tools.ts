@@ -1,7 +1,6 @@
 /** Agent-facing image-generation tools backed by the shared host queue. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-attachment'
@@ -61,6 +60,9 @@ const taskResultSchema = {
   },
 } as const
 
+/** Agent calls stay pending until the provider and history write settle. */
+const AGENT_GENERATION_TIMEOUT_MS = 300_000
+
 function acceptedMediaType(value: string): value is ImageMediaType {
   return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif'
 }
@@ -106,7 +108,6 @@ function renderTaskResult(value: AgentTaskResult): Array<{ type: 'text'; text: s
 /** Register the global Agent tools and unregister them with the plugin lifecycle. */
 export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRuntime, resolve: () => AgentImageToolConfig): () => void {
   const attachmentRefs = new Map<string, Promise<AgentImageRef[]>>()
-  const taskSubscriptions = new Set<() => void>()
   const ensureConfigured = (): void => {
     const config = resolve()
     if (!config.enabled) throw new ImageGenError('AI image generation is disabled. Open Settings > Plugins > AI Image and enable it.', 'plugin-disabled')
@@ -144,7 +145,7 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
           ? 'Generation failed.'
           : task.status === 'cancelled'
             ? 'Generation was cancelled.'
-            : 'Generation is still running. Completion will be delivered to the conversation automatically with image attachments.',
+            : 'Generation is still running. Query the task again when you need its current status.',
       ...task.error === undefined ? {} : { error: task.error },
       images,
     }
@@ -154,42 +155,70 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
     if (task === undefined) throw new ImageGenError(`Image generation task ${id} was not found.`, 'task-not-found')
     return task
   }
-  const notifyCompletion = async (agent: { send: (message: ReturnType<typeof createUserMessage>, target: 'next-turn', wakeup: true) => void }, task: GenerationTask): Promise<void> => {
-    const result = await taskResult(task)
-    const completed = task.status === 'completed'
-    const text = completed
-      ? `图像生成任务已完成（${task.id}）。图片已附在这条消息中，可以直接查看、下载或作为后续图生图的参考。`
-      : task.status === 'cancelled'
-        ? `图像生成任务已取消（${task.id}）。`
-        : `图像生成任务失败（${task.id}）：${task.error ?? '未知错误'}`
-    agent.send(createUserMessage({
-      content: [
-        { type: 'text', text },
-        ...completed ? result.images.map(image => ({ type: 'image' as const, attachment: restoreRef(image) })) : [],
-      ],
-      // The stock conversation's plugin-context row renders text only; a
-      // user-role message is the supported path that renders image attachments.
-      source: { kind: 'user' },
-    }), 'next-turn', true)
-  }
-  const watchTask = (task: GenerationTask, agent: { send: (message: ReturnType<typeof createUserMessage>, target: 'next-turn', wakeup: true) => void } | undefined): void => {
-    if (agent === undefined) return
-    let dispose: (() => void) | undefined
+  const waitForTask = (id: string, signal: AbortSignal | undefined): Promise<GenerationTask> => new Promise((resolveTask, rejectTask) => {
+    let settled = false
+    let dispose = (): void => {}
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let abort = (): void => {}
+
+    const cleanup = (): void => {
+      dispose()
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
+    const resolve = (task: GenerationTask): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolveTask(task)
+    }
+    const reject = (error: unknown): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      rejectTask(error)
+    }
+    abort = (): void => {
+      if (settled) return
+      const reason = signal?.reason instanceof Error ? signal.reason : new Error('Image generation was cancelled.')
+      // Remove the listener before publishing cancellation so the queue event
+      // cannot turn an execution abort into a successful cancelled result.
+      settled = true
+      cleanup()
+      runtime.queue.cancel(id)
+      rejectTask(reason)
+    }
     const onChange = (updated: GenerationTask): void => {
-      if (updated.id !== task.id || !isFinalTask(updated)) return
-      dispose?.()
-      if (dispose !== undefined) taskSubscriptions.delete(dispose)
-      void notifyCompletion(agent, updated).catch(() => {})
+      if (updated.id === id && isFinalTask(updated)) resolve(updated)
+    }
+
+    if (signal?.aborted === true) {
+      abort()
+      return
     }
     dispose = runtime.queue.subscribe(onChange)
-    taskSubscriptions.add(dispose)
-    const current = findTask(task.id)
-    if (isFinalTask(current)) onChange(current)
-  }
+    signal?.addEventListener('abort', abort, { once: true })
+    timer = setTimeout(() => {
+      if (settled) return
+      const timeout = new ImageGenError(`Image generation task ${id} timed out after ${AGENT_GENERATION_TIMEOUT_MS / 1000} seconds.`, 'generation-timeout')
+      settled = true
+      cleanup()
+      runtime.queue.cancel(id)
+      rejectTask(timeout)
+    }, AGENT_GENERATION_TIMEOUT_MS)
+    let current: GenerationTask
+    try {
+      current = findTask(id)
+    } catch (error) {
+      reject(error)
+      return
+    }
+    if (isFinalTask(current)) resolve(current)
+  })
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'generate_image',
-      description: 'Queue a text-to-image generation request. This returns immediately with a task id. When it finishes, the conversation automatically receives a visible image-attachment notification; do not repeatedly poll. Only use models configured for this plugin; omit model to use the first configured image model. Use get_image_generation_task only for an explicit status check or recovery.',
+      description: 'Generate an image. By default this tool call stays pending until the task reaches a final state, and completed images are returned directly as tool-result attachments without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. Only use models configured for this plugin; omit model to use the first configured image model.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'Detailed image-generation prompt.' },
         model: { type: 'string', description: 'One of the configured image models. Defaults to the first configured model.' },
@@ -197,6 +226,7 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
         count: { type: 'integer', description: 'Number of images, 1 to 4. Defaults to 1.' },
         detail: { type: 'string', description: 'Optional provider detail value, for example standard or high.' },
+        wait_for_completion: { type: 'boolean', description: 'Wait for images and return them in this tool result. Defaults to true; set false for background mode.' },
       },
       output: { schema: taskResultSchema, render: (_args, value) => renderTaskResult(value) },
       async execute(args, exec) {
@@ -210,13 +240,12 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
           n: Math.min(4, Math.max(1, args.count ?? 1)),
           detail: args.detail ?? '',
         })
-        watchTask(task, exec.agent)
-        return taskResult(task)
+        return taskResult(args.wait_for_completion === false ? task : await waitForTask(task.id, exec.signal))
       },
     })),
     ctx.tools.register(defineTool({
       name: 'edit_image',
-      description: 'Queue an image-to-image edit. source_image must be an image reference returned by a completed generation notification or get_image_generation_task; pass that entire object unchanged. Only configured image models are allowed; omit model to use the first configured model. Completion is automatically delivered to the conversation with visible image attachments; do not repeatedly poll.',
+      description: 'Edit an image. By default this tool call stays pending until the task reaches a final state, and completed images are returned directly as tool-result attachments without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. source_image must be an image reference returned by a completed generation or get_image_generation_task; pass that entire object unchanged. Only configured image models are allowed; omit model to use the first configured model.',
       parameters: {
         prompt: { type: 'string', required: true, description: 'How to transform the source image.' },
         source_image: { ...imageRefSchema, required: true, description: 'Image reference returned by get_image_generation_task.' },
@@ -225,6 +254,7 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
         count: { type: 'integer', description: 'Number of images, 1 to 4. Defaults to 1.' },
         detail: { type: 'string', description: 'Optional provider detail value.' },
+        wait_for_completion: { type: 'boolean', description: 'Wait for images and return them in this tool result. Defaults to true; set false for background mode.' },
       },
       output: { schema: taskResultSchema, render: (_args, value) => renderTaskResult(value) },
       async execute(args, exec) {
@@ -241,13 +271,12 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
           image: imageDataUrl(reference),
           ...reference.ref.name === undefined ? {} : { refName: reference.ref.name },
         })
-        watchTask(task, exec.agent)
-        return taskResult(task)
+        return taskResult(args.wait_for_completion === false ? task : await waitForTask(task.id, exec.signal))
       },
     })),
     ctx.tools.register(defineTool({
       name: 'get_image_generation_task',
-      description: 'Optionally check an image-generation task status. Completed tasks return image references for edit_image, but the conversation already receives a visible completion notification automatically; do not poll repeatedly.',
+      description: 'Check an image-generation task status. Completed tasks return image references and image attachments for edit_image. Generation tools normally wait for completion, so use this for explicit recovery or status checks.',
       parameters: { task_id: { type: 'string', required: true, description: 'Task id returned by generate_image or edit_image.' } },
       output: { schema: taskResultSchema, render: (_args, value) => renderTaskResult(value) },
       async execute(args) {
@@ -269,8 +298,6 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
     })),
   ]
   return () => {
-    for (const dispose of taskSubscriptions) dispose()
-    taskSubscriptions.clear()
     for (const dispose of disposers) dispose()
   }
 }

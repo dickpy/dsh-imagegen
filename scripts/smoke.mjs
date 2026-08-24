@@ -90,7 +90,7 @@ const upstream = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     assert.equal(body.model, 'gpt-image-2')
-    assert.equal(body.prompt, 'a cat')
+    assert.ok(body.prompt === 'a cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this')
     assert.equal(body.size, '1024x1024')
     assert.equal(body.quality, 'high')
     // The engine never sends `n`: Responses-API gateways reject the batch
@@ -410,7 +410,7 @@ await check('C5 template routes serve the bundled gallery, refresh it, and proxy
   assert.equal(unknown.status, 404)
 })
 
-await check('C6 Agent tools queue, retrieve attachments, edit, and enforce the allow setting', async () => {
+await check('C6 Agent tools wait for results, return attachments, edit, and enforce the allow setting', async () => {
   const tools = new Map()
   const saved = new Map()
   let serial = 0
@@ -430,12 +430,8 @@ await check('C6 Agent tools queue, retrieve attachments, edit, and enforce the a
     },
   }
   let enabled = true
-  const notifications = []
-  const agent = {
-    send(message, target, wakeup) {
-      notifications.push({ message, target, wakeup })
-    },
-  }
+  const sent = []
+  const agent = { send: (...args) => { sent.push(args) } }
   const runtime = new host.ImageGenerationRuntime(
     () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
     { append: async () => [] },
@@ -446,46 +442,46 @@ await check('C6 Agent tools queue, retrieve attachments, edit, and enforce the a
   }, runtime, () => ({ enabled: true, allowAgentImageGeneration: enabled, apiUrl: 'configured', apiKey: 'configured', imageModels: ['gpt-image-2'] }))
   try {
     const generated = await tools.get('generate_image').execute({ prompt: 'a cat', size: '1:1', quality: '4k', detail: 'standard' }, { agent })
-    assert.ok(generated.status === 'queued' || generated.status === 'running')
-    // No task-status query is required: completion wakes the originating Agent
-    // with persistent image attachment blocks, which the conversation renders.
-    for (let attempt = 0; attempt < 40 && notifications.length === 0; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-    assert.equal(notifications.length, 1, 'completion wakes the Agent exactly once')
-    assert.equal(notifications[0].target, 'next-turn')
-    assert.equal(notifications[0].wakeup, true)
-    assert.equal(notifications[0].message.source.kind, 'user', 'completion uses the conversation image-rendering path')
-    assert.equal(notifications[0].message.content.filter(block => block.type === 'image').length, 2, 'the notification carries visible image attachments')
-    let complete
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      complete = await tools.get('get_image_generation_task').execute({ task_id: generated.task_id }, {})
-      if (complete.status === 'completed') break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
+    assert.equal(generated.status, 'completed', 'the Agent tool waits for the task to finish')
+    assert.equal(generated.images.length, 2)
+    const generatedRendered = tools.get('generate_image').output.render({ prompt: 'a cat' }, generated)
+    assert.equal(generatedRendered.filter(block => block.type === 'image').length, 2, 'completed tool results carry visible image attachments')
+    assert.equal(saved.size, 2, 'completed generation stores attachments once')
+    assert.equal(sent.length, 0, 'completion does not inject a conversation message')
+    const complete = await tools.get('get_image_generation_task').execute({ task_id: generated.task_id }, {})
     assert.equal(complete.status, 'completed')
     assert.equal(complete.images.length, 2)
-    assert.equal(saved.size, 2, 'polling reuses the completion attachments instead of saving duplicate files')
-    const rendered = tools.get('get_image_generation_task').output.render({ task_id: generated.task_id }, complete)
-    assert.equal(rendered.filter(block => block.type === 'image').length, 2, 'completed tool results paste images into the conversation')
+    assert.equal(saved.size, 2, 'status lookup reuses the completion attachments instead of saving duplicate files')
+
+    const background = await tools.get('generate_image').execute({ prompt: 'a background cat', size: '1:1', quality: '4k', detail: 'standard', wait_for_completion: false }, { agent })
+    assert.ok(background.status === 'queued' || background.status === 'running', 'background mode returns before completion')
+    assert.equal(sent.length, 0, 'background mode also does not inject a conversation message')
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (runtime.queue.list().find(task => task.id === background.task_id)?.status === 'completed') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(runtime.queue.list().find(task => task.id === background.task_id)?.status, 'completed')
+    const backgroundComplete = await tools.get('get_image_generation_task').execute({ task_id: background.task_id }, {})
+    assert.equal(backgroundComplete.status, 'completed')
+    assert.equal(saved.size, 4)
 
     await assert.rejects(
-      tools.get('generate_image').execute({ prompt: 'a cat', model: 'grok-imagine-image' }, { agent }),
+      tools.get('generate_image').execute({ prompt: 'a cat', model: 'grok-imagine-image' }, {}),
       /not configured/,
     )
 
-    const edited = await tools.get('edit_image').execute({ prompt: 'edit this', source_image: complete.images[0], size: '3:2', quality: '2k' }, { signal: new AbortController().signal, agent })
-    assert.ok(edited.status === 'queued' || edited.status === 'running')
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      if (runtime.queue.list().find(task => task.id === edited.task_id)?.status === 'completed') break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-    assert.equal(runtime.queue.list().find(task => task.id === edited.task_id)?.status, 'completed')
-    for (let attempt = 0; attempt < 40 && notifications.length < 2; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-    assert.equal(notifications.length, 2, 'image edits also wake the Agent on completion')
-    assert.equal(notifications[1].message.content.filter(block => block.type === 'image').length, 1)
+    const edited = await tools.get('edit_image').execute({ prompt: 'edit this', source_image: complete.images[0], size: '3:2', quality: '2k' }, { signal: new AbortController().signal })
+    assert.equal(edited.status, 'completed', 'image edits also wait for completion')
+    assert.equal(edited.images.length, 1)
+    assert.equal(saved.size, 5)
+
+    const aborted = new AbortController()
+    aborted.abort(new Error('test cancellation'))
+    await assert.rejects(
+      tools.get('generate_image').execute({ prompt: 'cancel this' }, { signal: aborted.signal }),
+      /test cancellation/,
+    )
+    assert.equal(runtime.queue.list().find(task => task.request.prompt === 'cancel this')?.status, 'cancelled')
 
     enabled = false
     await assert.rejects(
@@ -538,7 +534,7 @@ await check('D1 client bundle registers via __ModuleLoader__', () => {
   assert.equal([...new Set(required)].sort().join(','), Object.keys(stubs).sort().join(','))
   assert.equal(typeof exportsOf.apply, 'function')
   // Cross-realm array (VM context): compare contents, not identity.
-  assert.equal([...exportsOf.inject].join(','), 'slots,locale,connection')
+  assert.equal([...exportsOf.inject].join(','), 'slots,locale,connection,sessions')
 })
 
 // --------------- E. full client apply in jsdom (mounts the sidebar entry)
@@ -799,3 +795,4 @@ await new Promise(resolve => upstream.close(resolve))
 // ------------------------------------------------------------------ summary
 console.log(results.join('\n'))
 console.log(process.exitCode === 1 ? '\nSMOKE TEST FAILED' : '\nSMOKE TEST OK')
+process.exit(process.exitCode === 1 ? 1 : 0)
