@@ -22,7 +22,8 @@
   <strong>
     <a href="#gallery">画廊管理</a>&nbsp;&nbsp;&nbsp;|
     <a href="#quick-start">快速开始</a>&nbsp;&nbsp;&nbsp;|
-    <a href="#configuration">配置模型</a>
+    <a href="#configuration">配置模型</a>&nbsp;&nbsp;&nbsp;|
+    <a href="#community">交流群</a>
   </strong>
 </p>
 
@@ -155,6 +156,15 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.2.2.tgz
 - **OpenAI 兼容接口**：支持 `/images/generations`、`/images/edits` 和 `{ data: [{ b64_json | url }] }` 格式响应。
 - **Grok Imagine**：原生支持 `grok-imagine-image` 与 `grok-imagine-image-2.0`。将地址设为 `https://api.x.ai/v1` 后，图生图会使用其 JSON `image_url` 协议，比例和清晰度映射为 `aspect_ratio` 与 `resolution`。
 - **后续模型**：可将 `qwen-image`、Gemini 等 OpenAI 兼容网关模型加入清单；厂商专属鉴权或请求协议需要单独适配。
+
+<a id="community"></a>
+## 交流群
+
+欢迎加入 QQ 群，一起交流 DSH、AI 生图和插件使用体验，也欢迎分享提示词、工作流与改进建议。
+
+<p align="center">
+  <img src="docs/images/community-qq.png" alt="扫码加入 dsh-imagegen QQ 交流群" width="360" />
+</p>
 
 <a id="security"></a>
 ## 数据与安全
