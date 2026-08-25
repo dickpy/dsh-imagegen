@@ -50,6 +50,31 @@ function isGrokImagine(model: string): boolean {
   return /^grok-imagine(?:-|$)/.test(model)
 }
 
+/** Whether the model belongs to the Google Nano Banana family (nanobanana2 /
+ *  nanobanana2-lite / nanobanana-pro, plus the official Gemini image IDs the
+ *  gateways expose). OpenAI-compatible gateways serve these with their own
+ *  aspect_ratio / image_size vocabulary instead of the OpenAI size/quality
+ *  passthrough. */
+function isNanoBanana(model: string): boolean {
+  if (/^nanobanana/i.test(model)) return true
+  return (
+    model === 'gemini-3-pro-image' || model === 'gemini-3-pro-image-preview' ||
+    model === 'gemini-3.1-flash-image' || model === 'gemini-3.1-flash-image-preview' ||
+    model === 'gemini-3.1-flash-lite-image' ||
+    model === 'gemini-2.5-flash-image'
+  )
+}
+
+/** Whether the model belongs to the ByteDance Seedream family (seedream-5.0-pro,
+ *  seedream-5.0, seedream-4.x, doubao-seedream-…). OpenAI-compatible gateways
+ *  serve Seedream through a unified generate-and-edit architecture:
+ *  generation AND editing both go to /images/generations, reference images are
+ *  a JSON URL / data-URL array, and the clarity tier is `resolution` while
+ *  `size` carries the aspect ratio (or exact pixels). */
+function isSeedream(model: string): boolean {
+  return /^(?:doubao-)?seedream/i.test(model)
+}
+
 /** The panel's aspect ratios mapped to the closest OpenAI pixel size
  *  (gpt-image-2 / generic OpenAI-compatible endpoints). */
 const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
@@ -136,6 +161,7 @@ function effectiveParams(request: GenerateRequest): {
   quality?: string
   detail?: string
   aspect_ratio?: string
+  image_size?: string
   resolution?: string
   response_format?: string
 } {
@@ -159,6 +185,39 @@ function effectiveParams(request: GenerateRequest): {
         : {},
       ...request.quality !== '' && request.quality !== 'auto'
         ? { resolution: request.quality === '4k' ? '2k' : request.quality }
+        : {},
+      response_format: 'b64_json',
+    }
+  }
+  // Google Nano Banana: the panel's aspect ratios are sent as-is (the family
+  // documents 1:1 … 21:9 natively), the clarity tiers become image_size
+  // (1K / 2K / 4K — Gen 1 and 2-Lite are 1K-only upstream, but which gateway
+  // rejects higher tiers is its own call), and base64 output keeps any signed
+  // result URLs from expiring before the host downloads them.
+  if (isNanoBanana(model)) {
+    return {
+      model,
+      ...request.size !== '' && request.size !== 'auto'
+        ? { aspect_ratio: request.size }
+        : {},
+      ...request.quality !== '' && request.quality !== 'auto'
+        ? { image_size: request.quality.toUpperCase() }
+        : {},
+      response_format: 'b64_json',
+    }
+  }
+  // ByteDance Seedream: OpenAI-compatible gateways accept the aspect ratio in
+  // `size` directly and the clarity tiers as `resolution` (1K / 2K; the 5.0-pro
+  // tier caps at 2K, so 4k falls back to 2K). There is no quality/detail knob,
+  // and edits reuse /images/generations with an image array (see below).
+  if (isSeedream(model)) {
+    return {
+      model,
+      ...request.size !== '' && request.size !== 'auto'
+        ? { size: request.size }
+        : {},
+      ...request.quality !== '' && request.quality !== 'auto'
+        ? { resolution: request.quality === '4k' ? '2K' : request.quality.toUpperCase() }
         : {},
       response_format: 'b64_json',
     }
@@ -268,6 +327,28 @@ async function requestOneImage(
         ...params.aspect_ratio !== undefined ? { aspect_ratio: params.aspect_ratio } : {},
         response_format: 'b64_json',
       })
+    } else if (isNanoBanana(params.model)) {
+      // Nano Banana OpenAI-compatible gateways accept the standard multipart
+      // edit upload, with the family's own aspect_ratio / image_size knobs.
+      const form = new FormData()
+      form.append('image', new Blob([bytes], { type: parsed.mime }), `reference.${extensionOf(parsed.mime)}`)
+      form.append('prompt', request.prompt)
+      form.append('model', params.model)
+      if (params.aspect_ratio !== undefined) form.append('aspect_ratio', params.aspect_ratio)
+      if (params.image_size !== undefined) form.append('image_size', params.image_size)
+      body = form
+    } else if (isSeedream(params.model)) {
+      // Seedream unifies generation and editing on /images/generations; the
+      // reference image is a JSON URL / data-URL array, never multipart.
+      headers['content-type'] = 'application/json'
+      body = JSON.stringify({
+        model: params.model,
+        prompt: request.prompt,
+        image: [request.image],
+        ...params.size !== undefined ? { size: params.size } : {},
+        ...params.resolution !== undefined ? { resolution: params.resolution } : {},
+        response_format: 'b64_json',
+      })
     } else {
       const form = new FormData()
       form.append('image', new Blob([bytes], { type: parsed.mime }), `reference.${extensionOf(parsed.mime)}`)
@@ -286,7 +367,11 @@ async function requestOneImage(
   const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
   let response: Response
   try {
-    response = await fetch(`${baseUrl}/images/${request.mode === 'edit' ? 'edits' : 'generations'}`, {
+    // Seedream has no /images/edits endpoint: both modes hit generations.
+    const endpoint = request.mode === 'edit' && !isSeedream(params.model)
+      ? '/images/edits'
+      : '/images/generations'
+    response = await fetch(`${baseUrl}${endpoint}`, {
       method: 'POST',
       headers,
       body,

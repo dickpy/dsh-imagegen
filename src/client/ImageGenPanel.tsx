@@ -1127,7 +1127,7 @@ export function ImageGenPanel(props: {
                           <span className={css.galleryBadge}>{entry.mode === 'edit' ? tt('mode.edit') : tt('mode.text')}</span>
                         </button>
                         <div className={css.galleryCardFooter}>
-                          <span className={css.galleryAvatar}>{entry.model.startsWith('grok') ? 'G' : 'D'}</span>
+                          <span className={css.galleryAvatar}>{entry.model.toLowerCase().startsWith('nanobanana') ? 'N' : entry.model.toLowerCase().startsWith('seedream') ? 'S' : entry.model.startsWith('grok') ? 'G' : 'D'}</span>
                           <span className={css.galleryCardInfo}>
                             <strong>{entry.prompt || tt('gallery.untitled')}</strong>
                             <small>{entry.model} · {normalizeSize(entry.size)} · {formatTime(entry.createdAt)}</small>

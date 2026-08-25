@@ -4,7 +4,7 @@
 
 export const zh = {
   'entry.label': 'AI 生图',
-  'entry.tooltip': 'AI 生图面板（gpt-image-2 / grok-imagine-image）',
+  'entry.tooltip': 'AI 生图面板（gpt-image-2 / grok-imagine-image / nanobanana / seedream 系列）',
   'panel.title': 'AI 生图',
   'panel.githubTip': '觉得好用或有建议？欢迎来 GitHub 提 issues、点个 star 支持一下！',
   // mode
@@ -253,7 +253,7 @@ export const zh = {
 
 export const en: Record<keyof typeof zh, string> = {
   'entry.label': 'AI Image',
-  'entry.tooltip': 'AI image generation studio (gpt-image-2 / grok-imagine-image)',
+  'entry.tooltip': 'AI image generation studio (gpt-image-2 / grok-imagine-image / nanobanana / seedream family)',
   'panel.title': 'AI Image',
   'panel.githubTip': 'Like it or have suggestions? Head to GitHub to open issues and star us!',
   'mode.text': 'Text to Image',

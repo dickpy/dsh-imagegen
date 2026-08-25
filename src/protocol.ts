@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.2.2'
+export const PLUGIN_VERSION = '1.2.3'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -145,11 +145,13 @@ export interface GenerateRequest {
   /** The prompt. Upstream providers may impose their own length limits. */
   prompt: string
   /** Canvas size as an aspect ratio: 'auto' or e.g. '1:1' / '16:9' / '21:9'.
-   *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok,
-   *  the closest pixel size for OpenAI-compatible endpoints). */
+   *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok
+   *  and Nano Banana, size-aspect for Seedream, the closest pixel size for
+   *  OpenAI-compatible endpoints). */
   size: string
   /** Clarity tier: 'auto' | '1k' | '2k' | '4k'. The host maps it onto the
-   *  model's own vocabulary (resolution for Grok, quality for OpenAI). */
+   *  model's own vocabulary (resolution for Grok / Seedream, image_size for
+   *  Nano Banana, quality for OpenAI). */
   quality: string
   /** Number of images, 1-4. */
   n: number

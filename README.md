@@ -133,7 +133,7 @@ Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`。安装后�
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载 tgz 后执行：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.2.2.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.2.3.tgz
 ```
 
 <a id="configuration"></a>
@@ -155,6 +155,8 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.2.2.tgz
 
 - **OpenAI 兼容接口**：支持 `/images/generations`、`/images/edits` 和 `{ data: [{ b64_json | url }] }` 格式响应。
 - **Grok Imagine**：原生支持 `grok-imagine-image` 与 `grok-imagine-image-2.0`。将地址设为 `https://api.x.ai/v1` 后，图生图会使用其 JSON `image_url` 协议，比例和清晰度映射为 `aspect_ratio` 与 `resolution`。
+- **Nano Banana（谷歌 Gemini 图像系列）**：内置 `nanobanana2` / `nanobanana2-lite` / `nanobanana-pro`（也识别官方 `gemini-3.x-image*` ID）。走 OpenAI 兼容接口时，比例和清晰度映射为 `aspect_ratio` 与 `image_size`（1K/2K/4K），输出请求 base64。
+- **Seedream（字节跳动生图系列）**：内置 `seedream-5.0-pro`（也识别 `seedream-4.x`、`doubao-seedream-…`）。无 `/images/edits`，文生图与图生图统一走 `/images/generations`，参考图以 JSON `image` 数组发送；比例走 `size`，清晰度走 `resolution`（1K/2K，5.0-pro 上限 2K）。
 - **后续模型**：可将 `qwen-image`、Gemini 等 OpenAI 兼容网关模型加入清单；厂商专属鉴权或请求协议需要单独适配。
 
 <a id="community"></a>

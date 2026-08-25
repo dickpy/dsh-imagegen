@@ -4,7 +4,7 @@
  * allow-list because OpenAI-compatible gateways rarely advertise modalities.
  */
 
-export const DEFAULT_IMAGE_MODELS = ['gpt-image-2', 'grok-imagine-image'] as const
+export const DEFAULT_IMAGE_MODELS = ['gpt-image-2', 'grok-imagine-image', 'nanobanana2', 'nanobanana2-lite', 'nanobanana-pro', 'seedream-5.0-pro'] as const
 
 /** Normalize user-entered model identifiers and retain a usable legacy default. */
 export function normalizeImageModels(value: unknown): string[] {
