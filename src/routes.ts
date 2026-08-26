@@ -8,16 +8,18 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listOpenAIModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
 import { normalizeImageModels } from './image-models.ts'
-import { ImageGenerationRuntime } from './generation-runtime.ts'
+import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 import { listTemplates, readTemplateImage, refreshTemplates } from './templates-store.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
-import { GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
+import { IMAGE_PRESETS } from './presets.ts'
+import { AGENT_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, USAGE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -36,12 +38,18 @@ export interface SettingsSeam {
 export interface ImageGenRoutesDeps {
   /** The settings seam (namespace storage). */
   settings: SettingsSeam
-  /** Resolve the current upstream config (composition entry + settings). */
+  /** Resolve the current upstream config (legacy single-endpoint path). */
   resolve: () => UpstreamConfig
+  /** Resolve the current channel view (the channel-aware path). */
+  resolveChannels?: () => ChannelsView
   /** Resolve the optional chat-model configuration for prompt enhancement. */
   resolvePrompt?: () => PromptModelConfig
-  /** Models explicitly selected for this image API endpoint. */
+  /** Models explicitly selected for this image API endpoint (legacy path). */
   resolveImageModels?: () => string[]
+  /** Host attachment storage used by Agent tool-result previews. */
+  attachments?: {
+    readImage: (ref: ImageAttachmentRef) => Promise<{ ref: ImageAttachmentRef; data: Uint8Array }>
+  }
   /** Overrideable history backend, primarily for host integration tests. */
   history?: {
     list: () => Promise<HistoryEntry[]>
@@ -135,6 +143,7 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
     detail: typeof body.detail === 'string' ? body.detail : '',
     ...typeof body.image === 'string' && body.image !== '' ? { image: body.image } : {},
     ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
+    ...typeof body.channelId === 'string' && body.channelId !== '' ? { channelId: body.channelId } : {},
   }
 }
 
@@ -172,6 +181,8 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
     n: entry.n,
     images,
     ...typeof entry.refName === 'string' ? { refName: entry.refName } : {},
+    ...typeof entry.channelId === 'string' ? { channelId: entry.channelId } : {},
+    ...typeof entry.channel === 'string' ? { channel: entry.channel } : {},
   }
 }
 
@@ -186,6 +197,38 @@ function imageFileFrom(rawUrl: string | undefined, basePath: string): string | u
   }
   if (!pathname.startsWith(`${basePath}/`)) return undefined
   return decodeURIComponent(pathname.slice(basePath.length + 1))
+}
+
+/** Parse the durable image reference carried by an Agent tool-result view. */
+function agentImageRefFrom(rawUrl: string | undefined): ImageAttachmentRef | undefined {
+  if (rawUrl === undefined) return undefined
+  let url: URL
+  try {
+    url = new URL(rawUrl, 'http://localhost')
+  } catch {
+    return undefined
+  }
+  if (url.pathname !== AGENT_IMAGE_API) return undefined
+  const attachmentId = url.searchParams.get('attachment_id') ?? ''
+  const mediaType = url.searchParams.get('media_type') ?? ''
+  const bytes = Number(url.searchParams.get('bytes'))
+  const width = Number(url.searchParams.get('width'))
+  const height = Number(url.searchParams.get('height'))
+  if (attachmentId === '' || !isImageMediaType(mediaType)
+    || !Number.isSafeInteger(bytes) || bytes < 1
+    || !Number.isSafeInteger(width) || width < 1
+    || !Number.isSafeInteger(height) || height < 1) return undefined
+  return {
+    attachmentId: attachmentId as ImageAttachmentRef['attachmentId'],
+    mediaType,
+    bytes,
+    width,
+    height,
+  }
+}
+
+function isImageMediaType(value: string): value is ImageMediaType {
+  return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif'
 }
 
 /** Project one settings descriptor onto the bridge wire view. */
@@ -240,15 +283,51 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   }
   const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
   const resolveImageModels = deps.resolveImageModels ?? (() => normalizeImageModels(undefined))
-  const parseConfiguredRequest = (body: Record<string, unknown>): GenerateRequest | undefined => {
-    const request = parseGenerateRequest(body)
-    if (request === undefined) return undefined
-    const models = normalizeImageModels(resolveImageModels())
-    const model = request.model.trim() === '' ? models[0] : request.model.trim()
-    if (!models.includes(model)) throw new Error(`image model "${model}" is not configured; choose one of: ${models.join(', ')}`)
-    return { ...request, model }
+
+  /** The current channel view: the channel-aware resolver, or a synthesized
+   *  single default channel from the legacy flat upstream config (tests and
+   *  older hosts). */
+  const channelViewOf = (): ChannelsView => {
+    if (deps.resolveChannels !== undefined) return deps.resolveChannels()
+    const upstream = deps.resolve()
+    const models: ModelMapping[] = normalizeImageModels(resolveImageModels()).map(id => ({ alias: id, id }))
+    if (upstream.apiUrl.trim() === '' && models.length === 0) return { channels: [], defaultChannelId: '' }
+    return {
+      channels: [{ id: 'default', preset: '', name: '默认渠道', apiUrl: upstream.apiUrl, apiKey: upstream.apiKey, models }],
+      defaultChannelId: 'default',
+    }
   }
-  const runtime = deps.runtime ?? new ImageGenerationRuntime(deps.resolve, history)
+  const runtime = deps.runtime ?? new ImageGenerationRuntime(channelViewOf, history)
+
+  /** Resolve an alias (or the channel fallback) into a concrete generation
+   *  request: picks the channel (explicit then default), maps alias → upstream
+   *  id, and fills the channel snapshot kept on history entries. */
+  const resolveChannelRequest = (request: GenerateRequest): { ok: true; request: GenerateRequest } | { ok: false; code: string; message: string } => {
+    const view = channelViewOf()
+    if (view.channels.length === 0) {
+      return { ok: false, code: 'no-channels', message: '尚未配置任何渠道：请先在「设置 → 插件 → AI 生图」添加渠道并填写 API 地址与密钥' }
+    }
+    const explicit = view.channels.find(candidate => candidate.id === request.channelId)
+    const defaults = view.channels.find(candidate => candidate.id === view.defaultChannelId) ?? view.channels[0]
+    const target = explicit ?? defaults
+    const asked = request.model.trim()
+    if (asked === '') {
+      const alias = target?.models[0]?.alias ?? ''
+      if (alias === '') {
+        return { ok: false, code: 'no-models', message: `渠道「${target?.name ?? ''}」尚未配置模型，请先在设置中添加` }
+      }
+      const mapping = target!.models.find(model => model.alias === alias)!
+      return { ok: true, request: { ...request, model: alias, upstream: mapping.id, channelId: target!.id, channel: target!.name } }
+    }
+    const hosting = view.channels.filter(channel => channel.models.some(model => model.alias === asked))
+    if (hosting.length === 0) {
+      const available = [...new Set(view.channels.flatMap(channel => channel.models.map(model => model.alias)))]
+      return { ok: false, code: 'image-model-not-configured', message: `模型「${asked}」未在任一渠道配置；可用模型：${available.join('、') || '（无）'}` }
+    }
+    const picked = target !== undefined && target.models.some(model => model.alias === asked) ? target : hosting[0]!
+    const mapping = picked.models.find(model => model.alias === asked)!
+    return { ok: true, request: { ...request, model: asked, upstream: mapping.id, channelId: picked.id, channel: picked.name } }
+  }
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'forbidden: loopback-only' })
@@ -262,16 +341,101 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   }
 
   return [
+    // ------------------------------------ Agent tool-result image (prefix)
+    ...(deps.attachments === undefined ? [] : [{
+      kind: 'prefix' as const,
+      path: AGENT_IMAGE_API,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (!isLoopbackRequest(req)) {
+          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+          return
+        }
+        if (req.method !== 'GET') {
+          writeJson(res, 405, { error: `method not allowed: ${req.method}` })
+          return
+        }
+        const ref = agentImageRefFrom(req.url)
+        if (ref === undefined) {
+          writeJson(res, 400, { error: 'invalid image reference' })
+          return
+        }
+        try {
+          const stored = await deps.attachments!.readImage(ref)
+          res.writeHead(200, {
+            'content-type': stored.ref.mediaType,
+            'content-length': stored.data.byteLength,
+            'cache-control': 'private, max-age=3600',
+          })
+          res.end(Buffer.from(stored.data))
+        } catch {
+          // Do not expose attachment-store details through the browser route.
+          writeJson(res, 404, { error: 'image attachment not found' })
+        }
+      },
+    } satisfies WebRoute]),
     // -------------------------------------------- image model discovery
+    // Accepts optional temporary per-channel credentials so the settings card
+    // can probe the endpoint the user is *typing* without saving first:
+    //   { channelId?, apiUrl?, apiKey? } — the channel's stored values are the
+    //   fallback, and the body's apiUrl/apiKey override them for this call.
     {
       kind: 'exact',
       path: IMAGE_MODEL_API.models,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const view = channelViewOf()
+        const stored = view.channels.find(candidate => candidate.id === (typeof body?.channelId === 'string' ? body.channelId : undefined))
+          ?? view.channels.find(candidate => candidate.id === view.defaultChannelId)
+          ?? view.channels[0]
+        const upstream: UpstreamConfig = {
+          apiUrl: typeof body?.apiUrl === 'string' && body.apiUrl.trim() !== '' ? body.apiUrl.trim() : (stored?.apiUrl ?? ''),
+          apiKey: typeof body?.apiKey === 'string' && body.apiKey.trim() !== '' ? body.apiKey.trim() : (stored?.apiKey ?? ''),
+        }
         try {
-          writeJson(res, 200, { ok: true, models: await listOpenAIModels(deps.resolve()) })
+          writeJson(res, 200, { ok: true, models: await listOpenAIModels(upstream) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'image-models-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ---------------------------------------------------------- presets
+    {
+      kind: 'exact',
+      path: PRESETS_API,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const presets: PresetProviderView[] = IMAGE_PRESETS.map(preset => ({
+          id: preset.id,
+          name: preset.name,
+          apiUrl: preset.apiUrl,
+          hint: preset.hint,
+          models: preset.models,
+        }))
+        writeJson(res, 200, { ok: true, presets })
+      },
+    },
+    // ----------------------------------------------------------- usage
+    {
+      kind: 'exact',
+      path: USAGE_API,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          const entries = [...await history.list(), ...await gallery.list()]
+          // byChannel[channelId | 'name:<name>' | ''] → { alias: count }.
+          const byChannel: Record<string, Record<string, number>> = {}
+          const totals: Record<string, number> = {}
+          for (const entry of entries) {
+            const channelKey = entry.channelId !== undefined ? entry.channelId : (entry.channel !== undefined ? `name:${entry.channel}` : '')
+            const alias = entry.model
+            const bucket = byChannel[channelKey] ?? (byChannel[channelKey] = {})
+            bucket[alias] = (bucket[alias] ?? 0) + 1
+            totals[alias] = (totals[alias] ?? 0) + 1
+          }
+          writeJson(res, 200, { ok: true, usage: { byChannel, totals } })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'usage-failed', message: messageOf(error) })
         }
       },
     },
@@ -362,18 +526,18 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'unreadable JSON body' })
-          return
-        }
-        let request: GenerateRequest | undefined
-        try { request = parseConfiguredRequest(body) } catch (error) { writeJson(res, 200, { ok: false, code: 'image-model-not-configured', message: messageOf(error) }); return }
-        if (request === undefined) {
+        const parsed = body === undefined ? undefined : parseGenerateRequest(body)
+        if (parsed === undefined) {
           writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' })
           return
         }
+        const resolved = resolveChannelRequest(parsed)
+        if (!resolved.ok) {
+          writeJson(res, 200, { ok: false, code: resolved.code, message: resolved.message })
+          return
+        }
         try {
-          writeJson(res, 200, { ok: true, ...await runtime.run(request) })
+          writeJson(res, 200, { ok: true, ...await runtime.run(resolved.request) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const code = error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
@@ -389,10 +553,14 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
-        let request: GenerateRequest | undefined
-        try { request = body === undefined ? undefined : parseConfiguredRequest(body) } catch (error) { writeJson(res, 200, { ok: false, code: 'image-model-not-configured', message: messageOf(error) }); return }
-        if (request === undefined) { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' }); return }
-        writeJson(res, 200, { ok: true, task: runtime.queue.submit(request) })
+        const parsed = body === undefined ? undefined : parseGenerateRequest(body)
+        if (parsed === undefined) { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'prompt is required' }); return }
+        const resolved = resolveChannelRequest(parsed)
+        if (!resolved.ok) {
+          writeJson(res, 200, { ok: false, code: resolved.code, message: resolved.message })
+          return
+        }
+        writeJson(res, 200, { ok: true, task: runtime.queue.submit(resolved.request) })
       },
     },
     {

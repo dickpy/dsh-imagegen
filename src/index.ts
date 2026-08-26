@@ -1,9 +1,10 @@
 /**
- * dsh-imagegen — host half. Mounts the plugin's settings section (api_url /
- * api_key on the host settings seam), the /api/dsh-imagegen route family
- * (loopback-only settings bridge + image-generation proxy that keeps the API
- * key host-side), and a system-prompt announcement. The browser half
- * (./client) renders the sidebar entry and the split-pane generation studio.
+ * dsh-imagegen — host half. Mounts the plugin's settings section (channels
+ * with per-channel model catalogs on the host settings seam), the
+ * /api/dsh-imagegen route family (loopback-only settings bridge + presets /
+ * usage / image-generation proxy that keeps every API key host-side), and a
+ * system-prompt announcement. The browser half (./client) renders the sidebar
+ * entry and the split-pane generation studio.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -15,11 +16,11 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-attachment'
-import { IMAGEGEN_SETTINGS_NAMESPACE } from './protocol.ts'
+import { IMAGEGEN_SETTINGS_NAMESPACE, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
-import { ImageGenerationRuntime } from './generation-runtime.ts'
+import { ImageGenerationRuntime, type ChannelsView, type RuntimeChannel } from './generation-runtime.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
-import { DEFAULT_IMAGE_MODELS, normalizeImageModels } from './image-models.ts'
+import { presetById } from './presets.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'imagegen'
@@ -40,7 +41,15 @@ export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, ins
 /** The branded settings namespace of this plugin (the card edits it). */
 export const ImageGenSettingsNamespace = settingsNamespace(IMAGEGEN_SETTINGS_NAMESPACE)
 
-/** Plugin config, validated by the same-named schemastery schema. */
+/**
+ * Plugin config, validated by the same-named schemastery schema.
+ *
+ * Channels own the endpoint + model catalog. The API key of each channel lives
+ * in `channelSecrets` (a secret dict keyed by channel id) instead of inside the
+ * channel objects — dsh-settings redaction supports dict/array containers, but
+ * path ops cannot reach inside arrays, so a whole-array write must never carry
+ * secrets it would clobber.
+ */
 export interface Config {
   /** Master switch for the plugin (routes, prompt section). */
   enabled?: boolean
@@ -48,30 +57,49 @@ export interface Config {
   announceToAgent?: boolean
   /** Allow Agents to submit and retrieve image-generation tasks. */
   allowAgentImageGeneration?: boolean
-  /** Base URL of the OpenAI-compatible endpoint, e.g. https://api.openai.com/v1 */
-  apiUrl?: string
-  /** Bearer API key (stored as a secret field on the settings seam). */
-  apiKey?: string
-  /** Explicit allow-list of image models selected for this API endpoint. */
-  imageModels?: string[]
+  /** Configured channels (each: name, endpoint, model catalog). */
+  channels?: ChannelConfig[]
+  /** Per-channel API keys, keyed by channel id. */
+  channelSecrets?: Record<string, string>
+  /** Channel used when a request does not name one. */
+  defaultChannelId?: string
   /** Optional OpenAI-compatible chat endpoint for prompt enhancement. */
   promptApiUrl?: string
   /** Optional secret for the prompt enhancement endpoint. */
   promptApiKey?: string
   /** Chat model used to expand short image prompts. */
   promptModel?: string
+  /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
+  /** Legacy base URL; synthesized into the default channel on upgrade. */
+  apiUrl?: string
+  /** Legacy secret; migrated into channelSecrets on upgrade. */
+  apiKey?: string
+  /** Legacy allow-list; migrated into the default channel's catalog. */
+  imageModels?: string[]
 }
 
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   announceToAgent: z.boolean().default(true),
   allowAgentImageGeneration: z.boolean().default(true),
-  apiUrl: z.string().default(''),
-  apiKey: z.string().role('secret').default(''),
-  imageModels: z.array(z.string()).default([...DEFAULT_IMAGE_MODELS]),
+  channels: z.array(z.object({
+    id: z.string(),
+    preset: z.string().default(''),
+    name: z.string().default(''),
+    apiUrl: z.string().default(''),
+    models: z.array(z.object({
+      alias: z.string(),
+      id: z.string(),
+    })).default([]),
+  })).default([]),
+  channelSecrets: z.dict(z.string().role('secret')).default({}),
+  defaultChannelId: z.string().default(''),
   promptApiUrl: z.string().default(''),
   promptApiKey: z.string().role('secret').default(''),
   promptModel: z.string().default(''),
+  apiUrl: z.string().default(''),
+  apiKey: z.string().role('secret').default(''),
+  imageModels: z.array(z.string()).default([]),
 })
 
 /** Schema defaults, re-read for hand-built contexts (the loader applies them normally). */
@@ -83,21 +111,61 @@ const DEFAULT_ALLOW_AGENT_IMAGE_GENERATION = true
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：对接 OpenAI 兼容图像生成 API，模型由用户在「设置 → 插件 → AI 生图」中检测或手动配置的生图模型列表决定；支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送）。API 地址与密钥在 GUI 设置中配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。模型只能使用已配置的生图模型；模型出现在 /models 中不等于其网关原生支持生图协议，遇到 Qwen、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条提示词案例，可搜索、筛选与复用。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片直接作为工具结果附件返回，不会额外伪造用户消息。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
+export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：通过「渠道」对接 OpenAI 兼容图像生成 API（每个渠道 = 一个 API 端点 + 各自的模型目录），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送）。API 地址与密钥在 GUI 设置中按渠道配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。模型只能使用用户在各渠道配置目录中的模型；模型出现在 /models 中不等于其网关原生支持生图协议，遇到 Qwen、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条提示词案例，可搜索、筛选与复用。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
 
-/** Add the live allow-list so an Agent can honor a user's model choice. */
-function guidanceFor(imageModels: string[]): string {
-  return `${IMAGEGEN_GUIDANCE} 当前允许调用的生图模型：${imageModels.join('、')}。用户指定其中某个模型时，工具参数 model 必须使用该精确名称；未指定时使用列表中的第一个。`
+/** Append the live channel × model table so an Agent can honor user choices. */
+function guidanceFor(channels: RuntimeChannel[], defaultChannelId: string): string {
+  if (channels.length === 0) {
+    return `${IMAGEGEN_GUIDANCE} 尚未配置任何渠道：请先在「设置 → 插件 → AI 生图」添加渠道并填写 API 地址与密钥。`
+  }
+  const table = channels.map(channel => {
+    const aliases = channel.models.map(model => model.alias).join('、')
+    const mark = channel.id === defaultChannelId ? '（默认渠道）' : ''
+    const key = channel.apiKey === '' ? '（未填密钥）' : ''
+    const models = channel.models.length === 0 ? '未配置模型' : `可用模型：${aliases}`
+    return `渠道「${channel.name}」${mark}[${channel.apiUrl}] ${models}${key}`
+  }).join('；')
+  return `${IMAGEGEN_GUIDANCE} 当前渠道与模型：${table}。用户指定模型名时取该模型所属渠道（多渠道同名用默认渠道）；未指定模型时若仅一个可用模型可直接生成，若有多个应先询问用户选择「渠道 + 模型」。`
 }
 
-/** Effective config (schema defaults applied). */
-interface EffectiveConfig {
+/** Normalize raw channel entries into the wire shape (schema-adjacent guard). */
+function normalizeChannels(value: unknown): ChannelConfig[] {
+  if (!Array.isArray(value)) return []
+  const out: ChannelConfig[] = []
+  for (const item of value) {
+    if (item === null || typeof item !== 'object') continue
+    const raw = item as Record<string, unknown>
+    const id = typeof raw.id === 'string' ? raw.id.trim() : ''
+    if (id === '') continue
+    const models: ModelMapping[] = []
+    if (Array.isArray(raw.models)) {
+      for (const entry of raw.models) {
+        if (entry === null || typeof entry !== 'object') continue
+        const record = entry as Record<string, unknown>
+        const alias = typeof record.alias === 'string' ? record.alias.trim() : ''
+        const upstream = typeof record.id === 'string' ? record.id.trim() : ''
+        if (alias === '') continue
+        models.push({ alias, id: upstream === '' ? alias : upstream })
+      }
+    }
+    out.push({
+      id,
+      preset: typeof raw.preset === 'string' ? raw.preset : '',
+      name: typeof raw.name === 'string' ? raw.name.trim() : '',
+      apiUrl: typeof raw.apiUrl === 'string' ? raw.apiUrl.trim() : '',
+      models,
+    })
+  }
+  return out
+}
+
+/** Effective config (schema defaults applied + legacy migration). */
+export interface EffectiveConfig {
   enabled: boolean
   announceToAgent: boolean
   allowAgentImageGeneration: boolean
-  apiUrl: string
-  apiKey: string
-  imageModels: string[]
+  channels: RuntimeChannel[]
+  defaultChannelId: string
   promptApiUrl: string
   promptApiKey: string
   promptModel: string
@@ -113,35 +181,67 @@ export function apply(ctx: Context, config?: Config): void {
   // service is attached, the composition entry otherwise.
   let current: () => Config = () => config ?? {}
   const resolve = (): EffectiveConfig => {
-    const value = current()
+    const value = current() ?? {}
+    let channels = normalizeChannels(value.channels)
+    // Settings scopes are deep-frozen by the host. Legacy migration adds the
+    // synthesized default-channel secret, so always work on a detached copy.
+    const secrets: Record<string, string> = { ...(value.channelSecrets ?? {}) }
+    // Legacy single-endpoint migration: no channels yet → synthesize the
+    // default channel from the old flat fields so upgrades never break.
+    if (channels.length === 0) {
+      const legacyUrl = typeof value.apiUrl === 'string' ? value.apiUrl.trim() : ''
+      const legacyModels: ModelMapping[] = Array.isArray(value.imageModels)
+        ? value.imageModels
+          .filter((model): model is string => typeof model === 'string' && model.trim() !== '')
+          .map(model => ({ alias: model.trim(), id: model.trim() }))
+        : []
+      if (legacyUrl !== '' || legacyModels.length > 0) {
+        channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, models: legacyModels }]
+        const legacyKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
+        if (legacyKey !== '') secrets['default'] = legacyKey
+      }
+    }
+    const named = channels.map(channel => ({
+      ...channel,
+      name: channel.name === '' ? (presetById(channel.preset)?.name ?? '未命名渠道') : channel.name,
+    }))
+    const defaultChannelId = typeof value.defaultChannelId === 'string' && named.some(channel => channel.id === value.defaultChannelId)
+      ? value.defaultChannelId
+      : named[0]?.id ?? ''
     return {
       enabled: value.enabled ?? DEFAULT_ENABLED,
       announceToAgent: value.announceToAgent ?? DEFAULT_ANNOUNCE,
       allowAgentImageGeneration: value.allowAgentImageGeneration ?? DEFAULT_ALLOW_AGENT_IMAGE_GENERATION,
-      apiUrl: value.apiUrl ?? '',
-      apiKey: value.apiKey ?? '',
-      imageModels: normalizeImageModels(value.imageModels),
-      promptApiUrl: value.promptApiUrl ?? '',
-      promptApiKey: value.promptApiKey ?? '',
-      promptModel: value.promptModel ?? '',
+      channels: named.map(channel => ({
+        ...channel,
+        apiKey: typeof secrets[channel.id] === 'string' ? secrets[channel.id] : '',
+      })),
+      defaultChannelId,
+      promptApiUrl: typeof value.promptApiUrl === 'string' ? value.promptApiUrl.trim() : '',
+      promptApiKey: typeof value.promptApiKey === 'string' ? value.promptApiKey.trim() : '',
+      promptModel: typeof value.promptModel === 'string' ? value.promptModel.trim() : '',
     }
+  }
+
+  // Transient helper used by several mount points below: resolve the shared
+  // channel view once per access; the runtime then picks per-request creds.
+  const channelsView = (): ChannelsView => {
+    const value = resolve()
+    return { channels: value.channels, defaultChannelId: value.defaultChannelId }
   }
 
   // Browser endpoints and Agent tools share the exact same serial queue. This
   // keeps image persistence, cancellation, and retries coherent across both
   // entry points; Agent tools wait for their task result by default and render
   // images in the tool result instead of injecting a synthetic user message.
-  const runtime = new ImageGenerationRuntime(() => {
-    const value = resolve()
-    return { apiUrl: value.apiUrl, apiKey: value.apiKey }
-  })
+  const runtime = new ImageGenerationRuntime(channelsView)
 
   // The route family mounts once, gated on the settings seam (the bridge
   // serves it; without the seam there is nothing to expose). Route handlers
   // read resolve() per request, so config edits apply live. The settings
   // bridge deliberately keeps serving while the plugin is disabled — it is
   // how the user re-enables the plugin from the settings card.
-  ctx.inject(['settings'], (sctx) => {
+  ctx.inject(['settings', 'attachments'], (sctx) => {
     const seam = sctx.get('settings') as unknown as SettingsSeam
     sctx.effect(
       () => {
@@ -149,17 +249,24 @@ export function apply(ctx: Context, config?: Config): void {
           settings: seam,
           resolve: () => {
             const value = resolve()
-            return { apiUrl: value.apiUrl, apiKey: value.apiKey }
+            const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
+            return { apiUrl: channel?.apiUrl ?? '', apiKey: channel?.apiKey ?? '' }
           },
+          resolveChannels: channelsView,
           resolvePrompt: () => {
             const value = resolve()
+            const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
             return {
-              apiUrl: value.promptApiUrl.trim() || value.apiUrl,
-              apiKey: value.promptApiKey.trim() || value.apiKey,
+              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrl ?? ''),
+              apiKey: value.promptApiKey !== '' ? value.promptApiKey : (channel?.apiKey ?? ''),
               model: value.promptModel,
             }
           },
-          resolveImageModels: () => resolve().imageModels,
+          resolveImageModels: () => {
+            const value = resolve()
+            return [...new Set(value.channels.flatMap(channel => channel.models.map(model => model.alias)))]
+          },
+          attachments: sctx.attachments,
           runtime,
         })
         const disposers = routes.map(route => ctx.webServer.register(route))
@@ -175,9 +282,8 @@ export function apply(ctx: Context, config?: Config): void {
       return {
         enabled: value.enabled,
         allowAgentImageGeneration: value.allowAgentImageGeneration,
-        apiUrl: value.apiUrl,
-        apiKey: value.apiKey,
-        imageModels: value.imageModels,
+        channels: value.channels,
+        defaultChannelId: value.defaultChannelId,
       }
     }), 'dsh-imagegen: agent image tools')
   })
@@ -194,7 +300,7 @@ export function apply(ctx: Context, config?: Config): void {
     disposeSection = ctx.systemPrompt.section({
       name: 'plugin:dsh-imagegen',
       order: SECTION_ORDER,
-      text: guidanceFor(value.imageModels),
+      text: guidanceFor(value.channels, value.defaultChannelId),
     })
   }
 

@@ -16,7 +16,8 @@ import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import type { GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
-import { DEFAULT_IMAGE_MODELS, normalizeImageModels } from '../image-models.ts'
+import { imageModelOptions } from './settings-scope.ts'
+import { normalizeImageModels } from '../image-models.ts'
 import css from './panel.module.css'
 
 /** Size options, presented as aspect ratios (auto = let the model decide).
@@ -102,10 +103,15 @@ function useSecretSet(scope: ImageGenScope, field: string): boolean {
 function useElapsed(running: boolean, startedAt: number | null): number {
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
-    if (!running || startedAt === null) return
-    const timer = window.setInterval(() => {
+    if (!running || startedAt === null) {
+      setElapsed(0)
+      return
+    }
+    const update = (): void => {
       setElapsed(Math.max(1, Math.round((Date.now() - startedAt) / 1000)))
-    }, 1000)
+    }
+    update()
+    const timer = window.setInterval(update, 1000)
     return () => window.clearInterval(timer)
   }, [running, startedAt])
   return elapsed
@@ -160,12 +166,23 @@ export function ImageGenPanel(props: {
   const { api, scope } = props
   const config = useConfig(scope)
   const enabled = config?.enabled ?? true
-  const apiUrl = config?.apiUrl ?? ''
+  // Channel-aware model options: the panel lists every configured alias
+  // (default channel first); legacy flat fields remain the upgrade fallback.
+  const modelOptions = imageModelOptions(config)
+  const hasChannels = (config?.channels ?? []).length > 0
+  // With channels configured, the model list is exactly the configured aliases
+  // (possibly empty — never fall back to the hardcoded legacy defaults).
+  const imageModels = hasChannels ? modelOptions.models : normalizeImageModels(config?.imageModels)
+  const defaultChannelId = modelOptions.defaultChannelId
+  const apiUrl = defaultChannelId !== undefined && (config?.channels ?? []).length > 0
+    ? (config!.channels!.find(channel => channel.id === defaultChannelId)?.apiUrl ?? '')
+    : (config?.apiUrl ?? '')
   const configured = apiUrl.trim() !== ''
-  const apiKeySet = useSecretSet(scope, 'apiKey')
+  const legacyKeySet = useSecretSet(scope, 'apiKey')
   const promptKeySet = useSecretSet(scope, 'promptApiKey')
+  const channelKeySet = (config?.channels ?? []).some(channel => scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
+  const apiKeySet = (config?.channels ?? []).length > 0 ? channelKeySet : legacyKeySet
   const connected = enabled && configured && apiKeySet
-  const imageModels = normalizeImageModels(config?.imageModels)
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [prompt, setPrompt] = useState('')
@@ -173,17 +190,18 @@ export function ImageGenPanel(props: {
   const [quality, setQuality] = useState<string>('auto')
   const [count, setCount] = useState(1)
   const [detail, setDetail] = useState('')
-  const [model, setModel] = useState<string>(DEFAULT_IMAGE_MODELS[0])
+  const [model, setModel] = useState<string>('')
   const [compareEnabled, setCompareEnabled] = useState(false)
-  const [compareModels, setCompareModels] = useState<string[]>([...DEFAULT_IMAGE_MODELS])
+  const [compareModels, setCompareModels] = useState<string[]>([])
   const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [generating, setGenerating] = useState(false)
+  // Submission is brief; actual generation stays visible until the host
+  // queue reports that every queued/running task has finished.
+  const [submitting, setSubmitting] = useState(false)
   const [enhancing, setEnhancing] = useState(false)
   const [configGuide, setConfigGuide] = useState<'generation' | 'enhancement' | 'disabled' | null>(null)
-  const [startedAt, setStartedAt] = useState<number | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
   const [gallery, setGallery] = useState<HistoryEntry[]>([])
@@ -218,7 +236,11 @@ export function ImageGenPanel(props: {
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const previewStage = useRef<HTMLDivElement>(null)
-  const elapsed = useElapsed(generating, startedAt)
+  const activeTasks = tasks.filter(task => task.status === 'queued' || task.status === 'running')
+  const activeTask = activeTasks.find(task => task.status === 'running') ?? activeTasks[0]
+  const generating = submitting || activeTasks.length > 0
+  const generationStartedAt = activeTask?.startedAt ?? activeTask?.createdAt ?? null
+  const elapsed = useElapsed(generating, generationStartedAt)
 
   // A saved settings change is authoritative. Keep the active selection and
   // comparison choices in that allow-list without disturbing valid choices.
@@ -389,7 +411,7 @@ export function ImageGenPanel(props: {
 
   /** Run one generation. */
   const handleGenerate = async (): Promise<void> => {
-    if (generating) return
+    if (submitting) return
     if (!enabled) {
       openSettingsGuide('disabled')
       return
@@ -415,10 +437,12 @@ export function ImageGenPanel(props: {
       quality,
       n: count,
       detail,
+      ...defaultChannelId !== undefined ? { channelId: defaultChannelId } : {},
       ...tab === 'edit' && refImage !== null ? { image: refImage.dataUrl } : {},
       ...tab === 'edit' && refImage !== null ? { refName: refImage.name } : {},
     }
     setError(null)
+    setSubmitting(true)
     try {
       const targetModels = (compareEnabled ? compareModels : [request.model]).filter(candidate => imageModels.includes(candidate))
       if (targetModels.length === 0) {
@@ -430,6 +454,8 @@ export function ImageGenPanel(props: {
       setComparison(targetModels.length > 1 ? { taskIds: submitted.map(task => task.id), prompt: promptText } : null)
     } catch (caught) {
       setError(errorMessage(caught))
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -714,7 +740,7 @@ export function ImageGenPanel(props: {
     })
   }
 
-  const generateDisabled = generating
+  const generateDisabled = submitting
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
@@ -1011,7 +1037,7 @@ export function ImageGenPanel(props: {
                 <button
                   type="button"
                   className={css.modelSelect}
-                  disabled={generating}
+                  disabled={submitting}
                   aria-haspopup="listbox"
                   aria-expanded={modelOpen}
                   onClick={() => { setModelOpen(open => !open) }}
@@ -1157,7 +1183,7 @@ export function ImageGenPanel(props: {
               <header className={css.taskTrayHeader}>
                 <button type="button" className={css.taskTrayToggle} aria-expanded={taskTrayOpen} onClick={() => { setTaskTrayOpen(open => !open) }}>
                   <span>{tt('tasks.title')}</span>
-                  <span className={css.taskTrayCount}>{tasks.filter(task => task.status === 'queued' || task.status === 'running').length}</span>
+                  <span className={css.taskTrayCount}>{activeTasks.length}</span>
                   <span className={css.taskTrayChevron} aria-hidden="true">{taskTrayOpen ? '⌃' : '⌄'}</span>
                 </button>
                 {taskTrayOpen ? <button type="button" className={css.taskTrayClose} aria-label={tt('preview.close')} onClick={() => { setTaskTrayOpen(false) }}>×</button> : null}
@@ -1188,10 +1214,20 @@ export function ImageGenPanel(props: {
             </section>
           ) : null}
           {generating ? (
-            <div className={css.canvasState} role="status">
+            <div className={css.canvasState} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <span className={css.bigSpinner} />
-              <span className={css.canvasStateTitle}>{tt('canvas.generating')}</span>
-              <span className={css.canvasStateHint}>{tt('canvas.elapsed', { seconds: elapsed })}</span>
+              <span className={css.canvasStateTitle}>
+                {submitting && activeTask === undefined
+                  ? tt('canvas.submitting')
+                  : activeTask?.status === 'queued'
+                    ? tt('canvas.queued')
+                    : tt('canvas.generating')}
+              </span>
+              <span className={css.canvasStateHint}>
+                {activeTask?.status === 'queued'
+                  ? tt('canvas.queueHint', { count: activeTasks.length })
+                  : tt('canvas.elapsed', { seconds: elapsed })}
+              </span>
             </div>
           ) : null}
 

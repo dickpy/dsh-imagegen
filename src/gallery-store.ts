@@ -61,6 +61,8 @@ interface StoredEntry {
   hash?: string
   refName?: string
   tags?: string[]
+  channelId?: string
+  channel?: string
 }
 
 /** The index.json shape. */
@@ -173,6 +175,8 @@ function toWire(entry: StoredEntry): HistoryEntry {
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.tags === undefined ? {} : { tags: entry.tags },
+    ...entry.channel === undefined ? {} : { channel: entry.channel },
+    ...entry.channelId === undefined ? {} : { channelId: entry.channelId },
   }
 }
 
@@ -225,6 +229,8 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
       images: storedImages,
       ...hash === undefined ? {} : { hash },
       ...input.refName === undefined ? {} : { refName: input.refName },
+      ...input.channelId === undefined ? {} : { channelId: input.channelId },
+      ...input.channel === undefined ? {} : { channel: input.channel },
     }
     const merged = [entry, ...await readIndex()]
     await writeIndex(merged)

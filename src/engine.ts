@@ -9,6 +9,8 @@
  */
 
 import type { GeneratedImage, GenerateRequest, GenerateResult } from './protocol.ts'
+import { detectImageMime } from './image-format.ts'
+import { modelFamily } from './model-catalog.ts'
 
 /** The upstream credentials the panel's settings card configures. */
 export interface UpstreamConfig {
@@ -42,12 +44,21 @@ const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024
 /** Sizes dall-e-3 accepts; anything else falls back to its square default. */
 const DALLE3_SIZES = new Set(['1024x1024', '1792x1024', '1024x1792'])
 
+/** The wire model id for a request: `upstream` (host-filled alias mapping)
+ *  wins, then the alias, then the family default. */
+function wireModel(request: GenerateRequest): string {
+  const upstream = request.upstream?.trim()
+  if (upstream !== undefined && upstream !== '') return upstream
+  const alias = request.model.trim()
+  return alias === '' ? 'gpt-image-2' : alias
+}
+
 /** Whether the model is an xAI Grok Imagine model (grok-imagine-image,
  *  grok-imagine-image-2.0, …). Grok Imagine speaks JSON on both endpoints
  *  and exposes its own aspect-ratio / response-format knobs instead of the
  *  OpenAI size/quality/detail passthrough. */
 function isGrokImagine(model: string): boolean {
-  return /^grok-imagine(?:-|$)/.test(model)
+  return modelFamily(model) === 'grok'
 }
 
 /** Whether the model belongs to the Google Nano Banana family (nanobanana2 /
@@ -56,23 +67,29 @@ function isGrokImagine(model: string): boolean {
  *  aspect_ratio / image_size vocabulary instead of the OpenAI size/quality
  *  passthrough. */
 function isNanoBanana(model: string): boolean {
-  if (/^nanobanana/i.test(model)) return true
-  return (
-    model === 'gemini-3-pro-image' || model === 'gemini-3-pro-image-preview' ||
-    model === 'gemini-3.1-flash-image' || model === 'gemini-3.1-flash-image-preview' ||
-    model === 'gemini-3.1-flash-lite-image' ||
-    model === 'gemini-2.5-flash-image'
-  )
+  return modelFamily(model) === 'nanobanana'
 }
 
 /** Whether the model belongs to the ByteDance Seedream family (seedream-5.0-pro,
  *  seedream-5.0, seedream-4.x, doubao-seedream-…). OpenAI-compatible gateways
  *  serve Seedream through a unified generate-and-edit architecture:
- *  generation AND editing both go to /images/generations, reference images are
- *  a JSON URL / data-URL array, and the clarity tier is `resolution` while
- *  `size` carries the aspect ratio (or exact pixels). */
+ *  generation AND editing both go to /images/generations and reference images
+ *  are a JSON URL / data-URL array. */
 function isSeedream(model: string): boolean {
-  return /^(?:doubao-)?seedream/i.test(model)
+  return modelFamily(model) === 'seedream'
+}
+
+/** Whether this is the official Volcengine Ark model naming convention. */
+function isVolcSeedream(model: string): boolean {
+  return /^doubao-seedream(?:-|$)/i.test(model.trim())
+}
+
+/** Volcengine uses `size` for the output tier, not the panel's aspect ratio. */
+function seedreamSize(quality: string): string {
+  // Seedream 5.0 Pro currently caps at 2K; keep 4K requests valid by
+  // degrading them to the highest supported tier instead of sending 4K.
+  if (quality === '1k') return '1K'
+  return '2K'
 }
 
 /** The panel's aspect ratios mapped to the closest OpenAI pixel size
@@ -165,7 +182,7 @@ function effectiveParams(request: GenerateRequest): {
   resolution?: string
   response_format?: string
 } {
-  const model = request.model.trim() === '' ? 'gpt-image-2' : request.model.trim()
+  const model = wireModel(request)
   // dall-e-3 has no quality/detail knobs and only produces one image.
   if (model === 'dall-e-3') {
     const pixel = OPENAI_SIZE_BY_RATIO[request.size]
@@ -206,20 +223,15 @@ function effectiveParams(request: GenerateRequest): {
       response_format: 'b64_json',
     }
   }
-  // ByteDance Seedream: OpenAI-compatible gateways accept the aspect ratio in
-  // `size` directly and the clarity tiers as `resolution` (1K / 2K; the 5.0-pro
-  // tier caps at 2K, so 4k falls back to 2K). There is no quality/detail knob,
-  // and edits reuse /images/generations with an image array (see below).
+  // ByteDance Seedream: the official Volcengine Ark API uses `size` for the
+  // resolution tier (1K / 2K), not the panel's aspect-ratio value. It returns
+  // temporary URLs, so ask Ark for URL output and let the host download it.
+  // Other compatible gateways retain the base64 response fallback.
   if (isSeedream(model)) {
     return {
       model,
-      ...request.size !== '' && request.size !== 'auto'
-        ? { size: request.size }
-        : {},
-      ...request.quality !== '' && request.quality !== 'auto'
-        ? { resolution: request.quality === '4k' ? '2K' : request.quality.toUpperCase() }
-        : {},
-      response_format: 'b64_json',
+      size: seedreamSize(request.quality),
+      response_format: isVolcSeedream(model) ? 'url' : 'b64_json',
     }
   }
   // OpenAI-compatible endpoints: nearest pixel size, clarity tiers mapped to
@@ -238,7 +250,7 @@ function effectiveParams(request: GenerateRequest): {
 
 /** How many single-image requests to issue for the requested image count. */
 function effectiveCount(request: GenerateRequest): number {
-  const model = request.model.trim() === '' ? 'gpt-image-2' : request.model.trim()
+  const model = wireModel(request)
   if (model === 'dall-e-3') return 1
   return clampCount(request.n)
 }
@@ -250,7 +262,8 @@ async function normalizeItem(
 ): Promise<{ b64: string; mime: string; revisedPrompt?: string }> {
   const revisedPrompt = typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined
   if (typeof item.b64_json === 'string') {
-    return { b64: bareBase64(item.b64_json), mime: 'image/png', revisedPrompt }
+    const b64 = bareBase64(item.b64_json)
+    return { b64, mime: detectImageMime(Buffer.from(b64, 'base64')) ?? 'image/png', revisedPrompt }
   }
   if (typeof item.url !== 'string' || item.url === '') {
     throw new ImageGenError('upstream image item has neither b64_json nor url')
@@ -259,7 +272,7 @@ async function normalizeItem(
   if (url.startsWith('data:')) {
     const parsed = parseDataUrl(url)
     if (parsed === undefined) throw new ImageGenError('upstream returned a malformed data: url')
-    return { b64: parsed.base64, mime: parsed.mime, revisedPrompt }
+    return { b64: parsed.base64, mime: detectImageMime(Buffer.from(parsed.base64, 'base64')) ?? parsed.mime, revisedPrompt }
   }
   const budget = requestSignal(undefined, IMAGE_FETCH_TIMEOUT_MS)
   let response: Response
@@ -280,9 +293,10 @@ async function normalizeItem(
   }
   const buffer = Buffer.from(await response.arrayBuffer())
   const contentType = response.headers.get('content-type')
-  const mime = contentType !== null && contentType !== ''
+  const mime = detectImageMime(buffer)
+    ?? (contentType !== null && contentType !== ''
     ? contentType.split(';')[0]!.trim()
-    : mimeOfExtension(url) ?? 'image/png'
+    : mimeOfExtension(url) ?? 'image/png')
   return { b64: buffer.toString('base64'), mime, revisedPrompt }
 }
 
@@ -347,7 +361,7 @@ async function requestOneImage(
         image: [request.image],
         ...params.size !== undefined ? { size: params.size } : {},
         ...params.resolution !== undefined ? { resolution: params.resolution } : {},
-        response_format: 'b64_json',
+        response_format: isVolcSeedream(params.model) ? 'url' : 'b64_json',
       })
     } else {
       const form = new FormData()

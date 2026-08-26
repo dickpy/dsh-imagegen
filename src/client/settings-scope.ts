@@ -14,20 +14,31 @@ import {
   type SettingsScopeSnapshot,
   type SnapshotStore,
 } from '@deepseek-ai/dsh-client-runtime/client'
-import { SETTINGS_API } from '../protocol.ts'
+import { SETTINGS_API, type ChannelConfig } from '../protocol.ts'
 
 /** The fields this plugin's settings card edits. */
 export interface ImageGenConfig {
   enabled?: boolean
   announceToAgent?: boolean
   allowAgentImageGeneration?: boolean
-  apiUrl?: string
-  apiKey?: string
-  imageModels?: string[]
+  /** Configured channels (each: name, endpoint, model catalog). */
+  channels?: ChannelConfig[]
+  /** Per-channel API keys, keyed by channel id. The redacted wire view returns
+   *  this as an empty object; key presence comes from the secrets sidecar. */
+  channelSecrets?: Record<string, string>
+  /** Channel used when a request does not name one. */
+  defaultChannelId?: string
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
+  /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
+  apiUrl?: string
+  apiKey?: string
+  imageModels?: string[]
 }
+
+/** One settings path-op as the bridge consumes it. */
+export type SettingsOp = { op: 'set'; path: string[]; value: unknown } | { op: 'unset'; path: string[] }
 
 /** Wire shape of one namespace view from the bridge. */
 interface BridgeView {
@@ -140,11 +151,18 @@ class BridgeScopeController<T> implements SettingsScope<T> {
   }
 
   set(field: string, value: unknown): Promise<void> {
-    return this.enqueue(() => this.write({ op: 'set', path: [field], value }))
+    return this.enqueue(() => this.writeOps([{ op: 'set', path: [field], value }]))
   }
 
   unset(field: string): Promise<void> {
-    return this.enqueue(() => this.write({ op: 'unset', path: [field] }))
+    return this.enqueue(() => this.writeOps([{ op: 'unset', path: [field] }]))
+  }
+
+  /** Apply several path ops in one revision-fenced mutate call (atomic save).
+   *  Path ops may address plain-object fields (e.g. `channelSecrets.<id>`),
+   *  but never navigate *inside* arrays — write array fields wholesale. */
+  mutateOps(ops: SettingsOp[]): Promise<void> {
+    return this.enqueue(() => this.writeOps(ops))
   }
 
   async dispose(): Promise<void> {
@@ -188,13 +206,13 @@ class BridgeScopeController<T> implements SettingsScope<T> {
     this.accept(view, writable)
   }
 
-  private async write(op: { op: 'set' | 'unset'; path: string[]; value?: unknown }): Promise<void> {
+  private async writeOps(ops: SettingsOp[]): Promise<void> {
     const revision = this.getSnapshot().revision
     let response
     try {
       response = await this.api.mutate({
         ns: this.spec.namespace,
-        ops: [op],
+        ops,
         ...revision === undefined ? {} : { expectedRevision: revision },
       })
     } catch {
@@ -229,6 +247,8 @@ class BridgeScopeController<T> implements SettingsScope<T> {
 export interface ImageGenScope extends SettingsScope<ImageGenConfig> {
   /** Queue a bridge refresh (the invalidation path re-reads the namespace). */
   load(): Promise<void>
+  /** Apply several path ops in one revision-fenced mutate call. */
+  mutateOps(ops: SettingsOp[]): Promise<void>
   getKeySetSnapshot(): boolean
   subscribeKeySet(listener: () => void): () => void
   getSecretSetSnapshot(field: string): boolean
@@ -247,4 +267,32 @@ export function bindImageGenScope(fetchFn: typeof fetch = fetch): ImageGenScope 
   })
   void controller.load()
   return controller
+}
+
+/**
+ * Flatten the configured channels into the model options the panel lists
+ * (aliases; the default channel's models first) plus the default channel id.
+ * Falls back to the legacy flat allow-list while no channels exist (upgrade
+ * path). Pure projection — no host calls.
+ */
+export function imageModelOptions(config: ImageGenConfig | undefined): { models: string[]; defaultChannelId?: string } {
+  const channels = config?.channels ?? []
+  if (channels.length === 0) {
+    const legacy = Array.isArray(config?.imageModels)
+      ? config.imageModels.filter((model): model is string => typeof model === 'string' && model.trim() !== '')
+      : []
+    return { models: legacy }
+  }
+  const defaultId = config?.defaultChannelId !== undefined && channels.some(channel => channel.id === config.defaultChannelId)
+    ? config.defaultChannelId
+    : channels[0]!.id
+  const ordered = [defaultId, ...channels.filter(channel => channel.id !== defaultId).map(channel => channel.id)]
+  const models: string[] = []
+  for (const id of ordered) {
+    const channel = channels.find(candidate => candidate.id === id)!
+    for (const model of channel.models) {
+      if (model.alias !== '' && !models.includes(model.alias)) models.push(model.alias)
+    }
+  }
+  return models.length > 0 ? { models, defaultChannelId: defaultId } : { models: [], defaultChannelId: defaultId }
 }

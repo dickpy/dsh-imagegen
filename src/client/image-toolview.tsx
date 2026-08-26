@@ -1,8 +1,9 @@
 /** Inline renderer for image-generation tool-result attachments. */
 
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import type { ClientContext, ISessions, SessionId, ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, SessionId, ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
 import { useEffect, useMemo, useState } from 'react'
+import { AGENT_IMAGE_API } from '../protocol.ts'
 import css from './image-toolview.module.css'
 
 /** Owner props supplied by the host's keyed tool-call slot. */
@@ -31,7 +32,9 @@ function isSettled(block: ToolCallBlock): block is Extract<ToolCallBlock, { kind
 
 function imageRefsOf(block: ToolCallBlock): ImageAttachmentRef[] {
   if (!isSettled(block)) return []
-  return block.content.flatMap(content => content.type === 'image' ? [content.attachment] : [])
+  const resultContent = block.resultView?.card === 'generic' ? block.resultView.content ?? [] : []
+  return [...block.content, ...resultContent]
+    .flatMap(content => content.type === 'image' ? [content.attachment] : [])
 }
 
 function textOf(block: ToolCallBlock): string {
@@ -108,16 +111,20 @@ function useAttachmentImages(
 
 /** Register the inline image result view for all image-generation result tools. */
 export function registerImageToolviews(ctx: ClientContext): void {
-  // Older client typings still expose the host-side SessionStore on the
-  // generic Context property. The runtime service itself provides the newer
-  // binding/session face, so resolve it through Cordis and narrow locally.
-  const sessions = ctx.get('sessions') as unknown as ISessions | undefined
-  const load = async (sessionId: SessionId, ref: ImageAttachmentRef): Promise<string> => {
-    const session = sessions?.binding(sessionId)?.session
-    if (session === undefined) throw new Error('当前会话不可用，无法读取图片附件。')
-    const result = await session.readAttachment(ref.attachmentId)
-    if (!result.ok) throw new Error(result.error.message)
-    const blob = new Blob([new Uint8Array(result.value.data)], { type: result.value.attachment.mediaType })
+  const load = async (_sessionId: SessionId, ref: ImageAttachmentRef): Promise<string> => {
+    // Tool-result images intentionally do not occur in model-visible session
+    // content, so session.readAttachment() rejects them. The plugin route
+    // reads the same durable attachment after validating the complete ref.
+    const query = new URLSearchParams({
+      attachment_id: String(ref.attachmentId),
+      media_type: ref.mediaType,
+      bytes: String(ref.bytes),
+      width: String(ref.width),
+      height: String(ref.height),
+    })
+    const response = await fetch(`${AGENT_IMAGE_API}?${query.toString()}`)
+    if (!response.ok) throw new Error(`无法读取图片附件（HTTP ${response.status}）。`)
+    const blob = await response.blob()
     return URL.createObjectURL(blob)
   }
 

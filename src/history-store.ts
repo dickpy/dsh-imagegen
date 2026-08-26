@@ -47,6 +47,8 @@ interface StoredEntry {
   n: number
   images: StoredImage[]
   refName?: string
+  channelId?: string
+  channel?: string
 }
 
 /** The index.json shape. */
@@ -151,6 +153,8 @@ function toWire(entry: StoredEntry): HistoryEntry {
       ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
+    ...entry.channel === undefined ? {} : { channel: entry.channel },
+    ...entry.channelId === undefined ? {} : { channelId: entry.channelId },
   }
 }
 
@@ -193,6 +197,8 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
       n: input.n,
       images: storedImages,
       ...input.refName === undefined ? {} : { refName: input.refName },
+      ...input.channelId === undefined ? {} : { channelId: input.channelId },
+      ...input.channel === undefined ? {} : { channel: input.channel },
     }
     const merged = [entry, ...await readIndex()]
     const kept = merged.slice(0, HISTORY_MAX)

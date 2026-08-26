@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.2.3'
+export const PLUGIN_VERSION = '1.3.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -29,6 +29,19 @@ export const PROMPT_ENHANCE_API = {
 export const IMAGE_MODEL_API = {
   models: '/api/dsh-imagegen/image-models',
 } as const
+
+/** Host-served built-in provider catalog (channels the user can instantiate). */
+export const PRESETS_API = '/api/dsh-imagegen/presets' as const
+
+/** Loopback-only image reader for Agent tool-result previews. */
+export const AGENT_IMAGE_API = '/api/dsh-imagegen/agent-image' as const
+
+/**
+ * Host-computed per-channel usage counters (generation-count badges in the
+ * settings card): entries are tallied from the persisted history and gallery
+ * by channel + model alias.
+ */
+export const USAGE_API = '/api/dsh-imagegen/usage' as const
 
 /** Host-resident generation queue endpoints. */
 export const TASK_API = {
@@ -136,21 +149,26 @@ export interface TemplateRefreshResult {
 /** Generation modes. */
 export type GenerateMode = 'text' | 'edit'
 
-/** A client 鈫?host generate request (what the panel collects). */
+/** A client → host generate request (what the panel collects). */
 export interface GenerateRequest {
   /** text-to-image (images/generations) or image-to-image (images/edits). */
   mode: GenerateMode
-  /** Upstream model name, e.g. gpt-image-2. */
+  /**
+   * User-facing model name (an alias from the channel's model catalog). The
+   * host maps it onto the configured channel and fills `upstream` with the
+   * real id before the engine sees it.
+   */
   model: string
   /** The prompt. Upstream providers may impose their own length limits. */
   prompt: string
   /** Canvas size as an aspect ratio: 'auto' or e.g. '1:1' / '16:9' / '21:9'.
    *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok
-   *  and Nano Banana, size-aspect for Seedream, the closest pixel size for
+   *  and Nano Banana, resolution-tier size for Seedream, the closest pixel size for
    *  OpenAI-compatible endpoints). */
   size: string
   /** Clarity tier: 'auto' | '1k' | '2k' | '4k'. The host maps it onto the
-   *  model's own vocabulary (resolution for Grok / Seedream, image_size for
+   *  model's own vocabulary (resolution for Grok, image_size for Nano Banana,
+   *  and size for Seedream,
    *  Nano Banana, quality for OpenAI). */
   quality: string
   /** Number of images, 1-4. */
@@ -165,6 +183,14 @@ export interface GenerateRequest {
   image?: string
   /** Original reference-image name, retained in the history entry. */
   refName?: string
+  /** Channel this request targets (the host falls back to the default when
+   *  absent, and re-routes by model alias when the alias lives elsewhere). */
+  channelId?: string
+  /** Channel display name snapshot, kept on the history entry (host-filled). */
+  channel?: string
+  /** Upstream model id actually sent to the gateway (host-filled from the
+   *  alias mapping; defaults to `model` when absent). */
+  upstream?: string
 }
 
 /** One generated image, normalized host-side to base64 so the browser never
@@ -185,6 +211,45 @@ export interface GenerateResult {
   history?: HistoryEntry[]
   /** Persistence failure after images were successfully generated. */
   historyError?: string
+}
+
+/**
+ * One model mapping in a channel's catalog: the display alias the user, the
+ * panel, and the Agent see, and the upstream model id actually sent to the
+ * gateway. The alias defaults to the upstream id but can be renamed freely.
+ */
+export interface ModelMapping {
+  /** User-facing model name (defaults to the upstream id). */
+  alias: string
+  /** Upstream model id sent to the gateway. */
+  id: string
+}
+
+/**
+ * One configured image channel (provider). Secrets never live here — the API
+ * key is stored at `channelSecrets.<channelId>` in the settings document so
+ * whole-array writes can never clobber keys the user did not re-enter.
+ */
+export interface ChannelConfig {
+  /** Stable channel id (the channelSecrets dict is keyed by it). */
+  id: string
+  /** Preset provider id this channel was created from ('' = custom). */
+  preset: string
+  /** Display name shown in the list, the panel, and Agent guidance. */
+  name: string
+  /** OpenAI-compatible base URL. */
+  apiUrl: string
+  /** The channel's model catalog (alias → upstream id). */
+  models: ModelMapping[]
+}
+
+/** One built-in provider as the settings card consumes it. */
+export interface PresetProviderView {
+  id: string
+  name: string
+  apiUrl: string
+  hint: string
+  models: ModelMapping[]
 }
 
 export type GenerationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -235,6 +300,10 @@ export interface HistoryEntry {
   refName?: string
   /** User-managed gallery labels (unused by history entries). */
   tags?: string[]
+  /** Channel id snapshot (usage counters key by it for new entries). */
+  channelId?: string
+  /** Channel display name snapshot (survives channel deletion). */
+  channel?: string
 }
 
 /** A history entry the client submits for persistence (images still carry base64). */
@@ -250,4 +319,8 @@ export interface HistoryEntryInput {
   n: number
   images: GeneratedImage[]
   refName?: string
+  /** Channel id snapshot, tallied by the usage endpoint. */
+  channelId?: string
+  /** Channel display name snapshot (survives channel deletion). */
+  channel?: string
 }

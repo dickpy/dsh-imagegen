@@ -44,7 +44,7 @@ await check('A2 Config schema validates + marks apiKey secret', () => {
   assert.equal(resolved.apiKey, 'sk-1')
   assert.equal(resolved.enabled, true)
   assert.equal(resolved.allowAgentImageGeneration, true)
-  assert.deepEqual(resolved.imageModels, ['gpt-image-2', 'grok-imagine-image'])
+  assert.deepEqual(resolved.imageModels, [])
   // Config is the schemastery schema itself: the secret role lives on the
   // schema node, which the settings seam's redactor walks.
   assert.equal(host.Config.dict?.apiKey?.meta?.role, 'secret')
@@ -90,7 +90,7 @@ const upstream = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     assert.equal(body.model, 'gpt-image-2')
-    assert.ok(body.prompt === 'a cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this')
+    assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this')
     assert.equal(body.size, '1024x1024')
     assert.equal(body.quality, 'high')
     // The engine never sends `n`: Responses-API gateways reject the batch
@@ -102,7 +102,7 @@ const upstream = createServer(async (req, res) => {
       created: 1,
       data: [
         { b64_json: pngBytes.toString('base64'), revised_prompt: 'a refined cat' },
-        { url: `http://127.0.0.1:${upstream.address().port}/image/result.png` },
+        { url: `http://127.0.0.1:${upstream.address().port}/image/${body.prompt === 'a mismatch cat' ? 'mismatch' : 'result'}.png` },
       ],
     }))
     return
@@ -123,6 +123,12 @@ const upstream = createServer(async (req, res) => {
   }
   if (url.pathname === '/image/result.png') {
     res.writeHead(200, { 'content-type': 'image/png' })
+    res.end(pngBytes)
+    return
+  }
+  if (url.pathname === '/image/mismatch.png') {
+    // Regression fixture: the provider declares JPEG while returning PNG bytes.
+    res.writeHead(200, { 'content-type': 'image/jpeg' })
     res.end(pngBytes)
     return
   }
@@ -203,6 +209,47 @@ await check('B5 dall-e-3 clamps params', async () => {
     assert.deepEqual(seen[0], { model: 'dall-e-3', size: '1024x1024', prompt: 'x' })
   } finally {
     await new Promise(resolve => dalle.close(resolve))
+  }
+})
+
+await check('B6 Volcengine Seedream uses Ark size and URL response fields', async () => {
+  const seen = []
+  const seedream = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    if (url.pathname === '/v1/images/generations') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      seen.push(body)
+      assert.equal(body.model, 'doubao-seedream-5-0-pro-260628')
+      assert.equal(body.size, '2K')
+      assert.equal(body.response_format, 'url')
+      assert.equal(body.resolution, undefined)
+      assert.equal(body.prompt, 'a volcano')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ url: `http://127.0.0.1:${seedream.address().port}/seedream.png` }] }))
+      return
+    }
+    if (url.pathname === '/seedream.png') {
+      assert.equal(req.headers.authorization, 'Bearer sk-seedream')
+      res.writeHead(200, { 'content-type': 'image/png' })
+      res.end(pngBytes)
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => seedream.listen(0, '127.0.0.1', resolve))
+  try {
+    const result = await host.generateImage(
+      { apiUrl: `http://127.0.0.1:${seedream.address().port}/v1`, apiKey: 'sk-seedream' },
+      { mode: 'text', model: 'doubao-seedream-5-0-pro-260628', prompt: 'a volcano', size: '16:9', quality: '4k', n: 1, detail: '' },
+    )
+    assert.equal(result.images.length, 1)
+    assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+    assert.equal(seen.length, 1)
+  } finally {
+    await new Promise(resolve => seedream.close(resolve))
   }
 })
 
@@ -294,11 +341,28 @@ const templates = {
     return file === 'case1.png' ? { data: templateImage, mime: 'image/png' } : undefined
   },
 }
+const agentPreviewImage = Buffer.from('agent-preview-image')
+const agentPreviewRef = {
+  attachmentId: `sha256:${'a'.repeat(64)}`,
+  mediaType: 'image/png',
+  bytes: agentPreviewImage.length,
+  width: 1,
+  height: 1,
+}
+const attachments = {
+  async readImage(ref) {
+    assert.equal(ref.attachmentId, agentPreviewRef.attachmentId)
+    assert.equal(ref.mediaType, agentPreviewRef.mediaType)
+    assert.equal(ref.bytes, agentPreviewRef.bytes)
+    return { ref: agentPreviewRef, data: agentPreviewImage }
+  },
+}
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   history,
   templates,
+  attachments,
 })
 const server = createServer((req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://x').pathname
@@ -410,13 +474,30 @@ await check('C5 template routes serve the bundled gallery, refresh it, and proxy
   assert.equal(unknown.status, 404)
 })
 
-await check('C6 Agent tools wait for results, return attachments, edit, and enforce the allow setting', async () => {
+await check('C6 Agent tool-result image route serves durable attachments without a session-log image reference', async () => {
+  const query = new URLSearchParams({
+    attachment_id: agentPreviewRef.attachmentId,
+    media_type: agentPreviewRef.mediaType,
+    bytes: String(agentPreviewRef.bytes),
+    width: String(agentPreviewRef.width),
+    height: String(agentPreviewRef.height),
+  })
+  const image = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/agent-image?${query}`)
+  assert.equal(image.status, 200)
+  assert.equal(image.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), agentPreviewImage)
+  const invalid = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/agent-image?attachment_id=bad`)
+  assert.equal(invalid.status, 400)
+})
+
+await check('C7 Agent tools wait for results, keep images in the UI view, edit, and enforce the allow setting', async () => {
   const tools = new Map()
   const saved = new Map()
   let serial = 0
   const attachmentStore = {
     async saveImages(images) {
       return images.map((image) => {
+        assert.equal(image.mediaType, 'image/png', 'attachment media type must match the encoded image bytes')
         const attachmentId = `attachment-${++serial}`
         const ref = { attachmentId, mediaType: image.mediaType, bytes: image.data.byteLength, width: 1, height: 1, name: image.name }
         saved.set(attachmentId, { ref, data: image.data })
@@ -433,19 +514,50 @@ await check('C6 Agent tools wait for results, return attachments, edit, and enfo
   const sent = []
   const agent = { send: (...args) => { sent.push(args) } }
   const runtime = new host.ImageGenerationRuntime(
-    () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
+    () => ({
+      channels: [{
+        id: 'default',
+        preset: '',
+        name: 'Default',
+        apiUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        apiKey: 'sk-test',
+        models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
+      }],
+      defaultChannelId: 'default',
+    }),
     { append: async () => [] },
   )
   const dispose = host.registerAgentImageTools({
     tools: { register: definition => { tools.set(definition.name, definition); return () => { tools.delete(definition.name) } } },
     attachments: attachmentStore,
-  }, runtime, () => ({ enabled: true, allowAgentImageGeneration: enabled, apiUrl: 'configured', apiKey: 'configured', imageModels: ['gpt-image-2'] }))
+  }, runtime, () => ({
+    enabled: true,
+    allowAgentImageGeneration: enabled,
+    defaultChannelId: 'default',
+    channels: [{
+      id: 'default',
+      preset: '',
+      name: 'Default',
+      apiUrl: 'configured',
+      apiKey: 'configured',
+      models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
+    }],
+  }))
   try {
-    const generated = await tools.get('generate_image').execute({ prompt: 'a cat', size: '1:1', quality: '4k', detail: 'standard' }, { agent })
+    const generated = await tools.get('generate_image').execute({ prompt: 'a mismatch cat', size: '1:1', quality: '4k', detail: 'standard' }, { agent })
     assert.equal(generated.status, 'completed', 'the Agent tool waits for the task to finish')
     assert.equal(generated.images.length, 2)
     const generatedRendered = tools.get('generate_image').output.render({ prompt: 'a cat' }, generated)
-    assert.equal(generatedRendered.filter(block => block.type === 'image').length, 2, 'completed tool results carry visible image attachments')
+    assert.equal(generatedRendered.filter(block => block.type === 'image').length, 0, 'generated images stay out of model-facing tool content')
+    const generatedArgs = { prompt: 'a cat' }
+    const generatedMeta = tools.get('generate_image').output.presentationMeta(generatedArgs, generated)
+    const generatedView = tools.get('generate_image').presentResult(generatedArgs, {
+      content: generatedRendered,
+      isError: false,
+      meta: generatedMeta,
+    })
+    assert.equal(generatedView?.card, 'generic')
+    assert.equal(generatedView?.content?.filter(block => block.type === 'image').length, 2, 'completed tool results keep image attachments in the UI view')
     assert.equal(saved.size, 2, 'completed generation stores attachments once')
     assert.equal(sent.length, 0, 'completion does not inject a conversation message')
     const complete = await tools.get('get_image_generation_task').execute({ task_id: generated.task_id }, {})
@@ -553,6 +665,19 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   // Stateful bridge stub: describe + mutate (same wire shapes as the routes).
   // The redacted view never returns the key; the secrets sidecar tracks it.
   const keyState = { set: false }
+  const configState = {
+    enabled: true,
+    announceToAgent: true,
+    channels: [{
+      id: 'default',
+      preset: '',
+      name: 'Default',
+      apiUrl: 'https://example.test/v1',
+      models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
+    }],
+    defaultChannelId: 'default',
+  }
+  const channelSecrets = () => [{ path: ['channelSecrets', 'default'], set: keyState.set }]
   const mutateCalls = []
   const fetchStub = async (input, init) => {
     const path = String(input)
@@ -564,8 +689,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
           value: {
             namespaces: [{
               ns: 'dsh-imagegen',
-              value: { enabled: true, announceToAgent: true, apiUrl: '' },
-              revision: 0,
+          value: configState,
+          revision: 0,
+          secrets: channelSecrets(),
             }],
             writable: true,
           },
@@ -575,10 +701,10 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     if (path.endsWith('/settings/mutate')) {
       const payload = JSON.parse(init.body)
       mutateCalls.push(payload)
-      let apiUrl = ''
       for (const op of payload.ops) {
-        if (op.path[0] === 'apiUrl' && op.op === 'set') apiUrl = op.value
-        if (op.path[0] === 'apiKey') keyState.set = op.op === 'set'
+        if (op.path[0] === 'channels' && op.op === 'set') configState.channels = op.value
+        if (op.path[0] === 'defaultChannelId' && op.op === 'set') configState.defaultChannelId = op.value
+        if (op.path[0] === 'channelSecrets' && op.path[1] === 'default') keyState.set = op.op === 'set'
       }
       return {
         ok: true,
@@ -586,10 +712,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
           ok: true,
           value: {
             ns: 'dsh-imagegen',
-            value: { enabled: true, announceToAgent: true, apiUrl },
-            user: { apiUrl, apiKey: undefined },
+            value: configState,
             revision: 1,
-            secrets: [{ path: ['apiKey'], set: keyState.set }],
+            secrets: channelSecrets(),
           },
         }),
       }
@@ -761,27 +886,26 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // write by the secrets sidecar; a save that landed must not show failure
     // (this exact bug surfaced as "保存失败" while values were actually stored).
     const face = registered[0].inject()
-    face.edit('apiUrl', 'https://new.example/v1')
-    face.edit('apiKey', 'sk-new')
-    face.save()
+    face.channels.setChannelKey('default', 'sk-new')
+    await face.channels.commit()
     await new Promise(resolve => setTimeout(resolve, 100))
     const afterSave = face.hooks.imageGenSettingsCard.getSnapshot()
     assert.equal(afterSave.failed, false, 'save must not report failure for a secret write')
-    assert.equal(afterSave.dirty, false, 'staged drafts cleared after a landed save')
+    assert.equal(afterSave.dirty, false, `staged drafts cleared after a landed save: ${JSON.stringify(afterSave)}`)
     assert.equal(keyState.set, true, 'key write reached the bridge')
     assert.ok(
-      mutateCalls.some(m => m.ops.some(o => o.path[0] === 'apiKey' && o.op === 'set' && o.value === 'sk-new')),
-      'apiKey write sent with the typed value',
+      mutateCalls.some(m => m.ops.some(o => o.path[0] === 'channelSecrets' && o.path[1] === 'default' && o.op === 'set' && o.value === 'sk-new')),
+      'channel key write sent with the typed value',
     )
     // The clear path: resetting the key stages an explicit clear and must
     // also report success.
-    face.resetField('apiKey')
-    face.save()
+    face.channels.setChannelKey('default', '')
+    await face.channels.commit()
     await new Promise(resolve => setTimeout(resolve, 100))
     const afterClear = face.hooks.imageGenSettingsCard.getSnapshot()
     assert.equal(afterClear.failed, false, 'clearing a secret must not report failure')
     assert.equal(keyState.set, false, 'key clear reached the bridge')
-    assert.equal(face.hooks.imageGenKeySet.getSnapshot(), false, 'key-set flag follows the clear')
+    assert.equal(face.hooks.imageGenSettingsCard.getSnapshot().channels.keySet.default, false, 'key-set flag follows the clear')
   } finally {
     if (previousWindow === undefined) delete globalThis.window
     else globalThis.window = previousWindow
