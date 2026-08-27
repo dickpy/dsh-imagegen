@@ -4,7 +4,7 @@
 
 export const zh = {
   'entry.label': 'AI 生图',
-  'entry.tooltip': 'AI 生图面板（gpt-image-2 / grok-imagine-image / nanobanana / seedream 系列）',
+  'entry.tooltip': 'AI 生图面板（gpt-image-2 / glm-image / grok-imagine-image / nanobanana / seedream 系列）',
   'panel.title': 'AI 生图',
   'panel.githubTip': '觉得好用或有建议？欢迎来 GitHub 提 issues、点个 star 支持一下！',
   // mode
@@ -55,6 +55,7 @@ export const zh = {
   'detail.hint': '透传参数，部分 gpt-image-2 网关支持；官方接口请保持「自动」',
   // footer
   'model.label': '模型',
+  'model.noEditModels': '当前模式暂无可用模型',
   'compare.enable': '多模型对比',
   'compare.models': '参与对比的模型',
   'compare.title': '多模型结果对比',
@@ -295,20 +296,18 @@ export const zh = {
   'channels.addModelConfirm': '添加',
   'channels.copyFrom': '从其他渠道复制…',
   'channels.copyApply': '复制',
-  'channels.candidatesTitle': '候选模型（点击加入）',
-  'channels.candidatesQuick': '只勾已收录协议',
+  'channels.candidatesTitle': '图片模型候选（点击加入）',
   'channels.deleteThisChannel': '删除此渠道',
   'channels.setDefault': '设为默认渠道',
   'channels.presetPickerTitle': '添加提供方',
   'channels.presetPickerHint': '选择一个内置提供方，仅需填写 API 密钥',
-  'channels.presetModelsHint': '{n} 个预置模型',
   'channels.presetCustomHint': '自行填写 API 地址、密钥与模型目录',
   'channels.presetLoadFailed': '加载提供方失败：{error}',
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
   'entry.label': 'AI Image',
-  'entry.tooltip': 'AI image generation studio (gpt-image-2 / grok-imagine-image / nanobanana / seedream family)',
+  'entry.tooltip': 'AI image generation studio (gpt-image-2 / glm-image / grok-imagine-image / nanobanana / seedream family)',
   'panel.title': 'AI Image',
   'panel.githubTip': 'Like it or have suggestions? Head to GitHub to open issues and star us!',
   'mode.text': 'Text to Image',
@@ -355,6 +354,7 @@ export const en: Record<keyof typeof zh, string> = {
   'detail.high': 'High',
   'detail.hint': 'Passthrough parameter supported by some gpt-image-2 gateways; keep "Auto" for official endpoints',
   'model.label': 'Model',
+  'model.noEditModels': 'No model is available for this mode',
   'compare.enable': 'Multi-model comparison',
   'compare.models': 'Models to compare',
   'compare.title': 'Multi-model comparison',
@@ -587,13 +587,11 @@ export const en: Record<keyof typeof zh, string> = {
   'channels.addModelConfirm': 'Add',
   'channels.copyFrom': 'Copy from another channel…',
   'channels.copyApply': 'Copy',
-  'channels.candidatesTitle': 'Candidates (click to add)',
-  'channels.candidatesQuick': 'Add only known protocols',
+  'channels.candidatesTitle': 'Image model candidates (click to add)',
   'channels.deleteThisChannel': 'Delete this channel',
   'channels.setDefault': 'Set as default channel',
   'channels.presetPickerTitle': 'Add provider',
   'channels.presetPickerHint': 'Pick a built-in provider — only the API key is needed',
-  'channels.presetModelsHint': '{n} preset model(s)',
   'channels.presetCustomHint': 'Configure the API URL, key, and model catalog yourself',
   'channels.presetLoadFailed': 'Failed to load providers: {error}',
 }

@@ -49,6 +49,8 @@ interface StoredEntry {
   refName?: string
   channelId?: string
   channel?: string
+  comparisonId?: string
+  comparisonModels?: string[]
 }
 
 /** The index.json shape. */
@@ -155,6 +157,8 @@ function toWire(entry: StoredEntry): HistoryEntry {
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.channel === undefined ? {} : { channel: entry.channel },
     ...entry.channelId === undefined ? {} : { channelId: entry.channelId },
+    ...entry.comparisonId === undefined ? {} : { comparisonId: entry.comparisonId },
+    ...entry.comparisonModels === undefined ? {} : { comparisonModels: entry.comparisonModels },
   }
 }
 
@@ -199,6 +203,8 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
       ...input.refName === undefined ? {} : { refName: input.refName },
       ...input.channelId === undefined ? {} : { channelId: input.channelId },
       ...input.channel === undefined ? {} : { channel: input.channel },
+      ...input.comparisonId === undefined ? {} : { comparisonId: input.comparisonId },
+      ...input.comparisonModels === undefined ? {} : { comparisonModels: input.comparisonModels },
     }
     const merged = [entry, ...await readIndex()]
     const kept = merged.slice(0, HISTORY_MAX)

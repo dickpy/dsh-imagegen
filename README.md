@@ -79,7 +79,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 
 同一个提示词往往在不同模型上呈现出完全不同的构图、质感与文字处理。打开“多模型对比”，选择多个已配置模型后，插件会以相同参数提交任务，并在画布和全屏预览中将结果并列展示。这样能更快选出真正适合当前任务的模型，而不是凭感觉反复试错。
 
-![gpt-image-2 与 grok-imagine-image 的多模型并列结果对比](docs/images/multi-model-comparison.png)
+![gpt-image-2、grok-imagine-image 与 doubao-seedream 的三模型并列结果对比](docs/images/multi-model-comparison.png)
 
 <a id="studio"></a>
 ## 原生图像工作台
@@ -133,7 +133,7 @@ Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`。安装后�
 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载 tgz 后执行：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.3.0.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.3.1.tgz
 ```
 
 <a id="configuration"></a>
@@ -146,19 +146,20 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.3.0.tgz
 | 提供方 | 预置提供方可直接选择；也可以添加自定义渠道。 |
 | API 地址 | OpenAI 兼容接口根地址，例如 `https://api.openai.com/v1`。插件会自动追加图像接口路径。 |
 | API 密钥 | 每个提供方单独配置，密钥仅保存在 DSH 宿主侧，浏览器与 Agent 都不会获得明文。 |
-| 模型目录 | 保存地址和密钥后点击“检测可用模型”；勾选实际支持生图的项目。没有 `/models` 的网关可手动添加，并可设置显示别名。 |
+| 模型目录 | 保存地址和密钥后点击“检测可用模型”；检测结果会优先过滤聊天、Embedding 等非图片模型，再勾选实际支持生图的项目。没有 `/models` 的网关可手动添加，并可设置显示别名。 |
 | 提示词增强模型 | 可选。点击“获取可用模型”，选择支持 `/chat/completions` 的模型；通常可复用生图 API 凭据。 |
 | 允许 Agent 调用生图 | 默认开启。关闭后，Agent 不能提交、查询和取消任务，侧边栏工作台不受影响。 |
 
-> `/models` 的标准响应通常不含“是否支持生图”的能力字段，因此它提供的是候选列表，不是兼容性认证。请只选择你的上游实际支持的生图模型。
+> `/models` 的标准响应通常不含“是否支持生图”的能力字段，因此插件会结合能力字段和模型 ID 做候选过滤，但仍不是兼容性认证。请只选择你的上游实际支持的生图模型。
 
 ### 已适配的接口
 
 - **OpenAI 兼容接口**：支持 `/images/generations`、`/images/edits` 和 `{ data: [{ b64_json | url }] }` 格式响应。
+- **智谱 GLM-Image**：内置 `glm-image`，官方地址使用 `https://open.bigmodel.cn/api/paas/v4`，文生图走 `/images/generations`，质量参数映射为 `hd`；当前不支持图生图。
 - **Grok Imagine**：原生支持 `grok-imagine-image` 与 `grok-imagine-image-2.0`。将地址设为 `https://api.x.ai/v1` 后，图生图会使用其 JSON `image_url` 协议，比例和清晰度映射为 `aspect_ratio` 与 `resolution`。
 - **Nano Banana（谷歌 Gemini 图像系列）**：内置 `nanobanana2` / `nanobanana2-lite` / `nanobanana-pro`（也识别官方 `gemini-3.x-image*` ID）。走 OpenAI 兼容接口时，比例和清晰度映射为 `aspect_ratio` 与 `image_size`（1K/2K/4K），输出请求 base64。
 - **Seedream（字节跳动生图系列）**：内置 `seedream-5.0-pro`（也识别 `seedream-4.x`、`doubao-seedream-…`）。无 `/images/edits`，文生图与图生图统一走 `/images/generations`，参考图以 JSON `image` 数组发送；官方 Ark 接口的 `size` 用于清晰度档位（1K/2K，5.0-pro 上限 2K），面板比例不会误传为 Ark 的 `size`。
-- **后续模型**：可将 `qwen-image`、Gemini 等 OpenAI 兼容网关模型加入清单；厂商专属鉴权或请求协议需要单独适配。
+- **后续模型**：没有被检测规则识别的 OpenAI 兼容图片模型仍可手动加入清单；厂商专属鉴权或请求协议需要单独适配。
 
 <a id="community"></a>
 ## 交流群

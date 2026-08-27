@@ -38,7 +38,9 @@ export class ImageGenerationRuntime {
     private readonly resolve: () => ChannelsView,
     private readonly history: HistorySink = { append: appendHistory },
   ) {
-    this.queue = new GenerationTaskQueue((request, signal) => this.run(request, signal))
+    // A comparison can contain up to four models; let those tasks run at the
+    // same time while still applying a small host-wide concurrency limit.
+    this.queue = new GenerationTaskQueue((request, signal) => this.run(request, signal), 4)
   }
 
   async run(request: GenerateRequest, signal?: AbortSignal): Promise<GenerateResult> {
@@ -66,6 +68,8 @@ export class ImageGenerationRuntime {
         ...request.refName === undefined ? {} : { refName: request.refName },
         ...request.channelId === undefined ? {} : { channelId: request.channelId },
         ...request.channel === undefined ? {} : { channel: request.channel },
+        ...request.comparisonId === undefined ? {} : { comparisonId: request.comparisonId },
+        ...request.comparisonModels === undefined ? {} : { comparisonModels: request.comparisonModels },
       })
       return { ...result, history }
     } catch (error) {

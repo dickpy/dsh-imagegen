@@ -1500,22 +1500,25 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 .compareToggle input, .compareModelChoices input { accent-color: var(--dsw-alias-brand-primary); }
 .compareModelChoices { display: flex; flex-wrap: wrap; gap: 6px; }
 .compareModelChoices label { padding: 4px 6px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 5px; font-size: 10px; }
-.comparisonBoard { position: absolute; z-index: 4; top: 126px; right: 14px; bottom: 14px; left: 14px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); }
+.comparisonBoard { position: absolute; z-index: 4; top: 14px; right: 14px; bottom: 14px; left: 14px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); }
 .comparisonBoard > header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .comparisonBoard > header div { display: flex; align-items: baseline; gap: 7px; }
 .comparisonBoard > header strong { color: var(--dsw-alias-label-primary); font-size: 13px; }
 .comparisonBoard > header span { color: var(--dsw-alias-label-tertiary); font-size: 11px; }
 .comparisonBoard > header button { min-height: 28px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 5px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); cursor: pointer; font: inherit; font-size: 11px; }
-.comparisonGrid { display: grid; flex: 1; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; overflow: auto; padding: 12px; }
-.comparisonGrid article { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.comparisonGrid { display: grid; flex: 1; min-height: 0; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 12px; overflow: auto; padding: 12px; }
+.comparisonGrid article { display: flex; height: 100%; min-width: 0; min-height: 0; flex-direction: column; gap: 7px; }
 .comparisonGrid article > strong { color: var(--dsw-alias-label-primary); font-size: 12px; }
-.comparisonGrid article > span { display: grid; min-height: 160px; place-items: center; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); font-size: 12px; }
-.comparisonGrid img { display: block; width: 100%; min-height: 160px; max-height: calc(100vh - 260px); object-fit: contain; background: var(--dsw-alias-bg-base); }
+.comparisonImageButton { display: flex; width: 100%; min-height: 0; flex: 1; padding: 0; overflow: hidden; border: 0; cursor: zoom-in; background: var(--dsw-alias-bg-base); }
+.comparisonImageButton:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.comparisonGrid article > span { display: grid; flex: 1; min-height: 0; place-items: center; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-2); font-size: 12px; }
+.comparisonGrid img { display: block; width: 100%; height: 100%; min-height: 0; max-height: none; flex: 1; object-fit: contain; background: var(--dsw-alias-bg-base); }
 .comparisonFullscreen { position: fixed; z-index: 1200; inset: 0; overflow: auto; padding: 54px 24px 24px; background: rgb(0 0 0 / 92%); }
 .comparisonFullscreenGrid { display: grid; min-height: 100%; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; gap: 18px; }
 .comparisonFullscreen figure { min-width: 0; margin: 0; }
 .comparisonFullscreen figcaption { margin-bottom: 8px; color: #fff; font-size: 13px; font-weight: 600; }
 .comparisonFullscreen img { display: block; width: 100%; margin-bottom: 10px; background: #111; }
+.historyItem[data-comparison] { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l1)); }
 .galleryMasonry { display: grid; flex: 1 1 auto; width: 100%; height: 0; max-width: 100%; min-width: 0; min-height: 0; box-sizing: border-box; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 16px; overflow-y: scroll; overflow-x: hidden; overscroll-behavior: contain; padding: 2px 8px 16px 2px; scrollbar-width: thin; scrollbar-color: var(--dsw-alias-border-l2) transparent; }
 .galleryMasonry::-webkit-scrollbar { width: 8px; }
 .galleryMasonry::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l2); border-radius: 999px; }

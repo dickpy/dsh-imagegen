@@ -18,6 +18,7 @@ import type { GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, His
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
 import { normalizeImageModels } from '../image-models.ts'
+import { describeModel } from '../model-catalog.ts'
 import css from './panel.module.css'
 
 /** Size options, presented as aspect ratios (auto = let the model decide).
@@ -156,7 +157,36 @@ function formatTime(timestamp: number): string {
 type PanelTab = GenerateMode | 'gallery'
 
 type GalleryFilter = string
-type ComparisonSession = { taskIds: string[]; prompt: string }
+type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
+type HistoryGroup = { key: string; entries: HistoryEntry[]; models: string[] }
+
+function modelsOfHistoryEntry(entry: HistoryEntry): string[] {
+  return entry.comparisonModels?.length !== undefined && entry.comparisonModels.length > 1
+    ? entry.comparisonModels
+    : [entry.model]
+}
+
+/** Collapse the per-model history rows that belong to one comparison run. */
+function groupHistoryEntries(entries: HistoryEntry[]): HistoryGroup[] {
+  const groups = new Map<string, HistoryGroup>()
+  for (const entry of entries) {
+    const key = entry.comparisonId ?? entry.id
+    const existing = groups.get(key)
+    if (existing === undefined) {
+      groups.set(key, { key, entries: [entry], models: modelsOfHistoryEntry(entry) })
+    } else {
+      existing.entries.push(entry)
+      existing.models = [...new Set([...existing.models, ...modelsOfHistoryEntry(entry)])]
+    }
+  }
+  return [...groups.values()]
+}
+
+function newComparisonId(): string {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
+  return `comparison-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
 
 /** Render the studio. */
 export function ImageGenPanel(props: {
@@ -231,9 +261,13 @@ export function ImageGenPanel(props: {
   const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
+  const tasksRef = useRef<GenerationTask[]>([])
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
+  const modeModels = tab === 'edit'
+    ? imageModels.filter(candidate => describeModel(candidate).supportsEdit)
+    : imageModels
   const fileInput = useRef<HTMLInputElement>(null)
   const previewStage = useRef<HTMLDivElement>(null)
   const activeTasks = tasks.filter(task => task.status === 'queued' || task.status === 'running')
@@ -244,12 +278,12 @@ export function ImageGenPanel(props: {
 
   // A saved settings change is authoritative. Keep the active selection and
   // comparison choices in that allow-list without disturbing valid choices.
-  const imageModelKey = imageModels.join('\u0000')
+  const imageModelKey = modeModels.join('\u0000')
   useEffect(() => {
-    setModel(previous => imageModels.includes(previous) ? previous : imageModels[0])
+    setModel(previous => modeModels.includes(previous) ? previous : modeModels[0] ?? '')
     setCompareModels(previous => {
-      const retained = previous.filter(candidate => imageModels.includes(candidate))
-      return retained.length > 0 ? retained : [imageModels[0]]
+      const retained = previous.filter(candidate => modeModels.includes(candidate))
+      return retained.length > 0 ? retained : modeModels[0] === undefined ? [] : [modeModels[0]]
     })
   }, [imageModelKey])
 
@@ -268,12 +302,13 @@ export function ImageGenPanel(props: {
   const galleryTagOptions = [...new Set(gallery.flatMap(entry => entry.tags ?? []))].sort((a, b) => a.localeCompare(b))
   const galleryModels = [...new Set([...imageModels, ...gallery.map(entry => entry.model)])]
 
-  const filteredHistory = history.filter(entry => {
+  const filteredHistory = groupHistoryEntries(history).filter(group => group.entries.some(entry => {
     const query = historyQuery.trim().toLocaleLowerCase()
-    return (query === '' || `${entry.prompt} ${entry.model}`.toLocaleLowerCase().includes(query))
-      && (historyModelFilter === 'all' || entry.model === historyModelFilter)
+    const models = modelsOfHistoryEntry(entry)
+    return (query === '' || `${entry.prompt} ${models.join(' ')}`.toLocaleLowerCase().includes(query))
+      && (historyModelFilter === 'all' || models.includes(historyModelFilter))
       && (historyRatioFilter === 'all' || normalizeSize(entry.size) === historyRatioFilter)
-  })
+  }))
 
   // Load the host-persisted history and gallery once on mount (they live in
   // ~/.dsh on the DSH host, so every browser/device sees the same lists).
@@ -293,6 +328,10 @@ export function ImageGenPanel(props: {
     const refresh = (): void => {
       void api.taskList().then(next => {
         if (disposed) return
+        const newlyCompleted = next.filter(task => task.status === 'completed'
+          && task.result !== undefined
+          && !tasksRef.current.some(old => old.id === task.id && old.status === 'completed'))
+        tasksRef.current = next
         setTasks(previous => {
           const completed = next.find(task => task.status === 'completed'
             && !previous.some(old => old.id === task.id && old.status === 'completed')
@@ -304,6 +343,11 @@ export function ImageGenPanel(props: {
           }
           return next
         })
+        if (newlyCompleted.length > 0) {
+          void api.historyList().then(entries => {
+            if (!disposed) setHistory(entries)
+          }).catch(() => {})
+        }
       }).catch(() => {})
     }
     refresh()
@@ -431,7 +475,7 @@ export function ImageGenPanel(props: {
     }
     const request: GenerateRequest = {
       mode: tab === 'gallery' ? 'text' : tab,
-      model: imageModels.includes(model) ? model : imageModels[0],
+      model: modeModels.includes(model) ? model : modeModels[0] ?? '',
       prompt: promptText,
       size,
       quality,
@@ -444,14 +488,16 @@ export function ImageGenPanel(props: {
     setError(null)
     setSubmitting(true)
     try {
-      const targetModels = (compareEnabled ? compareModels : [request.model]).filter(candidate => imageModels.includes(candidate))
+      const targetModels = (compareEnabled ? compareModels : [request.model]).filter(candidate => modeModels.includes(candidate))
       if (targetModels.length === 0) {
         setError(tt('compare.selectRequired'))
         return
       }
-      const submitted = await Promise.all(targetModels.map(targetModel => api.taskSubmit({ ...request, model: targetModel })))
+      const comparisonId = targetModels.length > 1 ? newComparisonId() : undefined
+      const comparisonFields = comparisonId === undefined ? {} : { comparisonId, comparisonModels: targetModels }
+      const submitted = await Promise.all(targetModels.map(targetModel => api.taskSubmit({ ...request, model: targetModel, ...comparisonFields })))
       setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
-      setComparison(targetModels.length > 1 ? { taskIds: submitted.map(task => task.id), prompt: promptText } : null)
+      setComparison(comparisonId === undefined ? null : { taskIds: submitted.map(task => task.id), prompt: promptText, comparisonId })
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -511,10 +557,18 @@ export function ImageGenPanel(props: {
     return () => window.cancelAnimationFrame(frame)
   }, [preview, previewScale])
 
-  /** Load a past generation's images into the canvas. */
-  const viewHistoryEntry = async (entry: HistoryEntry): Promise<void> => {
+  const loadHistoryGroup = async (group: HistoryGroup): Promise<GeneratedImage[]> => {
+    const loaded = await Promise.all(group.entries.map(entry => historyImagesToGenerated(entry.images)))
+    return loaded.flat()
+  }
+
+  /** View every model result from one comparison as one canvas result set. */
+  const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
+    const entry = group.entries[0]
+    if (entry === undefined) return
     try {
-      setImages(await historyImagesToGenerated(entry.images))
+      setImages(await loadHistoryGroup(group))
+      setComparison(null)
       setError(null)
       setViewingHistoryId(entry.id)
       setGalleryViewingId(null)
@@ -523,10 +577,12 @@ export function ImageGenPanel(props: {
     }
   }
 
-  /** Restore a past generation's parameters (and its images) into the form. */
-  const restoreHistoryEntry = async (entry: HistoryEntry): Promise<void> => {
+  /** Restore one comparison group, including its selected model set. */
+  const restoreHistoryGroup = async (group: HistoryGroup): Promise<void> => {
+    const entry = group.entries[0]
+    if (entry === undefined) return
     try {
-      const restored = await historyImagesToGenerated(entry.images)
+      const restored = await loadHistoryGroup(group)
       setTab(entry.mode)
       setPrompt(entry.prompt)
       setSize(normalizeSize(entry.size))
@@ -534,8 +590,11 @@ export function ImageGenPanel(props: {
       setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
       setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
       setModel(imageModels.includes(entry.model) ? entry.model : imageModels[0])
+      setCompareModels(group.models.filter(candidate => imageModels.includes(candidate)))
+      setCompareEnabled(group.models.filter(candidate => imageModels.includes(candidate)).length > 1)
       setRefImage(null)
       setImages(restored)
+      setComparison(null)
       setError(null)
       setViewingHistoryId(entry.id)
       setGalleryViewingId(null)
@@ -544,12 +603,15 @@ export function ImageGenPanel(props: {
     }
   }
 
-  /** Remove one history entry. */
-  const deleteHistoryEntry = async (id: string): Promise<void> => {
-    setHistory(history.filter(entry => entry.id !== id))
-    if (viewingHistoryId === id) setViewingHistoryId(null)
+  /** Remove every persisted row belonging to one comparison group. */
+  const deleteHistoryGroup = async (group: HistoryGroup): Promise<void> => {
+    const ids = new Set(group.entries.map(entry => entry.id))
+    setHistory(previous => previous.filter(entry => !ids.has(entry.id)))
+    if (viewingHistoryId !== null && ids.has(viewingHistoryId)) setViewingHistoryId(null)
     try {
-      setHistory(await api.historyRemove(id))
+      let next = history
+      for (const id of ids) next = await api.historyRemove(id)
+      setHistory(next)
     } catch {
       // Keep the optimistic local removal.
     }
@@ -740,7 +802,7 @@ export function ImageGenPanel(props: {
     })
   }
 
-  const generateDisabled = submitting
+  const generateDisabled = submitting || modeModels.length === 0
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
@@ -1042,12 +1104,12 @@ export function ImageGenPanel(props: {
                   aria-expanded={modelOpen}
                   onClick={() => { setModelOpen(open => !open) }}
                 >
-                  <span>{model}</span>
+                  <span>{model || tt('model.noEditModels')}</span>
                   <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 10.5L4 6h8z"/></svg>
                 </button>
                 {modelOpen ? (
                   <div className={css.modelMenuList} role="listbox" aria-label={tt('model.label')}>
-                    {imageModels.map(option => (
+                    {modeModels.map(option => (
                       <button
                         key={option}
                         type="button"
@@ -1071,7 +1133,7 @@ export function ImageGenPanel(props: {
               </label>
               {compareEnabled ? (
                 <div className={css.compareModelChoices} role="group" aria-label={tt('compare.models')}>
-                  {imageModels.map(option => (
+                  {modeModels.map(option => (
                     <label key={option}>
                       <input type="checkbox" checked={compareModels.includes(option)} onChange={() => { setCompareModels(previous => previous.includes(option) ? previous.filter(value => value !== option) : [...previous, option]) }} />
                       <span>{option}</span>
@@ -1202,18 +1264,31 @@ export function ImageGenPanel(props: {
           ) : null}
           {tab !== 'gallery' && comparison !== null ? (
             <section className={css.comparisonBoard} aria-label={tt('compare.title')}>
-              <header><div><strong>{tt('compare.title')}</strong><span>{comparisonResults.length} / {comparisonTasks.length}</span></div><button type="button" disabled={comparisonResults.length === 0} onClick={() => { setComparisonFullscreen(true) }}>{tt('compare.fullscreen')}</button></header>
+              <header><div><strong>{tt('compare.title')}</strong><span>{comparisonResults.length} / {comparisonTasks.length}{generating ? ` · ${tt('canvas.elapsed', { seconds: elapsed })}` : ''}</span></div><button type="button" disabled={comparisonResults.length === 0} onClick={() => { setComparisonFullscreen(true) }}>{tt('compare.fullscreen')}</button></header>
               <div className={css.comparisonGrid}>
-                {comparisonTasks.map(task => (
-                  <article key={task.id}>
-                    <strong>{task.request.model}</strong>
-                    {task.result?.images[0] !== undefined ? <img src={srcOf(task.result.images[0])} alt={task.request.model} /> : <span>{tt(`tasks.${task.status}` as never)}</span>}
-                  </article>
-                ))}
+                {comparisonTasks.map(task => {
+                  const taskImages = task.result?.images ?? []
+                  const image = taskImages[0]
+                  return (
+                    <article key={task.id}>
+                      <strong>{task.request.model}</strong>
+                      {image !== undefined ? (
+                        <button
+                          type="button"
+                          className={css.comparisonImageButton}
+                          title={tt('preview.open')}
+                          onClick={() => { openPreview(taskImages, 0) }}
+                        >
+                          <img src={srcOf(image)} alt={task.request.model} />
+                        </button>
+                      ) : <span>{tt(`tasks.${task.status}` as never)}</span>}
+                    </article>
+                  )
+                })}
               </div>
             </section>
           ) : null}
-          {generating ? (
+          {generating && comparison === null ? (
             <div className={css.canvasState} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <span className={css.bigSpinner} />
               <span className={css.canvasStateTitle}>
@@ -1380,7 +1455,7 @@ export function ImageGenPanel(props: {
             <input className={css.historySearch} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value) }} placeholder={tt('history.search')} aria-label={tt('history.search')} />
             <select value={historyModelFilter} onChange={event => { setHistoryModelFilter(event.target.value) }} aria-label={tt('history.model')}>
               <option value="all">{tt('history.allModels')}</option>
-              {[...new Set(history.map(entry => entry.model))].map(option => <option key={option} value={option}>{option}</option>)}
+              {[...new Set(history.flatMap(entry => modelsOfHistoryEntry(entry)))].map(option => <option key={option} value={option}>{option}</option>)}
             </select>
             <select value={historyRatioFilter} onChange={event => { setHistoryRatioFilter(event.target.value) }} aria-label={tt('history.ratio')}>
               <option value="all">{tt('history.allRatios')}</option>
@@ -1392,52 +1467,59 @@ export function ImageGenPanel(props: {
             <div className={css.historyEmpty}>{tt('history.empty')}</div>
           ) : (
             <div className={css.historyList}>
-              {filteredHistory.map(entry => (
-                <div
-                  key={entry.id}
-                  className={css.historyItem}
-                  data-active={entry.id === viewingHistoryId ? '' : undefined}
-                >
-                  <button
-                    type="button"
-                    className={css.historyMain}
-                    onClick={() => { void viewHistoryEntry(entry) }}
+              {filteredHistory.map(group => {
+                const entry = group.entries[0]!
+                const isComparison = group.models.length > 1
+                const imageCount = group.entries.reduce((total, item) => total + item.images.length, 0)
+                return (
+                  <div
+                    key={group.key}
+                    className={css.historyItem}
+                    data-active={group.entries.some(item => item.id === viewingHistoryId) ? '' : undefined}
+                    data-comparison={isComparison ? '' : undefined}
                   >
-                    {entry.images.length > 0 ? (
-                      <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
-                    ) : (
-                      <span className={css.historyThumbPlaceholder} />
-                    )}
-                    <span className={css.historyInfo}>
-                      <span className={css.historyPrompt}>{entry.prompt}</span>
-                      <span className={css.historyMeta}>
-                        {tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
-                        {' · '}{formatTime(entry.createdAt)}
-                        {' · '}{entry.images.length} {tt('history.images')}
+                    <button
+                      type="button"
+                      className={css.historyMain}
+                      onClick={() => { void viewHistoryGroup(group) }}
+                    >
+                      {entry.images.length > 0 ? (
+                        <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
+                      ) : (
+                        <span className={css.historyThumbPlaceholder} />
+                      )}
+                      <span className={css.historyInfo}>
+                        <span className={css.historyPrompt}>{entry.prompt}</span>
+                        <span className={css.historyMeta}>
+                          {isComparison ? tt('compare.title') : tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
+                          {' · '}{isComparison ? group.models.join(' · ') : entry.model}
+                          {' · '}{formatTime(entry.createdAt)}
+                          {' · '}{imageCount} {tt('history.images')}
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                  <span className={css.historyActions}>
-                    {entry.images.length > 0 ? (
-                      <button
-                        type="button"
-                        className={css.historyAction}
-                        disabled={galleryAdding}
-                        title={tt('gallery.add')}
-                        onClick={() => { void addHistoryEntryToGallery(entry) }}
-                      >
-                        {tt('gallery.add')}
+                    </button>
+                    <span className={css.historyActions}>
+                      {entry.images.length > 0 ? (
+                        <button
+                          type="button"
+                          className={css.historyAction}
+                          disabled={galleryAdding}
+                          title={tt('gallery.add')}
+                          onClick={() => { void addHistoryEntryToGallery(entry) }}
+                        >
+                          {tt('gallery.add')}
+                        </button>
+                      ) : null}
+                      <button type="button" className={css.historyAction} onClick={() => { void restoreHistoryGroup(group) }}>
+                        {tt('history.restore')}
                       </button>
-                    ) : null}
-                    <button type="button" className={css.historyAction} onClick={() => { void restoreHistoryEntry(entry) }}>
-                      {tt('history.restore')}
-                    </button>
-                    <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteHistoryEntry(entry.id) }}>
-                      {tt('history.delete')}
-                    </button>
-                  </span>
-                </div>
-              ))}
+                      <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteHistoryGroup(group) }}>
+                        {tt('history.delete')}
+                      </button>
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           )}
           </aside>

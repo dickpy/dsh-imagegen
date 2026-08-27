@@ -40,10 +40,18 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     id: 'openai-official',
     name: 'OpenAI 官方',
     apiUrl: 'https://api.openai.com/v1',
-    hint: 'OpenAI 官方接口：gpt-image-2 / dall-e-3',
+    hint: 'OpenAI 官方图像生成接口',
     models: [
       { alias: 'gpt-image-2', id: 'gpt-image-2' },
-      { alias: 'dall-e-3', id: 'dall-e-3' },
+    ],
+  },
+  {
+    id: 'zhipu-official',
+    name: '智谱 AI 官方',
+    apiUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    hint: '智谱官方 GLM-Image 图像生成接口',
+    models: [
+      { alias: 'glm-image', id: 'glm-image' },
     ],
   },
   {

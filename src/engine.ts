@@ -79,6 +79,15 @@ function isSeedream(model: string): boolean {
   return modelFamily(model) === 'seedream'
 }
 
+/** Whether the model uses the official Zhipu image-generation contract. */
+function isZhipuImage(model: string): boolean {
+  return modelFamily(model) === 'zhipu'
+}
+
+function isGlmImage(model: string): boolean {
+  return /^glm-image(?:-|$)/i.test(model.trim())
+}
+
 /** Whether this is the official Volcengine Ark model naming convention. */
 function isVolcSeedream(model: string): boolean {
   return /^doubao-seedream(?:-|$)/i.test(model.trim())
@@ -163,6 +172,22 @@ function bareBase64(value: string): string {
   return parsed !== undefined && parsed.base64 !== undefined ? parsed.base64 : value
 }
 
+/** Whether a result URL carries cloud-storage signing credentials. */
+function isPresignedUrl(value: string): boolean {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  const params = new Set(Array.from(url.searchParams.keys(), key => key.toLowerCase()))
+  if (params.has('x-goog-signature') || params.has('x-goog-credential')) return true
+  if (params.has('x-amz-signature') || params.has('x-amz-credential')) return true
+  return params.has('signature') && (
+    params.has('expires') || params.has('googleaccessid') || params.has('awsaccesskeyid')
+  )
+}
+
 /** Clamp the requested image count into the API-accepted range. */
 function clampCount(n: number): number {
   if (!Number.isFinite(n)) return 1
@@ -234,6 +259,18 @@ function effectiveParams(request: GenerateRequest): {
       response_format: isVolcSeedream(model) ? 'url' : 'b64_json',
     }
   }
+  // Zhipu's official image API accepts OpenAI-style JSON but uses its own
+  // quality vocabulary. GLM-Image currently supports hd only; CogView uses
+  // the standard tier. Size remains a valid custom pixel size for both.
+  if (isZhipuImage(model)) {
+    return {
+      model,
+      ...request.size !== '' && request.size !== 'auto' && OPENAI_SIZE_BY_RATIO[request.size] !== undefined
+        ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
+        : {},
+      quality: isGlmImage(model) ? 'hd' : 'standard',
+    }
+  }
   // OpenAI-compatible endpoints: nearest pixel size, clarity tiers mapped to
   // the quality levels (1k→low / 2k→medium / 4k→high), detail passthrough.
   return {
@@ -261,9 +298,11 @@ async function normalizeItem(
   upstream: UpstreamConfig,
 ): Promise<{ b64: string; mime: string; revisedPrompt?: string }> {
   const revisedPrompt = typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined
-  if (typeof item.b64_json === 'string') {
+  if (typeof item.b64_json === 'string' && item.b64_json.trim() !== '') {
     const b64 = bareBase64(item.b64_json)
-    return { b64, mime: detectImageMime(Buffer.from(b64, 'base64')) ?? 'image/png', revisedPrompt }
+    if (b64.trim() !== '') {
+      return { b64, mime: detectImageMime(Buffer.from(b64, 'base64')) ?? 'image/png', revisedPrompt }
+    }
   }
   if (typeof item.url !== 'string' || item.url === '') {
     throw new ImageGenError('upstream image item has neither b64_json nor url')
@@ -278,9 +317,9 @@ async function normalizeItem(
   let response: Response
   try {
     response = await fetch(url, {
-      headers: {
-        ...upstream.apiKey === '' ? {} : { authorization: `Bearer ${upstream.apiKey}` },
-      },
+      ...isPresignedUrl(url) || upstream.apiKey === ''
+        ? {}
+        : { headers: { authorization: `Bearer ${upstream.apiKey}` } },
       signal: budget.signal,
     })
   } catch (error) {
@@ -443,6 +482,9 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   const baseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
+  if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
+    throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
+  }
   const params = effectiveParams(request)
   const count = effectiveCount(request)
   const batches = await Promise.all(

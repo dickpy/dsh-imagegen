@@ -1,5 +1,7 @@
 /** OpenAI-compatible chat helpers used by the optional prompt-enhancement UI. */
 
+import { isLikelyImageModelId } from './model-catalog.ts'
+
 export interface PromptModelConfig {
   apiUrl: string
   apiKey: string
@@ -34,15 +36,71 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
   return body as Record<string, unknown>
 }
 
-/** List candidates exposed by an OpenAI-compatible endpoint. */
-export async function listOpenAIModels(config: ModelListConfig): Promise<string[]> {
+type ModelRecord = Record<string, unknown> & { id: string }
+
+async function listModelRecords(config: ModelListConfig): Promise<ModelRecord[]> {
   if (config.apiUrl.trim() === '') throw new Error('API URL is required')
   const response = await fetch(endpoint(config.apiUrl, '/models'), { headers: headers(config.apiKey) })
   const body = await responseJson(response)
   const data = Array.isArray(body.data) ? body.data : []
-  return [...new Set(data
-    .flatMap(item => item !== null && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string' ? [(item as { id: string }).id.trim()] : [])
-    .filter(Boolean))]
+  return data.flatMap(item => {
+    if (item === null || typeof item !== 'object' || typeof (item as { id?: unknown }).id !== 'string') return []
+    const id = (item as { id: string }).id.trim()
+    return id === '' ? [] : [{ ...(item as Record<string, unknown>), id }]
+  })
+}
+
+function textOf(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function hasImageGenerationCapability(record: ModelRecord): boolean | undefined {
+  const capability = record.capabilities
+  if (capability !== null && typeof capability === 'object') {
+    const values = capability as Record<string, unknown>
+    for (const key of ['image_generation', 'imageGeneration', 'text_to_image', 'textToImage', 'image_gen']) {
+      if (typeof values[key] === 'boolean') return values[key]
+    }
+    const serialized = JSON.stringify(values).toLowerCase()
+    if (/image[ _-]?generation|text[ _-]?to[ _-]?image/.test(serialized)) return true
+  }
+
+  const taskText = [
+    ...textOf(record.task),
+    ...textOf(record.task_type),
+    ...textOf(record.taskType),
+    ...textOf(record.type),
+    ...textOf(record.model_type),
+    ...textOf(record.modelType),
+    ...textOf(record.tasks),
+    ...textOf(record.description),
+  ].join(' ').toLowerCase()
+  if (/image[ _-]?generation|text[ _-]?to[ _-]?image|image[ _-]?gen/.test(taskText)) return true
+  if (/^image(?:[ _-]?generation)?$/.test(taskText.trim())) return true
+  if (/embedding|rerank|moderation|transcri|speech|audio|video|chat[ _-]?completion/.test(taskText)) return false
+
+  for (const key of ['output_modalities', 'outputModalities', 'supported_output_modalities']) {
+    const modalities = textOf(record[key]).map(value => value.toLowerCase())
+    if (modalities.length > 0) return modalities.includes('image')
+  }
+  return undefined
+}
+
+function isImageModelRecord(record: ModelRecord): boolean {
+  return hasImageGenerationCapability(record) ?? isLikelyImageModelId(record.id)
+}
+
+/** List candidates exposed by an OpenAI-compatible endpoint. */
+export async function listOpenAIModels(config: ModelListConfig): Promise<string[]> {
+  return [...new Set((await listModelRecords(config)).map(record => record.id))]
+    .sort((a, b) => a.localeCompare(b))
+}
+
+/** List only models that advertise or conventionally represent image generation. */
+export async function listImageModels(config: ModelListConfig): Promise<string[]> {
+  return [...new Set((await listModelRecords(config)).filter(isImageModelRecord).map(record => record.id))]
     .sort((a, b) => a.localeCompare(b))
 }
 

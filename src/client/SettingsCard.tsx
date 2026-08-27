@@ -249,10 +249,11 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
                           <button type="button" className={css.channelMain} disabled={disabled} onClick={() => { setEditingId(channel.id) }}>
                             <span className={css.channelName}>{isDefault ? `★ ${channel.name || t('channels.untitled')}` : (channel.name || t('channels.untitled'))}</span>
                             <span className={css.channelMeta}>
-                              {channel.apiUrl !== '' ? <span className={css.channelHost}>{hostOf(channel.apiUrl)}</span> : null}
-                              <span className={css.channelBadge} data-warn={keyHeld ? undefined : ''}>{keyHeld ? t('channels.keySet') : t('channels.keyMissing')}</span>
-                              <span className={css.channelBadge} data-warn={channel.models.length > 0 ? undefined : ''}>{channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}</span>
-                              {isDefault ? <span className={css.channelBadge} data-default>{t('channels.defaultLabel')}</span> : null}
+                              <span className={css.channelBadge} data-warn={!keyHeld || channel.models.length === 0 ? '' : undefined}>
+                                {keyHeld ? t('channels.keySet') : t('channels.keyMissing')}
+                                {' · '}
+                                {channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}
+                              </span>
                             </span>
                           </button>
                           <button type="button" className={css.channelAction} onClick={() => { setEditingId(channel.id) }}>{t('channels.edit')}</button>
@@ -517,14 +518,6 @@ function replaceChannel(channels: ChannelDraft[], id: string, patch: Partial<Cha
   form.setChannels(channels.map(channel => channel.id === id ? { ...channel, ...patch } : channel))
 }
 
-function hostOf(apiUrl: string): string {
-  try {
-    return new URL(apiUrl).hostname
-  } catch {
-    return apiUrl
-  }
-}
-
 function clientId(): string {
   const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined
   return random ?? `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -561,8 +554,7 @@ function PresetPicker(props: {
         {props.presets.map(preset => (
           <button key={preset.id} type="button" className={css.presetRow} disabled={props.disabled} onClick={() => { props.onPick(preset) }}>
             <span className={css.presetName}>{preset.name}</span>
-            <span className={css.presetMeta}>{preset.apiUrl} · {t('channels.presetModelsHint', { n: preset.models.length })}</span>
-            <span className={css.presetHint}>{preset.hint}</span>
+            <span className={css.presetMeta}>{preset.models.map(model => model.alias).join(' · ')}</span>
           </button>
         ))}
         <button type="button" className={css.presetRow} data-custom disabled={props.disabled} onClick={props.onCustom}>
@@ -655,18 +647,6 @@ function ChannelEditor(props: {
     props.onSetModels(merged)
     setCopyFrom('')
   }
-
-  const onlyKnown = (): void => {
-    const known = (candidates ?? []).filter(id => describeModel(id).known)
-    const merged = [...channel.models]
-    for (const id of known) {
-      const alias = id
-      if (!merged.some(model => model.alias === alias)) merged.push({ alias, id })
-    }
-    props.onSetModels(merged)
-  }
-
-  const knownCount = (candidates ?? []).filter(id => describeModel(id).known).length
 
   return (
     <div className={css.editorBackdrop} role="dialog" aria-modal="true" aria-label={`${t('channels.editorTitle')} · ${channel.name || t('channels.untitled')}`} onClick={props.onClose}>
@@ -776,7 +756,6 @@ function ChannelEditor(props: {
           <div className={css.modelCandidateList}>
             <span className={css.modelCandidateLabel}>
               {t('channels.candidatesTitle')}
-              <button type="button" className={css.inlineDisclosure} disabled={!props.writable || knownCount === 0} onClick={onlyKnown}>{t('channels.candidatesQuick')}</button>
             </span>
             {candidates.map(candidate => {
               const selected = channel.models.some(model => model.alias === candidate)

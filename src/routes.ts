@@ -11,7 +11,7 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { UpstreamConfig } from './engine.ts'
-import { enhancePrompt, listOpenAIModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
+import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
 import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
@@ -133,6 +133,9 @@ function messageOf(error: unknown): string {
 function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | undefined {
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
   if (prompt === '') return undefined
+  const comparisonModels = Array.isArray(body.comparisonModels)
+    ? [...new Set(body.comparisonModels.filter((model): model is string => typeof model === 'string').map(model => model.trim()).filter(Boolean))]
+    : []
   return {
     mode: body.mode === 'edit' ? 'edit' : 'text',
     model: typeof body.model === 'string' ? body.model : '',
@@ -144,6 +147,8 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
     ...typeof body.image === 'string' && body.image !== '' ? { image: body.image } : {},
     ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
     ...typeof body.channelId === 'string' && body.channelId !== '' ? { channelId: body.channelId } : {},
+    ...typeof body.comparisonId === 'string' && body.comparisonId !== '' ? { comparisonId: body.comparisonId } : {},
+    ...comparisonModels.length > 1 ? { comparisonModels } : {},
   }
 }
 
@@ -169,6 +174,9 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
       ...typeof image.revisedPrompt === 'string' ? { revisedPrompt: image.revisedPrompt } : {},
     })
   }
+  const comparisonModels = Array.isArray(entry.comparisonModels)
+    ? [...new Set(entry.comparisonModels.filter((model): model is string => typeof model === 'string').map(model => model.trim()).filter(Boolean))]
+    : []
   return {
     id: entry.id,
     createdAt: entry.createdAt,
@@ -183,6 +191,8 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
     ...typeof entry.refName === 'string' ? { refName: entry.refName } : {},
     ...typeof entry.channelId === 'string' ? { channelId: entry.channelId } : {},
     ...typeof entry.channel === 'string' ? { channel: entry.channel } : {},
+    ...typeof entry.comparisonId === 'string' ? { comparisonId: entry.comparisonId } : {},
+    ...comparisonModels.length > 1 ? { comparisonModels } : {},
   }
 }
 
@@ -393,7 +403,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           apiKey: typeof body?.apiKey === 'string' && body.apiKey.trim() !== '' ? body.apiKey.trim() : (stored?.apiKey ?? ''),
         }
         try {
-          writeJson(res, 200, { ok: true, models: await listOpenAIModels(upstream) })
+          writeJson(res, 200, { ok: true, models: await listImageModels(upstream) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'image-models-failed', message: messageOf(error) })
         }

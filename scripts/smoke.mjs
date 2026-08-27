@@ -76,12 +76,23 @@ await check('A3 updater parses stable Releases and caches checks', async () => {
 
 // ---------------------------------------------- B. engine vs mock upstream
 const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex')
+let activeGenerationRequests = 0
+let maxGenerationRequests = 0
 const upstream = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   if (url.pathname === '/v1/models') {
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ data: [{ id: 'grok-imagine-image' }, { id: 'gpt-image-2' }, { id: 'gpt-image-2' }] }))
+    res.end(JSON.stringify({ data: [
+      { id: 'grok-imagine-image' },
+      { id: 'gpt-image-2' },
+      { id: 'gpt-4o' },
+      { id: 'text-embedding-3-small' },
+      { id: 'glm-image', capabilities: { image_generation: true } },
+      { id: 'chat-only-model', capabilities: { image_generation: false } },
+      { id: 'gpt-image-legacy', capabilities: { image_generation: false } },
+      { id: 'gpt-image-2' },
+    ] }))
     return
   }
   if (url.pathname === '/v1/images/generations') {
@@ -89,22 +100,36 @@ const upstream = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
-    assert.equal(body.model, 'gpt-image-2')
-    assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this')
-    assert.equal(body.size, '1024x1024')
-    assert.equal(body.quality, 'high')
+    assert.ok(body.model === 'gpt-image-2' || body.model === 'grok-imagine-image')
+    assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this' || body.prompt === 'signed urls' || body.prompt === 'parallel one' || body.prompt === 'parallel two')
+    if (body.model === 'gpt-image-2') {
+      assert.equal(body.size, '1024x1024')
+      assert.equal(body.quality, 'high')
+    } else {
+      assert.equal(body.aspect_ratio, '1:1')
+      assert.equal(body.response_format, 'b64_json')
+    }
     // The engine never sends `n`: Responses-API gateways reject the batch
     // parameter, so the requested count is satisfied by parallel requests.
     assert.equal(body.n, undefined)
-    assert.equal(body.detail, 'standard')
+    assert.equal(body.detail, body.model === 'grok-imagine-image' || body.prompt === 'signed urls' ? undefined : 'standard')
+    if (body.prompt === 'parallel one' || body.prompt === 'parallel two') {
+      activeGenerationRequests += 1
+      maxGenerationRequests = Math.max(maxGenerationRequests, activeGenerationRequests)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      activeGenerationRequests -= 1
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({
-      created: 1,
-      data: [
-        { b64_json: pngBytes.toString('base64'), revised_prompt: 'a refined cat' },
-        { url: `http://127.0.0.1:${upstream.address().port}/image/${body.prompt === 'a mismatch cat' ? 'mismatch' : 'result'}.png` },
-      ],
-    }))
+    const data = body.prompt === 'signed urls'
+      ? [
+          { b64_json: '', url: `http://127.0.0.1:${upstream.address().port}/image/gcs-signed.png?X-Goog-Credential=test&X-Goog-Signature=test` },
+          { b64_json: '   ', url: `http://127.0.0.1:${upstream.address().port}/image/s3-signed.png?X-Amz-Credential=test&X-Amz-Signature=test` },
+        ]
+      : [
+          { b64_json: pngBytes.toString('base64'), revised_prompt: 'a refined cat' },
+          { url: `http://127.0.0.1:${upstream.address().port}/image/${body.prompt === 'a mismatch cat' ? 'mismatch' : 'result'}.png` },
+        ]
+    res.end(JSON.stringify({ created: 1, data }))
     return
   }
   if (url.pathname === '/v1/images/edits') {
@@ -132,6 +157,12 @@ const upstream = createServer(async (req, res) => {
     res.end(pngBytes)
     return
   }
+  if (url.pathname === '/image/gcs-signed.png' || url.pathname === '/image/s3-signed.png') {
+    assert.equal(req.headers.authorization, undefined, 'presigned URLs must not receive the channel API key')
+    res.writeHead(200, { 'content-type': 'image/png' })
+    res.end(pngBytes)
+    return
+  }
   res.writeHead(404)
   res.end()
 })
@@ -152,7 +183,17 @@ await check('B1 text generation normalizes b64_json + url items', async () => {
   assert.equal(result.images[1].mime, 'image/png')
 })
 
-await check('B2 edit mode sends multipart and normalizes', async () => {
+await check('B2 signed URLs bypass API-key auth and empty base64 falls back to URL', async () => {
+  const result = await host.generateImage(
+    { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' },
+    { mode: 'text', model: 'gpt-image-2', prompt: 'signed urls', size: '1:1', quality: '4k', n: 1, detail: '' },
+  )
+  assert.equal(result.images.length, 2)
+  assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+  assert.equal(result.images[1].b64, pngBytes.toString('base64'))
+})
+
+await check('B3 edit mode sends multipart and normalizes', async () => {
   const result = await host.generateImage(
     { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' },
     { mode: 'edit', model: 'gpt-image-2', prompt: 'edit this', size: '3:2', quality: '2k', n: 1, detail: '', image: `data:image/png;base64,${pngBytes.toString('base64')}` },
@@ -161,7 +202,7 @@ await check('B2 edit mode sends multipart and normalizes', async () => {
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
 })
 
-await check('B3 config missing errors are user-presentable', async () => {
+await check('B4 config missing errors are user-presentable', async () => {
   await assert.rejects(
     host.generateImage({ apiUrl: '', apiKey: 'k' }, { mode: 'text', model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'auto', n: 1, detail: '' }),
     /api_url 未配置/,
@@ -172,7 +213,7 @@ await check('B3 config missing errors are user-presentable', async () => {
   )
 })
 
-await check('B4 upstream error surfaces its message', async () => {
+await check('B5 upstream error surfaces its message', async () => {
   const bad = createServer(async (_req, res) => {
     res.writeHead(400, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ error: { message: 'Unknown parameter: detail' } }))
@@ -189,7 +230,7 @@ await check('B4 upstream error surfaces its message', async () => {
   }
 })
 
-await check('B5 dall-e-3 clamps params', async () => {
+await check('B6 dall-e-3 clamps params', async () => {
   const seen = []
   const dalle = createServer(async (req, res) => {
     const chunks = []
@@ -212,7 +253,7 @@ await check('B5 dall-e-3 clamps params', async () => {
   }
 })
 
-await check('B6 Volcengine Seedream uses Ark size and URL response fields', async () => {
+await check('B7 Volcengine Seedream uses Ark size and URL response fields', async () => {
   const seen = []
   const seedream = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -250,6 +291,38 @@ await check('B6 Volcengine Seedream uses Ark size and URL response fields', asyn
     assert.equal(seen.length, 1)
   } finally {
     await new Promise(resolve => seedream.close(resolve))
+  }
+})
+
+await check('B8 Zhipu GLM-Image uses the official generation contract', async () => {
+  const seen = []
+  const zhipu = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    if (url.pathname === '/api/paas/v4/images/generations') {
+      seen.push({ path: url.pathname, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => zhipu.listen(0, '127.0.0.1', resolve))
+  const port = zhipu.address().port
+  try {
+    const result = await host.generateImage(
+      { apiUrl: `http://127.0.0.1:${port}/api/paas/v4`, apiKey: 'zhipu-key' },
+      { mode: 'text', model: 'glm-image', prompt: 'x', size: '1:1', quality: '4k', n: 1, detail: 'high' },
+    )
+    assert.equal(result.images.length, 1)
+    assert.deepEqual(seen[0], {
+      path: '/api/paas/v4/images/generations',
+      body: { model: 'glm-image', prompt: 'x', size: '1024x1024', quality: 'hd' },
+    })
+  } finally {
+    await new Promise(resolve => zhipu.close(resolve))
   }
 })
 
@@ -444,10 +517,33 @@ await check('C3 generate route persists history server-side and enforces loopbac
   assert.equal(foreignStatus, 403)
 })
 
-await check('C4 image model discovery and configured-model allow-list work', async () => {
+await check('C4 comparison tasks run in parallel and share comparison history metadata', async () => {
+  const comparisonId = 'smoke-comparison'
+  const request = { mode: 'text', model: 'gpt-image-2', prompt: 'parallel one', size: '1:1', quality: '4k', n: 1, detail: 'standard', comparisonId, comparisonModels: ['gpt-image-2', 'grok-imagine-image'] }
+  const first = await post('/api/dsh-imagegen/tasks/submit', request)
+  const second = await post('/api/dsh-imagegen/tasks/submit', { ...request, model: 'grok-imagine-image', prompt: 'parallel two' })
+  assert.equal(first.body.ok, true)
+  assert.equal(second.body.ok, true)
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const listed = await post('/api/dsh-imagegen/tasks/list', {})
+    const ids = [first.body.task.id, second.body.task.id]
+    if (ids.every(id => listed.body.tasks.find(task => task.id === id)?.status === 'completed')) break
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.ok(maxGenerationRequests >= 2, 'comparison requests must overlap at the upstream')
+  const comparisonEntries = persistedHistory.filter(entry => entry.comparisonId === comparisonId)
+  assert.equal(comparisonEntries.length, 2)
+  assert.deepEqual(comparisonEntries[0].comparisonModels, ['gpt-image-2', 'grok-imagine-image'])
+})
+
+await check('C5 image model discovery and configured-model allow-list work', async () => {
   const discovered = await post('/api/dsh-imagegen/image-models', {})
   assert.equal(discovered.body.ok, true)
-  assert.deepEqual(discovered.body.models, ['gpt-image-2', 'grok-imagine-image'])
+  assert.deepEqual(discovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image'])
+  const presets = await post('/api/dsh-imagegen/presets', {})
+  assert.equal(presets.body.ok, true)
+  assert.deepEqual(presets.body.presets.find(preset => preset.id === 'openai-official').models, [{ alias: 'gpt-image-2', id: 'gpt-image-2' }])
+  assert.deepEqual(presets.body.presets.find(preset => preset.id === 'zhipu-official').models, [{ alias: 'glm-image', id: 'glm-image' }])
   const rejected = await post('/api/dsh-imagegen/tasks/submit', {
     mode: 'text', model: 'not-configured', prompt: 'a cat', size: 'auto', quality: 'auto', n: 1, detail: '',
   })
@@ -455,7 +551,7 @@ await check('C4 image model discovery and configured-model allow-list work', asy
   assert.equal(rejected.body.code, 'image-model-not-configured')
 })
 
-await check('C5 template routes serve the bundled gallery, refresh it, and proxy only known images', async () => {
+await check('C6 template routes serve the bundled gallery, refresh it, and proxy only known images', async () => {
   const { body: list } = await post('/api/dsh-imagegen/templates/list', {})
   assert.equal(list.ok, true)
   assert.equal(list.total, 1)
@@ -474,7 +570,7 @@ await check('C5 template routes serve the bundled gallery, refresh it, and proxy
   assert.equal(unknown.status, 404)
 })
 
-await check('C6 Agent tool-result image route serves durable attachments without a session-log image reference', async () => {
+await check('C7 Agent tool-result image route serves durable attachments without a session-log image reference', async () => {
   const query = new URLSearchParams({
     attachment_id: agentPreviewRef.attachmentId,
     media_type: agentPreviewRef.mediaType,
@@ -490,7 +586,7 @@ await check('C6 Agent tool-result image route serves durable attachments without
   assert.equal(invalid.status, 400)
 })
 
-await check('C7 Agent tools wait for results, keep images in the UI view, edit, and enforce the allow setting', async () => {
+await check('C8 Agent tools wait for results, keep images in the UI view, edit, and enforce the allow setting', async () => {
   const tools = new Map()
   const saved = new Map()
   let serial = 0
@@ -719,6 +815,22 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
         }),
       }
     }
+    if (path.endsWith('/history/list')) {
+      const comparisonHistory = {
+        comparisonId: 'client-comparison',
+        comparisonModels: ['gpt-image-2', 'grok-imagine-image'],
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          entries: [
+            { id: 'history-grok', createdAt: 2, mode: 'text', model: 'grok-imagine-image', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/grok.png', mime: 'image/png' }], ...comparisonHistory },
+            { id: 'history-gpt', createdAt: 1, mode: 'text', model: 'gpt-image-2', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/gpt.png', mime: 'image/png' }], ...comparisonHistory },
+          ],
+        }),
+      }
+    }
     if (path.endsWith('/templates/list')) {
       return {
         ok: true,
@@ -856,6 +968,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-view] h2') !== null, 'panel header rendered')
     const connectionStatus = jsdomDocument.querySelector('[data-dsh-imagegen-view] [data-connected]')
     assert.equal(connectionStatus?.getAttribute('data-connected'), 'false', 'missing key is shown as disconnected')
+    assert.equal(jsdomDocument.querySelectorAll('[data-comparison]').length, 1, 'comparison history rows collapse into one item')
+    assert.ok(jsdomDocument.querySelector('[data-comparison]')?.textContent?.includes('gpt-image-2'), 'comparison history shows its models')
     // The settings card registered into the official plugin-config slot.
     assert.equal(registered.length, 1)
     assert.equal(registered[0].key, 'dsh-imagegen')

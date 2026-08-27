@@ -8,7 +8,7 @@
  * Framework-free (pure data + regex), safe for the client bundle to inline.
  */
 
-export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'unknown'
+export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'zhipu' | 'unknown'
 
 /** Capability/identity annotation for one model id. */
 export interface ModelCatalogEntry {
@@ -69,6 +69,14 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
     supportsAspectRatio: true,
     qualityTiers: ['1K', '2K'],
   },
+  zhipu: {
+    label: 'GLM-Image',
+    labelZh: '智谱图像',
+    known: true,
+    supportsEdit: false,
+    supportsAspectRatio: false,
+    qualityTiers: ['HD'],
+  },
 }
 
 /** Official Gemini image ids served by Nano Banana gateways. */
@@ -89,7 +97,16 @@ export function describeModel(model: string): ModelCatalogEntry {
   if (/^grok-imagine(?:-|$)/.test(id)) return { family: 'grok', ...ENTRIES.grok }
   if (/^nanobanana/i.test(id) || NANOBANANA_GEMINI_IDS.has(id)) return { family: 'nanobanana', ...ENTRIES.nanobanana }
   if (/^(?:doubao-)?seedream/i.test(id)) return { family: 'seedream', ...ENTRIES.seedream }
+  if (/^(?:glm-image|cogview(?:-|$))/i.test(id)) return { family: 'zhipu', ...ENTRIES.zhipu }
   return { family: 'unknown', label: 'unknown', labelZh: '未知协议', known: false, supportsEdit: true, supportsAspectRatio: false, qualityTiers: [] }
+}
+
+/** Conservative fallback for providers whose /models response only has ids.
+ *  Metadata-aware filtering lives in prompt-enhancer.ts; this catches common
+ *  image model naming conventions without treating every unknown model as an
+ *  image model. */
+export function isLikelyImageModelId(model: string): boolean {
+  return /(?:^|[-_.])(?:image|img|diffusion|flux|cogview|imagen|seedream|nanobanana|grok-imagine|dall-e|stable-diffusion|sdxl|pixart|kolors|ideogram|midjourney|recraft|hunyuan|jimeng|wanx|hidream|playground)(?:$|[-_.])/i.test(model.trim())
 }
 
 /** The family a model id routes its request through. */

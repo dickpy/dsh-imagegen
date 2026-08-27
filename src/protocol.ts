@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.3.0'
+export const PLUGIN_VERSION = '1.3.1'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -191,6 +191,10 @@ export interface GenerateRequest {
   /** Upstream model id actually sent to the gateway (host-filled from the
    *  alias mapping; defaults to `model` when absent). */
   upstream?: string
+  /** Stable client-created id shared by the tasks in one comparison run. */
+  comparisonId?: string
+  /** All model aliases selected for one comparison run. */
+  comparisonModels?: string[]
 }
 
 /** One generated image, normalized host-side to base64 so the browser never
@@ -304,6 +308,10 @@ export interface HistoryEntry {
   channelId?: string
   /** Channel display name snapshot (survives channel deletion). */
   channel?: string
+  /** Stable id shared by the history entries in one comparison run. */
+  comparisonId?: string
+  /** Model aliases included in the comparison run. */
+  comparisonModels?: string[]
 }
 
 /** A history entry the client submits for persistence (images still carry base64). */
@@ -323,4 +331,8 @@ export interface HistoryEntryInput {
   channelId?: string
   /** Channel display name snapshot (survives channel deletion). */
   channel?: string
+  /** Stable id shared by the history entries in one comparison run. */
+  comparisonId?: string
+  /** Model aliases included in the comparison run. */
+  comparisonModels?: string[]
 }
