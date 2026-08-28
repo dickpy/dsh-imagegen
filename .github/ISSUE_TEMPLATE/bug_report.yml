@@ -70,7 +70,7 @@ body:
       label: 复现步骤
       description: 如何复现这个问题？步骤越详细越好。
       placeholder: |
-        1. 打开 DSH Web GUI，进入侧边栏「AI 生图」
+        1. 打开 DSH Web GUI，点击「新会话 / 生图」中的「生图」Tab
         2. 选择文生图模式，输入提示词「...」
         3. 选择参数：尺寸 / 清晰度 / 数量
         4. 点击「开始生成」

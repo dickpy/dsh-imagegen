@@ -1,31 +1,26 @@
 /**
- * Sidebar entry injection.
- *
- * dsh's sidebar shell exposes no slot an external plugin can register into,
- * so — following the dsh-ssh / task-board precedent of DOM-level extension —
- * the entry row is injected after the shell's New Session button (after the
- * sibling plugin family block). The injection self-heals: a MutationObserver
- * watches the sidebar root and re-inserts the row whenever a React re-render
- * displaces it (re-insertion happens in the same frame, before paint).
- *
- * The row is plain DOM (no React tree) so it can never disturb the shell's
- * reconciliation; the panel view it toggles is a separate React root mounted
- * in the center column (see mount.tsx).
+ * Replace the shell's standalone New Session affordance with a two-tab entry:
+ * New Session and Image Generation. When image generation is active, the
+ * plugin also uses the shell's region area as a dedicated history surface;
+ * the original workspace/session tree remains underneath and is restored when
+ * the panel closes.
  */
 
 import type { ImageGenController } from './controller.ts'
 import css from './panel.module.css'
 
-/** Stable data attribute identifying the injected entry row. */
-export const ENTRY_SELECTOR = '[data-dsh-imagegen-entry]'
+/** Stable selector for the injected two-tab host. */
+export const ENTRY_SELECTOR = '[data-dsh-imagegen-session-tabs]'
+/** Stable selector for the history surface in the shell region area. */
+export const HISTORY_HOST_SELECTOR = '[data-dsh-imagegen-history-host]'
 
-/** Inline icon (matches the shell's 16px nav-icon look): a picture glyph. */
-const ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><circle cx="5.6" cy="5.8" r="1"/><path d="M2.5 12.5l3.6-3.4 2.4 2.2 3-3 2 2.4"/></svg>'
+/** Inline picture glyph kept deliberately small for the sidebar rail. */
+const IMAGE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><circle cx="5.6" cy="5.8" r="1"/><path d="M2.5 12.5l3.6-3.4 2.4 2.2 3-3 2 2.4"/></svg>'
 
-/** Family entry selectors of sibling plugins (relative placement anchor). */
-const FAMILY_ENTRY_SELECTOR = '[data-dsh-taskboard-entry], [data-dsh-ssh-entry], [data-dsh-imagegen-entry]'
+/** Inline plus glyph for the new-session tab. */
+const NEW_SESSION_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>'
 
-/** Find the sidebar shell root element, or undefined while not yet mounted. */
+/** Find the sidebar shell root, or undefined while it is not mounted. */
 function sidebarRoot(): HTMLElement | undefined {
   const column = document.querySelector<HTMLElement>('[data-pane="sidebar"], [class*="sidebarCol"]')
   if (column === null) return undefined
@@ -33,112 +28,163 @@ function sidebarRoot(): HTMLElement | undefined {
   return logoOwner ?? (column.firstElementChild as HTMLElement | undefined)
 }
 
-/** The New Session button: nested in the logo row on current shells, a direct child on legacy shells. */
+/** The shell-owned New Session button across current and legacy shells. */
 function newSessionButton(root: HTMLElement): HTMLButtonElement | undefined {
-  const nested = root.querySelector<HTMLButtonElement>('button[class*="newSession"]')
-  if (nested !== null) return nested
-  for (const child of root.children) {
-    if (child.tagName === 'BUTTON') return child as HTMLButtonElement
-  }
-  return undefined
+  return root.querySelector<HTMLButtonElement>(
+    'button[data-dsh-part="new-session"], button[class*="newSession"]',
+  ) ?? Array.from(root.children).find(
+    (child): child is HTMLButtonElement => child instanceof HTMLElement && child.tagName === 'BUTTON',
+  )
 }
 
-/** Build the entry row (a detached button; insert once the shell is up). */
-function createEntry(controller: ImageGenController, label: string, tooltip: string): HTMLButtonElement {
-  const entry = document.createElement('button')
-  entry.type = 'button'
-  entry.dataset.dshImagegenEntry = ''
-  entry.className = css.entry
-  entry.setAttribute('aria-label', label)
-  entry.setAttribute('title', tooltip)
-  entry.innerHTML = '<span class="' + css.entryIcon + '">' + ICON + '</span><span class="' + css.entryLabel + '">' + label + '</span>'
-  entry.addEventListener('click', () => { controller.toggle() })
-  return entry
+/** Locate the shell region that normally contains workspaces and sessions. */
+function regionArea(root: HTMLElement): HTMLElement | undefined {
+  return root.querySelector<HTMLElement>('[class*="regionArea"]') ?? undefined
 }
 
-/** Re-insert the entry after the family block (task board → ssh → imagegen). */
-function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
+function makeTab(
+  label: string,
+  tooltip: string,
+  icon: string,
+  onClick: () => void,
+): HTMLButtonElement {
+  const tab = document.createElement('button')
+  tab.type = 'button'
+  tab.className = css.sessionTab
+  tab.setAttribute('aria-label', label)
+  tab.setAttribute('title', tooltip)
+  tab.innerHTML = `<span class="${css.sessionTabIcon}">${icon}</span><span class="${css.sessionTabLabel}">${label}</span>`
+  tab.addEventListener('click', onClick)
+  return tab
+}
+
+function hideShellButton(button: HTMLButtonElement): void {
+  button.dataset.dshImagegenOriginal = ''
+  button.setAttribute('aria-hidden', 'true')
+  button.tabIndex = -1
+  button.style.display = 'none'
+}
+
+function restoreShellButton(button: HTMLButtonElement): void {
+  button.style.removeProperty('display')
+  button.removeAttribute('aria-hidden')
+  button.removeAttribute('tabindex')
+  delete button.dataset.dshImagegenOriginal
+}
+
+/** Mount or repair the two-tab host at the shell's New Session position. */
+function placeTabs(
+  root: HTMLElement,
+  controller: ImageGenController,
+  newSessionLabel: string,
+  newSessionTooltip: string,
+  imageLabel: string,
+  imageTooltip: string,
+): HTMLDivElement | undefined {
   const button = newSessionButton(root)
-  if (button === undefined) return false
-  if (entry.parentElement !== root) {
-    // Position relative to the family block, never relative to transient
-    // logoRow geometry: every family plugin that self-heals during a
-    // re-render then lands in the same relative order.
-    const row = button.closest('[class*="logoRow"]')
-    const base = (row !== null && row.parentElement === root) ? row : button
-    const family = Array.from(root.children).filter(
-      (el): el is HTMLElement => el instanceof HTMLElement && el.matches(FAMILY_ENTRY_SELECTOR),
-    )
-    const anchor = family.length > 0 ? family[family.length - 1].nextElementSibling : base.nextElementSibling
-    root.insertBefore(entry, anchor)
+  if (button === undefined) return undefined
+
+  const existing = root.querySelector<HTMLDivElement>(ENTRY_SELECTOR)
+  if (existing !== null && existing.parentElement === button.parentElement) {
+    hideShellButton(button)
+    return existing
   }
-  return true
+
+  existing?.remove()
+  const tabs = document.createElement('div')
+  tabs.dataset.dshImagegenSessionTabs = ''
+  tabs.className = css.sessionTabs
+  tabs.setAttribute('role', 'tablist')
+  tabs.setAttribute('aria-label', imageTooltip)
+
+  const newSessionTab = makeTab(newSessionLabel, newSessionTooltip, NEW_SESSION_ICON, () => {
+    controller.close()
+    button.click()
+  })
+  const imageTab = makeTab(imageLabel, imageTooltip, IMAGE_ICON, () => {
+    controller.open()
+  })
+  newSessionTab.dataset.dshImagegenTab = 'new-session'
+  imageTab.dataset.dshImagegenTab = 'image'
+  tabs.append(newSessionTab, imageTab)
+
+  button.parentElement?.insertBefore(tabs, button)
+  hideShellButton(button)
+  return tabs
+}
+
+/** Mount an overlay host over the workspace/session tree for image history. */
+function placeHistoryHost(root: HTMLElement): HTMLDivElement | undefined {
+  const region = regionArea(root)
+  if (region === undefined) return undefined
+  const existing = region.querySelector<HTMLDivElement>(HISTORY_HOST_SELECTOR)
+  if (existing !== null) return existing
+  const host = document.createElement('div')
+  host.dataset.dshImagegenHistoryHost = ''
+  host.className = css.sidebarHistoryHost
+  region.append(host)
+  return host
 }
 
 /**
- * Mount the sidebar entry, waiting for the shell to render and self-healing
- * on later React re-renders.
- * @param controller - the panel controller the entry toggles.
- * @param label - the entry label (localized).
- * @param tooltip - the entry tooltip (localized).
- * @returns disposer removing the entry and its observers.
+ * Mount the two tabs and self-heal after React rebuilds the sidebar. The
+ * shell-owned button is restored by the disposer so unloading the plugin
+ * leaves the host unchanged.
  */
-export function mountSidebarEntry(controller: ImageGenController, label: string, tooltip: string): () => void {
-  const entry = createEntry(controller, label, tooltip)
+export function mountSidebarEntry(
+  controller: ImageGenController,
+  newSessionLabel: string,
+  newSessionTooltip: string,
+  imageLabel: string,
+  imageTooltip: string,
+): () => void {
   let root: HTMLElement | undefined
-  let placed = false
+  let tabs: HTMLDivElement | undefined
+  let historyHost: HTMLDivElement | undefined
+  let originalButton: HTMLButtonElement | undefined
 
-  const tryPlace = (): void => {
-    if (root !== undefined && !root.isConnected) {
-      rootObserver.disconnect()
-      root = undefined
-      placed = false
+  const syncActive = (): void => {
+    if (tabs === undefined) return
+    const newTab = tabs.querySelector<HTMLElement>('[data-dsh-imagegen-tab="new-session"]')
+    const imageTab = tabs.querySelector<HTMLElement>('[data-dsh-imagegen-tab="image"]')
+    if (controller.getSnapshot().panelOpen) {
+      if (newTab !== null) delete newTab.dataset.active
+      if (imageTab !== null) imageTab.dataset.active = ''
+    } else {
+      if (newTab !== null) newTab.dataset.active = ''
+      if (imageTab !== null) delete imageTab.dataset.active
     }
-    if (placed) {
-      if (document.body.contains(entry)) return
-      rootObserver.disconnect()
+  }
+
+  const ensure = (): void => {
+    if (root !== undefined && !root.isConnected) {
       root = undefined
-      placed = false
+      tabs = undefined
+      historyHost = undefined
+      originalButton = undefined
     }
     root ??= sidebarRoot()
     if (root === undefined) return
-    placed = placeEntry(root, entry)
-    if (placed) {
-      rootObserver.observe(root, { childList: true, subtree: true })
-    }
+    root.dataset.dshImagegenSidebarRoot = ''
+    const button = newSessionButton(root)
+    if (button === undefined) return
+    originalButton ??= button
+    tabs = placeTabs(root, controller, newSessionLabel, newSessionTooltip, imageLabel, imageTooltip)
+    historyHost = placeHistoryHost(root)
+    syncActive()
   }
 
-  // Body-level watcher retained as the "whole rebuild" fallback.
-  const waitObserver = new MutationObserver(() => { tryPlace() })
-  waitObserver.observe(document.body, { childList: true, subtree: true })
-
-  // Self-heal: if a React re-render displaces the row, re-insert it in the
-  // same frame (microtask before paint -> no visible flicker).
-  const rootObserver = new MutationObserver(() => {
-    if (root === undefined || !root.isConnected) {
-      placed = false
-      tryPlace()
-      return
-    }
-    if (!root.contains(entry)) {
-      placed = placeEntry(root, entry)
-    }
-  })
-
-  // Reflect the panel's open state on the row (active highlight).
-  const syncActive = () => {
-    if (controller.getSnapshot().panelOpen) entry.dataset.active = 'true'
-    else delete entry.dataset.active
-  }
+  const bodyObserver = new MutationObserver(ensure)
+  bodyObserver.observe(document.body, { childList: true, subtree: true })
   const unsubscribe = controller.subscribe(syncActive)
-  syncActive()
-
-  tryPlace()
+  ensure()
 
   return () => {
-    waitObserver.disconnect()
-    rootObserver.disconnect()
+    bodyObserver.disconnect()
     unsubscribe()
-    entry.remove()
+    tabs?.remove()
+    historyHost?.remove()
+    if (originalButton !== undefined && originalButton.isConnected) restoreShellButton(originalButton)
+    if (root !== undefined) delete root.dataset.dshImagegenSidebarRoot
   }
 }

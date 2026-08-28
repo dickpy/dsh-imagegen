@@ -28,6 +28,24 @@ async function check(name, fn) {
   }
 }
 
+/** Wait for React/jsdom state to settle without relying on a fixed delay. */
+async function waitForSelector(root, selector, timeout = 1200) {
+  const deadline = Date.now() + timeout
+  while (root.querySelector(selector) === null && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  assert.ok(root.querySelector(selector) !== null, `selector did not render: ${selector}`)
+}
+
+/** Wait for async fixture data to reach the rendered list, not just its host. */
+async function waitForSelectorCount(root, selector, count, timeout = 1200) {
+  const deadline = Date.now() + timeout
+  while (root.querySelectorAll(selector).length < count && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  assert.ok(root.querySelectorAll(selector).length >= count, `expected ${count} matches: ${selector}`)
+}
+
 // ---------------------------------------------------------------- A. host half
 const host = await import(new URL('lib/index.js', root).href)
 await check('A1 host exports the plugin contract', () => {
@@ -742,7 +760,7 @@ await check('D1 client bundle registers via __ModuleLoader__', () => {
   assert.equal([...new Set(required)].sort().join(','), Object.keys(stubs).sort().join(','))
   assert.equal(typeof exportsOf.apply, 'function')
   // Cross-realm array (VM context): compare contents, not identity.
-  assert.equal([...exportsOf.inject].join(','), 'slots,locale,connection,sessions')
+  assert.equal([...exportsOf.inject].join(','), 'slots,locale,connection,sessions,conversation')
 })
 
 // --------------- E. full client apply in jsdom (mounts the sidebar entry)
@@ -750,8 +768,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   const { JSDOM } = await import('jsdom')
   const dom = new JSDOM(
     '<!doctype html><html lang="zh-CN"><head></head><body>'
-    + '<div data-pane="sidebar"><div class="logoRow"><button class="newSession">New session</button></div></div>'
-    + '<div data-pane="conversation"></div>'
+    + '<div data-pane="sidebar"><div class="logoRow"><button class="newSession">New session</button></div><div class="regionArea"></div></div>'
+    + '<div data-pane="conversation"><div data-slot="conversation"><div data-conversation-scroll></div></div></div>'
     + '</body></html>',
     { pretendToBeVisual: true },
   )
@@ -829,6 +847,12 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
             { id: 'history-gpt', createdAt: 1, mode: 'text', model: 'gpt-image-2', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/gpt.png', mime: 'image/png' }], ...comparisonHistory },
           ],
         }),
+      }
+    }
+    if (path.startsWith('/history/')) {
+      return {
+        ok: true,
+        blob: async () => new jsdomWindow.Blob([pngBytes], { type: 'image/png' }),
       }
     }
     if (path.endsWith('/templates/list')) {
@@ -953,23 +977,42 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
 
   exportsOf.apply(ctx)
   // Wait for the bridge fetch + scope settle + React render.
-  await new Promise(resolve => setTimeout(resolve, 150))
+  await waitForSelectorCount(jsdomDocument, '[data-comparison]', 1)
 
   try {
     // Regression: the scope must settle (a scope that never loads leaves the
-    // UI unmounted forever) and the sidebar entry must be inserted.
-    const entry = jsdomDocument.querySelector('[data-dsh-imagegen-entry]')
-    assert.ok(entry !== null, 'sidebar entry was mounted')
-    assert.ok(entry.textContent.includes('AI 生图'), 'entry label localized')
+    // UI unmounted forever) and the two session tabs must be inserted.
+    const entry = jsdomDocument.querySelector('[data-dsh-imagegen-session-tabs]')
+    assert.ok(entry !== null, 'session tabs were mounted')
+    assert.equal(entry.querySelectorAll('[data-dsh-imagegen-tab]').length, 2, 'new session and image tabs are present')
+    assert.ok(entry.textContent.includes('生图'), 'image tab label localized')
+    assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-entry]'), null, 'standalone image entry was removed')
     const view = jsdomDocument.querySelector('[data-dsh-imagegen-view]')
     assert.ok(view !== null, 'studio view container was mounted')
     assert.ok(view.isConnected, 'view container attached to the center column')
+    assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-chat-resizer]') !== null, 'chat resizer was mounted')
+    assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history moved into the sidebar region')
+    assert.equal(view.querySelector('[data-dsh-imagegen-history]'), null, 'studio no longer owns the history column')
     // The panel header rendered.
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-view] h2') !== null, 'panel header rendered')
     const connectionStatus = jsdomDocument.querySelector('[data-dsh-imagegen-view] [data-connected]')
     assert.equal(connectionStatus?.getAttribute('data-connected'), 'false', 'missing key is shown as disconnected')
     assert.equal(jsdomDocument.querySelectorAll('[data-comparison]').length, 1, 'comparison history rows collapse into one item')
     assert.ok(jsdomDocument.querySelector('[data-comparison]')?.textContent?.includes('gpt-image-2'), 'comparison history shows its models')
+
+    // Gallery keeps the sidebar history visible, and selecting one history
+    // group returns the center workspace to text-to-image.
+    const modeTabs = [...view.querySelectorAll('[role="tablist"] button')]
+    assert.equal(modeTabs.length, 3, 'text, edit, and gallery tabs are present')
+    modeTabs[2]?.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history remains visible in gallery mode')
+    assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 2, 'gallery mode is active')
+    const galleryHistoryMain = jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history-main]')
+    assert.ok(galleryHistoryMain !== null, 'gallery mode exposes clickable history')
+    galleryHistoryMain.click()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 0, 'history click returns to text-to-image')
     // The settings card registered into the official plugin-config slot.
     assert.equal(registered.length, 1)
     assert.equal(registered[0].key, 'dsh-imagegen')

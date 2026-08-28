@@ -12,6 +12,19 @@
 
 `dsh-imagegen` 是 DSH 的原生 AI 图像工作台。它把可配置的 OpenAI 兼容生图接口、Agent 工具调用、后台任务、文生图、图生图、多模型比较和作品管理放进同一条工作流。你不需要在生成期间守着界面，也不需要把图片在多个工具之间来回搬运。
 
+## v1.4.0：双 Tab 三栏工作流
+
+`v1.4.0` 是一次工作流级别的调整。插件不再占用独立的“AI 生图”侧边栏入口，而是把能力收进 DSH 的“新会话 / 生图”双 Tab：
+
+- **新会话 Tab**：保留 DSH 原生 AI 对话，继续使用原有会话和工具。
+- **生图 Tab**：进入独立的生图工作区，自动隐藏任务看板、SSH、技能中心以及其他同级插件入口，避免工作区被无关面板打断。
+- **三栏布局**：左侧是历史记录，中间是生图区，右侧是原生 AI 对话区。生图与对话彼此独立，但图片、任务和上下文可以互相流转。
+- **自由调整对话宽度**：桌面端拖动生图区和对话区之间的分隔线即可调整右侧宽度，调整结果会保存；移动端会自动切换为上下布局。
+- **画廊保持历史记录**：切换到画廊后，左侧历史记录仍然可见。点击任意历史记录会自动退出画廊、回到文生图，并载入对应图片继续编辑。
+- **双向衔接**：在生图区生成图片后可以加入对话；在 AI 对话中触发 `generate_image` 或 `edit_image` 后，结果也会同步出现在生图区。
+
+这套布局适合“先在画布里探索，再让 Agent 继续修改”的连续流程，也适合“先和 Agent 讨论，再在生图区集中比较结果”。
+
 <p align="center">
   <strong>
     <a href="#what-it-solves">能解决什么</a>&nbsp;&nbsp;&nbsp;|
@@ -84,7 +97,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 <a id="studio"></a>
 ## 原生图像工作台
 
-侧边栏打开后，参数、生成结果、后台任务和历史记录处于同一工作区。文生图和图生图均支持尺寸、清晰度、数量与细节等级；结果可下载、全屏查看、缩放、前后切换、复制提示词或一键作为下一次图生图的参考。
+点击“新会话 / 生图”中的“生图” Tab 后，工作区按“历史记录 | 生图区 | AI 对话”排列。历史记录独立显示在左侧，生图参数和结果集中在中间，对话区独立显示在右侧；拖动两区之间的分隔线即可让对话区更宽或更窄。文生图和图生图均支持尺寸、清晰度、数量与细节等级；结果可下载、全屏查看、缩放、前后切换、复制提示词、加入对话，或一键作为下一次图生图的参考。
 
 ![AI 生图工作台四图结果布局](docs/images/image-generation-studio-four.png)
 
@@ -110,7 +123,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 <a id="quick-start"></a>
 ## 快速开始
 
-前置条件：已安装 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 和 Node.js 20+。安装完成后重启 `dsh web`，侧边栏会出现“AI 生图”。
+前置条件：已安装 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 和 Node.js 20+。安装完成后重启 `dsh web`，侧边栏的“新会话”入口会显示“新会话 / 生图”双 Tab。升级已有安装时，先执行安装命令，再重启 DSH Web 以加载新前端。
 
 ### 一条命令安装
 
@@ -118,23 +131,27 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 dsh plugin --profile web add @dickpy/dsh-imagegen
 ```
 
-Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`。安装后进入“设置 → 插件 → AI 生图”，填写 API 地址和密钥，检测并选中可用模型后保存。
+Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`。安装后点击“生图” Tab 进入工作区；配置仍在“设置 → 插件 → AI 生图”中，填写 API 地址和密钥，检测并选中可用模型后保存。
 
 ### 让 Agent 帮你安装
 
 将下面内容直接发给 DSH、Codex 或其他 coding agent：
 
 ```text
-用 dsh plugin --profile web add @dickpy/dsh-imagegen 安装 AI 生图插件。完成后重启 dsh web，并打开设置中的 AI 生图配置。
+用 dsh plugin --profile web add @dickpy/dsh-imagegen 安装 AI 生图插件。完成后重启 dsh web，点击“新会话 / 生图”中的“生图” Tab，并打开设置中的 AI 生图配置。
 ```
 
 ### 从 Release 安装
 
-从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载 tgz 后执行：
+从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载 `v1.4.0` 的 tgz 后执行：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.3.1.tgz
+dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.4.0.tgz
 ```
+
+### 升级与回滚
+
+已通过 npm 安装的用户，可以重复执行上面的 `add` 命令获取最新版；升级后请重启 `dsh web`。如果需要固定版本，可使用 `@dickpy/dsh-imagegen@1.4.0` 或指定 Release tgz。插件的渠道配置、历史记录和画廊数据由 DSH 宿主保存，正常升级不会清空；如需回滚，请安装目标版本并再次重启宿主。
 
 <a id="configuration"></a>
 ## 配置模型
@@ -177,6 +194,9 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-1.3.1.tgz
 - 密钥保存于本机 DSH 设置中，设置页面仅展示“已配置”状态。
 - 历史、画廊和图片数据保存在宿主的 `~/.dsh/dsh-imagegen/`，由你控制；画廊图片按内容去重。
 - 模板库随插件发布提示词快照，展示图通过宿主同源代理按需拉取与缓存。
+- 图生图会把参考图发送到当前渠道配置的上游 API；请确认渠道服务商的数据处理政策，不要上传敏感图片。
+- 生图会消耗上游 API 额度。图片内容由上游模型生成，可能出现不准确、不适宜或不符合预期的结果，请在使用前进行人工检查。
+- API 密钥属于敏感信息，请不要提交到 GitHub Issue、日志、截图或 README；发现密钥泄露时应立即在上游服务商处轮换。
 
 <a id="development"></a>
 ## 开发与反馈

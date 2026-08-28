@@ -12,6 +12,7 @@
  * the GUI down.
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ISessions } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -26,6 +27,7 @@ import { mountSidebarEntry } from './sidebar-entry.ts'
 import { ImageGenSettingsCard, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
 import { registerImageToolviews, type ImageToolViewOwnerProps } from './image-toolview.tsx'
+import type { ConversationService } from './conversation-sync.ts'
 
 /** Locale namespace this plugin owns. */
 const NS = 'dsh-imagegen'
@@ -58,7 +60,7 @@ export interface ImageGenPluginItemOwnerProps {
 }
 
 /** Required services (fiber inject waiting — the runtime must be up first). */
-export const inject = ['slots', 'locale', 'connection', 'sessions']
+export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversation']
 
 /**
  * Mount the studio, its sidebar entry, and the settings card.
@@ -104,10 +106,18 @@ export function apply(ctx: ClientContext): void {
     if (uiDisposer !== undefined) return
     const controller = new ImageGenController()
     const api = new ImageGenApi()
+    const sessions = ctx.get('sessions') as ISessions | undefined
+    const conversation = ctx.get('conversation') as ConversationService | undefined
     const disposers: Array<() => void> = []
     try {
-      disposers.push(mountSidebarEntry(controller, tt('entry.label'), tt('entry.tooltip')))
-      disposers.push(mountPanel(controller, api, scope))
+      disposers.push(mountSidebarEntry(
+        controller,
+        tt('entry.newSession'),
+        tt('entry.newSessionTooltip'),
+        tt('entry.image'),
+        tt('entry.tooltip'),
+      ))
+      disposers.push(mountPanel(controller, api, scope, { sessions, conversation }))
     } catch (error) {
       // DOM failures degrade the studio, never the GUI.
       console.warn('[dsh-imagegen] mount failed:', error)

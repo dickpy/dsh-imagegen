@@ -11,14 +11,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { ISessions, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import type { GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
+import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
 import { normalizeImageModels } from '../image-models.ts'
 import { describeModel } from '../model-catalog.ts'
+import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService } from './conversation-sync.ts'
 import css from './panel.module.css'
 
 /** Size options, presented as aspect ratios (auto = let the model decide).
@@ -123,6 +127,69 @@ function srcOf(image: GeneratedImage): string {
   return `data:${image.mime};base64,${image.b64}`
 }
 
+/** Decode one durable conversation attachment into the panel's image shape. */
+async function attachmentToGenerated(ref: ImageAttachmentRef): Promise<GeneratedImage> {
+  const query = new URLSearchParams({
+    attachment_id: String(ref.attachmentId),
+    media_type: ref.mediaType,
+    bytes: String(ref.bytes),
+    width: String(ref.width),
+    height: String(ref.height),
+  })
+  const response = await fetch(`${AGENT_IMAGE_API}?${query.toString()}`)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const blob = await response.blob()
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+    reader.onerror = () => reject(new Error('image read failed'))
+    reader.readAsDataURL(blob)
+  })
+  const comma = dataUrl.indexOf(',')
+  if (comma < 0) throw new Error('image decode failed')
+  return { b64: dataUrl.slice(comma + 1), mime: ref.mediaType }
+}
+
+/** Convert a generated image into the browser-owned draft format. */
+function generatedImageToFile(image: GeneratedImage, index: number): File {
+  const binary = atob(image.b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let offset = 0; offset < binary.length; offset += 1) bytes[offset] = binary.charCodeAt(offset)
+  return new File([bytes], `dsh-image-${index + 1}.${extensionOf(image.mime)}`, { type: image.mime })
+}
+
+/** Follow the native session selection while the image panel stays mounted. */
+function useCurrentSessionId(sessions: ISessions | undefined): SessionId | undefined {
+  const [sessionId, setSessionId] = useState<SessionId | undefined>(() => sessions?.list.getSnapshot().current)
+  useEffect(() => {
+    if (sessions === undefined) {
+      setSessionId(undefined)
+      return
+    }
+    const sync = (): void => { setSessionId(sessions.list.getSnapshot().current) }
+    sync()
+    return sessions.list.subscribe(sync)
+  }, [sessions])
+  return sessionId
+}
+
+/** Find the host mounted in the shell's left navigation region. */
+function useSidebarHistoryHost(): HTMLDivElement | null {
+  const [host, setHost] = useState<HTMLDivElement | null>(() => (
+    document.querySelector<HTMLDivElement>('[data-dsh-imagegen-history-host]')
+  ))
+  useEffect(() => {
+    const sync = (): void => {
+      setHost(document.querySelector<HTMLDivElement>('[data-dsh-imagegen-history-host]'))
+    }
+    sync()
+    const observer = new MutationObserver(sync)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [])
+  return host
+}
+
 /** Fetch persisted history image refs and decode them back to in-memory
  *  GeneratedImage[] (base64), so the canvas/preview can reuse the same
  *  rendering path as a fresh generation. */
@@ -192,8 +259,10 @@ function newComparisonId(): string {
 export function ImageGenPanel(props: {
   api: ImageGenApi
   scope: ImageGenScope
+  sessions?: ISessions
+  conversation?: ConversationService
 }) {
-  const { api, scope } = props
+  const { api, scope, sessions, conversation } = props
   const config = useConfig(scope)
   const enabled = config?.enabled ?? true
   // Channel-aware model options: the panel lists every configured alias
@@ -226,6 +295,8 @@ export function ImageGenPanel(props: {
   const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
+  const [addingToConversation, setAddingToConversation] = useState<number | null>(null)
+  const [conversationMessage, setConversationMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Submission is brief; actual generation stays visible until the host
   // queue reports that every queued/running task has finished.
@@ -265,6 +336,8 @@ export function ImageGenPanel(props: {
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
+  const currentSessionId = useCurrentSessionId(sessions)
+  const sidebarHistoryHost = useSidebarHistoryHost()
   const modeModels = tab === 'edit'
     ? imageModels.filter(candidate => describeModel(candidate).supportsEdit)
     : imageModels
@@ -322,6 +395,28 @@ export function ImageGenPanel(props: {
       .catch(() => { /* gallery unavailable — leave the list empty */ })
     return () => { disposed = true }
   }, [api])
+
+  // Chat toolviews publish durable refs after they finish loading. Decode the
+  // refs through the same host-authorized route and make them the current
+  // canvas result for the selected session.
+  useEffect(() => {
+    const onChatImages = (event: Event): void => {
+      const detail = (event as CustomEvent<ChatImageEventDetail>).detail
+      if (detail === undefined || currentSessionId === undefined || detail.sessionId !== currentSessionId) return
+      void Promise.all(detail.refs.map(attachmentToGenerated))
+        .then(next => {
+          setTab('text')
+          setImages(next)
+          setComparison(null)
+          setViewingHistoryId(null)
+          setGalleryViewingId(null)
+          setError(null)
+        })
+        .catch(caught => { setError(errorMessage(caught)) })
+    }
+    document.addEventListener(CHAT_IMAGE_EVENT, onChatImages)
+    return () => document.removeEventListener(CHAT_IMAGE_EVENT, onChatImages)
+  }, [currentSessionId])
 
   useEffect(() => {
     let disposed = false
@@ -566,6 +661,9 @@ export function ImageGenPanel(props: {
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined) return
+    // History is also the bridge out of the gallery: show the image workspace
+    // immediately, then hydrate the selected result into its canvas.
+    setTab('text')
     try {
       setImages(await loadHistoryGroup(group))
       setComparison(null)
@@ -665,6 +763,40 @@ export function ImageGenPanel(props: {
       setError(errorMessage(caught))
     } finally {
       setGalleryAdding(false)
+    }
+  }
+
+  /** Put a generated image into the native conversation composer. */
+  const addImageToConversation = async (image: GeneratedImage, index: number): Promise<void> => {
+    if (addingToConversation !== null) return
+    if (conversation === undefined || sessions === undefined || currentSessionId === undefined) {
+      setError(tt('conversation.noSession'))
+      return
+    }
+    const sessionScope = sessions.scope(currentSessionId)
+    if (sessionScope === undefined) {
+      setError(tt('conversation.unavailable'))
+      return
+    }
+    setAddingToConversation(index)
+    let attachments: ReturnType<ConversationService['createDraftImages']> = []
+    let added = false
+    try {
+      const file = generatedImageToFile(image, index)
+      attachments = conversation.createDraftImages([file])
+      const input = conversation.input.for(sessionScope)
+      if (!input.addImages(attachments.map(attachment => attachment.id))) {
+        throw new Error(tt('conversation.busy'))
+      }
+      added = true
+      if (input.state.getSnapshot().draft.trim() === '' && prompt.trim() !== '') input.setDraft(prompt.trim())
+      setConversationMessage(tt('conversation.added'))
+      window.setTimeout(() => { setConversationMessage(null) }, 2200)
+    } catch (caught) {
+      if (!added) conversation.releaseDraftImages(attachments)
+      setError(errorMessage(caught))
+    } finally {
+      setAddingToConversation(null)
     }
   }
 
@@ -845,6 +977,94 @@ export function ImageGenPanel(props: {
     closePreview()
   }
 
+  // Render history into the shell sidebar so it remains a separate navigation
+  // surface from both the image workspace and the native conversation.
+  const historyPanel = (
+    <aside className={css.history} data-dsh-imagegen-history>
+      <header className={css.historyHeader}>
+        <span className={css.historyTitle}>{tt('history.title')}</span>
+        {history.length > 0 ? (
+          <button type="button" className={css.historyClear} onClick={() => { void clearHistory() }}>
+            {tt('history.clear')}
+          </button>
+        ) : null}
+      </header>
+
+      <div className={css.historyFilters}>
+        <input className={css.historySearch} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value) }} placeholder={tt('history.search')} aria-label={tt('history.search')} />
+        <select value={historyModelFilter} onChange={event => { setHistoryModelFilter(event.target.value) }} aria-label={tt('history.model')}>
+          <option value="all">{tt('history.allModels')}</option>
+          {[...new Set(history.flatMap(entry => modelsOfHistoryEntry(entry)))].map(option => <option key={option} value={option}>{option}</option>)}
+        </select>
+        <select value={historyRatioFilter} onChange={event => { setHistoryRatioFilter(event.target.value) }} aria-label={tt('history.ratio')}>
+          <option value="all">{tt('history.allRatios')}</option>
+          {[...new Set(history.map(entry => normalizeSize(entry.size)))].map(option => <option key={option} value={option}>{option}</option>)}
+        </select>
+      </div>
+
+      {filteredHistory.length === 0 ? (
+        <div className={css.historyEmpty}>{tt('history.empty')}</div>
+      ) : (
+        <div className={css.historyList}>
+          {filteredHistory.map(group => {
+            const entry = group.entries[0]!
+            const isComparison = group.models.length > 1
+            const imageCount = group.entries.reduce((total, item) => total + item.images.length, 0)
+            return (
+              <div
+                key={group.key}
+                className={css.historyItem}
+                data-active={group.entries.some(item => item.id === viewingHistoryId) ? '' : undefined}
+                data-comparison={isComparison ? '' : undefined}
+              >
+                <button
+                  type="button"
+                  className={css.historyMain}
+                  data-dsh-imagegen-history-main=""
+                  onClick={() => { void viewHistoryGroup(group) }}
+                >
+                  {entry.images.length > 0 ? (
+                    <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
+                  ) : (
+                    <span className={css.historyThumbPlaceholder} />
+                  )}
+                  <span className={css.historyInfo}>
+                    <span className={css.historyPrompt}>{entry.prompt}</span>
+                    <span className={css.historyMeta}>
+                      {isComparison ? tt('compare.title') : tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
+                      {' · '}{isComparison ? group.models.join(' · ') : entry.model}
+                      {' · '}{formatTime(entry.createdAt)}
+                      {' · '}{imageCount} {tt('history.images')}
+                    </span>
+                  </span>
+                </button>
+                <span className={css.historyActions}>
+                  {entry.images.length > 0 ? (
+                    <button
+                      type="button"
+                      className={css.historyAction}
+                      disabled={galleryAdding}
+                      title={tt('gallery.add')}
+                      onClick={() => { void addHistoryEntryToGallery(entry) }}
+                    >
+                      {tt('gallery.add')}
+                    </button>
+                  ) : null}
+                  <button type="button" className={css.historyAction} onClick={() => { void restoreHistoryGroup(group) }}>
+                    {tt('history.restore')}
+                  </button>
+                  <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteHistoryGroup(group) }}>
+                    {tt('history.delete')}
+                  </button>
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </aside>
+  )
+
   return (
     <div className={css.panel}>
       <header className={css.panelHeader}>
@@ -887,8 +1107,10 @@ export function ImageGenPanel(props: {
       ) : null}
 
       <div className={css.studio}>
-        {/* ---------------------------------------------------- config sidebar */}
-        <aside className={css.config} data-gallery={tab === 'gallery' ? 'true' : undefined}>
+        {/* ------------------------------- left history + generation workspace */}
+        <div className={css.generation}>
+          {/* ------------------------------------------------ config sidebar */}
+          <aside className={css.config} data-gallery={tab === 'gallery' ? 'true' : undefined}>
           {tab === 'gallery' ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
@@ -1157,10 +1379,10 @@ export function ImageGenPanel(props: {
               ) : tt('generate')}
               </Button>
             </section>
-        </aside>
+          </aside>
 
-        {/* --------------------------------------------------------- canvas */}
-        <section className={css.canvas} data-gallery={tab === 'gallery' ? 'true' : undefined}>
+          {/* ------------------------------------------------------- canvas */}
+          <section className={css.canvas} data-gallery={tab === 'gallery' ? 'true' : undefined}>
           {tab === 'gallery' ? (
             <div className={css.galleryWorkspace}>
               <header className={css.galleryToolbar}>
@@ -1372,7 +1594,17 @@ export function ImageGenPanel(props: {
                         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 5.8v4.4M5.8 8h4.4"/></svg>
                         {tt('gallery.add')}
                       </button>
-                    <a
+                      <button
+                        type="button"
+                        className={css.conversationAdd}
+                        title={tt('conversation.add')}
+                        disabled={addingToConversation !== null}
+                        onClick={(event) => { event.stopPropagation(); void addImageToConversation(image, index) }}
+                      >
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
+                        {addingToConversation === index ? tt('conversation.adding') : tt('conversation.add')}
+                      </button>
+                      <a
                       className={css.download}
                       href={srcOf(image)}
                       download={`dsh-image-${index + 1}.${extensionOf(image.mime)}`}
@@ -1385,146 +1617,14 @@ export function ImageGenPanel(props: {
               </div>
             </div>
           ) : null}
-        </section>
+          </section>
+        </div>
 
-        {/* ------------------------ right column: gallery (tab) or history */}
-        {tab === 'gallery' ? (
-          <aside className={css.history}>
-            <header className={css.historyHeader}>
-              <span className={css.historyTitle}>{tt('gallery.title')}</span>
-              {gallery.length > 0 ? (
-                <button type="button" className={css.historyClear} onClick={() => { void clearGalleryAll() }}>
-                  {tt('gallery.clear')}
-                </button>
-              ) : null}
-            </header>
-
-            {gallery.length === 0 ? (
-              <div className={css.historyEmpty}>{tt('gallery.empty')}</div>
-            ) : (
-              <div className={css.historyList}>
-                {gallery.map(entry => (
-                  <div
-                    key={entry.id}
-                    className={css.historyItem}
-                    data-active={entry.id === galleryViewingId ? '' : undefined}
-                  >
-                    <button
-                      type="button"
-                      className={css.historyMain}
-                      onClick={() => { void viewGalleryEntry(entry) }}
-                    >
-                      {entry.images.length > 0 ? (
-                        <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
-                      ) : (
-                        <span className={css.historyThumbPlaceholder} />
-                      )}
-                      <span className={css.historyInfo}>
-                        <span className={css.historyPrompt}>{entry.prompt}</span>
-                        <span className={css.historyMeta}>
-                          {tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
-                          {' · '}{formatTime(entry.createdAt)}
-                        </span>
-                      </span>
-                    </button>
-                    <span className={css.historyActions}>
-                      <button type="button" className={css.historyAction} onClick={() => { void restoreGalleryEntry(entry) }}>
-                        {tt('history.restore')}
-                      </button>
-                      <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteGalleryEntry(entry.id) }}>
-                        {tt('gallery.delete')}
-                      </button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </aside>
-        ) : (
-          <aside className={css.history}>
-          <header className={css.historyHeader}>
-            <span className={css.historyTitle}>{tt('history.title')}</span>
-            {history.length > 0 ? (
-              <button type="button" className={css.historyClear} onClick={() => { void clearHistory() }}>
-                {tt('history.clear')}
-              </button>
-            ) : null}
-          </header>
-
-          <div className={css.historyFilters}>
-            <input className={css.historySearch} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value) }} placeholder={tt('history.search')} aria-label={tt('history.search')} />
-            <select value={historyModelFilter} onChange={event => { setHistoryModelFilter(event.target.value) }} aria-label={tt('history.model')}>
-              <option value="all">{tt('history.allModels')}</option>
-              {[...new Set(history.flatMap(entry => modelsOfHistoryEntry(entry)))].map(option => <option key={option} value={option}>{option}</option>)}
-            </select>
-            <select value={historyRatioFilter} onChange={event => { setHistoryRatioFilter(event.target.value) }} aria-label={tt('history.ratio')}>
-              <option value="all">{tt('history.allRatios')}</option>
-              {[...new Set(history.map(entry => normalizeSize(entry.size)))].map(option => <option key={option} value={option}>{option}</option>)}
-            </select>
-          </div>
-
-          {filteredHistory.length === 0 ? (
-            <div className={css.historyEmpty}>{tt('history.empty')}</div>
-          ) : (
-            <div className={css.historyList}>
-              {filteredHistory.map(group => {
-                const entry = group.entries[0]!
-                const isComparison = group.models.length > 1
-                const imageCount = group.entries.reduce((total, item) => total + item.images.length, 0)
-                return (
-                  <div
-                    key={group.key}
-                    className={css.historyItem}
-                    data-active={group.entries.some(item => item.id === viewingHistoryId) ? '' : undefined}
-                    data-comparison={isComparison ? '' : undefined}
-                  >
-                    <button
-                      type="button"
-                      className={css.historyMain}
-                      onClick={() => { void viewHistoryGroup(group) }}
-                    >
-                      {entry.images.length > 0 ? (
-                        <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
-                      ) : (
-                        <span className={css.historyThumbPlaceholder} />
-                      )}
-                      <span className={css.historyInfo}>
-                        <span className={css.historyPrompt}>{entry.prompt}</span>
-                        <span className={css.historyMeta}>
-                          {isComparison ? tt('compare.title') : tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
-                          {' · '}{isComparison ? group.models.join(' · ') : entry.model}
-                          {' · '}{formatTime(entry.createdAt)}
-                          {' · '}{imageCount} {tt('history.images')}
-                        </span>
-                      </span>
-                    </button>
-                    <span className={css.historyActions}>
-                      {entry.images.length > 0 ? (
-                        <button
-                          type="button"
-                          className={css.historyAction}
-                          disabled={galleryAdding}
-                          title={tt('gallery.add')}
-                          onClick={() => { void addHistoryEntryToGallery(entry) }}
-                        >
-                          {tt('gallery.add')}
-                        </button>
-                      ) : null}
-                      <button type="button" className={css.historyAction} onClick={() => { void restoreHistoryGroup(group) }}>
-                        {tt('history.restore')}
-                      </button>
-                      <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteHistoryGroup(group) }}>
-                        {tt('history.delete')}
-                      </button>
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          </aside>
-        )}
       </div>
+
+      {sidebarHistoryHost !== null && historyPanel !== null
+        ? createPortal(historyPanel, sidebarHistoryHost)
+        : null}
 
       {/* ------------------------------------------------ template library */}
       {libraryOpen ? (
@@ -1633,6 +1733,9 @@ export function ImageGenPanel(props: {
               <div className={css.lightboxMeta}>
                 <span className={css.lightboxIndex}>{tt('preview.index', { index: preview.index + 1, total: preview.images.length })}</span>
                 <span className={css.lightboxActions}>
+                  <button type="button" className={css.lightboxEdit} disabled={addingToConversation !== null} onClick={() => { void addImageToConversation(previewImage, preview.index) }}>
+                    {addingToConversation === preview.index ? tt('conversation.adding') : tt('conversation.add')}
+                  </button>
                   <button type="button" className={css.lightboxEdit} disabled={galleryAdding} onClick={() => { void addToGallery(previewImage) }}>
                     {tt('gallery.add')}
                   </button>
@@ -1659,6 +1762,12 @@ export function ImageGenPanel(props: {
         <div className={css.galleryToast} role="status">
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 5.8v4.4M5.8 8h4.4"/></svg>
           {galleryMessage}
+        </div>
+      ) : null}
+      {conversationMessage !== null ? (
+        <div className={css.conversationToast} role="status">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
+          {conversationMessage}
         </div>
       ) : null}
     </div>

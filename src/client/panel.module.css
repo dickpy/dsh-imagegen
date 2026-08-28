@@ -18,30 +18,134 @@
 [data-pane='conversation'],
 [class*='centerCol'] {
   position: relative;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* The panel container rides inside the conversation grid item as an extra
    trailing child; hidden unless the panel is active. */
 [data-dsh-imagegen-view] {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
   display: none;
   z-index: 60;
+  min-width: 0;
+  min-height: 0;
   background: var(--dsw-alias-bg-base);
 }
 
 /* The center column is single-occupant; the :not() guards keep the sibling
    panels (task board / ssh) from fighting over visibility if both activation
    attributes ever coexist. */
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 8px minmax(320px, clamp(320px, var(--dsh-imagegen-chat-width, 36%), 70%));
+  grid-template-rows: minmax(0, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  background: var(--dsw-alias-border-l1);
+}
+
 html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-view] {
   display: block;
 }
 
-/* While the panel is active, the conversation content underneath is hidden
-   (it stays mounted and stateful). */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]),
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]) {
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
+  grid-column: 3;
+  grid-row: 1;
+  align-items: stretch;
+  display: flex !important;
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+}
+
+/* DSH's native conversation root is a flex item with an intrinsic width.
+   Stretch that direct child to the complete chat column so its hero composer
+   can center itself inside the resized pane instead of leaving a blank rail
+   on the right. */
+html[data-dsh-imagegen-active] [data-slot='conversation'] > [data-phase] {
+  align-self: stretch;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-chat-resizer] {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.chatResizer {
+  position: relative;
+  z-index: 70;
+  display: none;
+  width: 8px;
+  min-width: 8px;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-border-l1);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.chatResizer::before {
+  width: 3px;
+  height: 36px;
+  border-radius: 3px;
+  background: currentColor;
+  content: '';
+  opacity: .55;
+}
+
+.chatResizer:hover,
+.chatResizer:focus-visible {
+  color: var(--dsw-alias-brand-primary);
+  outline: none;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+/* Keep the handle above shell defaults: some skins set display:none on
+   unrecognised children of the conversation frame. */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
+  display: flex !important;
+}
+
+/* Hide only unrelated center-column plugin children. */
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-dsh-imagegen-chat-resizer]),
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-dsh-imagegen-chat-resizer]) {
   display: none !important;
+}
+
+/* The shell can have any number of plugin entries between the New Session
+   tabs and its workspace region. Hide the whole middle run while image
+   generation owns the frame, without relying on a plugin allow-list. */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh-imagegen-session-tabs]):not([class*='logoRow']):not([class*='regionArea']):not([class*='footArea']) {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(340px, 0.9fr);
+    overflow-y: auto;
+  }
+
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
+    display: none !important;
+  }
 }
 
 /* --- sidebar entry row ------------------------------------------------------- */
@@ -85,6 +189,92 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   text-overflow: ellipsis;
 }
 
+/* New Session + Image Generation tabs share the shell's top action row. */
+.sessionTabs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.sessionTab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sessionTab:hover,
+.sessionTab[data-active] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-specific-sidebar-nav-item-active);
+}
+
+.sessionTabIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.sessionTabLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The history surface occupies the shell's workspace/session region while
+   image generation is active. The shell's own tree stays mounted underneath
+   so closing the tab restores it without a React remount. */
+[class*='regionArea'] {
+  position: relative;
+  min-height: 0;
+}
+
+.sidebarHistoryHost {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 4px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+}
+
+html[data-dsh-imagegen-active] .sidebarHistoryHost {
+  display: flex;
+}
+
+.sidebarHistoryHost .history {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+}
+
+[data-dsh-frame][data-sidebar-collapsed] .sidebarHistoryHost {
+  display: none;
+}
+
 /* Collapsed rail: icon-only, centered, matching the shell's 56px rail. */
 [data-dsh-frame][data-sidebar-collapsed] .entry {
   justify-content: center;
@@ -99,6 +289,9 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 /* --- panel frame -------------------------------------------------------------- */
 
 .view {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -260,14 +453,21 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   }
 }
 
-/* --- studio split: left config sidebar (narrow) + right canvas (wide) --------- */
+/* --- studio split: left history + middle generation workspace ----------------- */
 
 .studio {
   display: flex;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
   min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.generation {
+  display: flex;
+  width: 100%;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .config {
@@ -275,9 +475,9 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   flex-direction: column;
   gap: 12px;
   flex: none;
-  width: 300px;
-  min-width: 260px;
-  max-width: 340px;
+  width: min(300px, 42%);
+  min-width: 220px;
+  max-width: 300px;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -362,15 +562,14 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 .configGuideBody span { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.55; }
 .configGuideBody button { align-self: flex-end; min-height: 30px; padding: 0 12px; border: 0; border-radius: 7px; color: var(--dsw-alias-bg-layer-1); background: var(--dsw-alias-brand-primary); cursor: pointer; font: inherit; font-size: 12px; }
 
-/* --- history column (far right) ------------------------------------------------ */
+/* --- history surface (rendered into the shell sidebar) ----------------------- */
 
 .history {
   display: flex;
   flex-direction: column;
-  flex: none;
-  width: 240px;
-  min-width: 200px;
-  max-width: 280px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
   min-height: 0;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 12px;
@@ -1113,6 +1312,43 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   cursor: default;
 }
 
+/* Add-to-conversation action sits below the gallery action on hover. */
+.conversationAdd {
+  position: absolute;
+  top: 38px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-mask-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.12s;
+  backdrop-filter: blur(4px);
+}
+
+.imageCard:hover .conversationAdd,
+.conversationAdd:focus-visible {
+  opacity: 1;
+}
+
+.conversationAdd:hover {
+  background: var(--dsw-alias-bg-base);
+}
+
+.conversationAdd:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* Hover hint for the click-to-zoom behavior. */
 .zoomHint {
   position: absolute;
@@ -1444,6 +1680,29 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
+.conversationToast {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 32px);
+  padding: 6px 16px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-mask-1);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: dshImageGenToastIn 160ms ease-out;
+  backdrop-filter: blur(6px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .download, .spinner, .bigSpinner {
     transition: none;
@@ -1556,7 +1815,13 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 }
 
 @media (max-width: 760px) {
-  .studio { flex-direction: column; overflow: auto; }
+  .studio {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, 36%) minmax(0, 1fr);
+    overflow-y: auto;
+  }
+  .history { grid-column: 1; grid-row: 1; min-height: 220px; }
+  .generation { grid-column: 1; grid-row: 2; flex-direction: column; min-height: 0; }
   .config { width: auto; max-width: none; height: auto; min-height: 0; }
   .config[data-gallery='true'] { flex: none; }
   .canvas { min-height: 560px; }
