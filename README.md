@@ -16,7 +16,7 @@
 
 <p align="center">
   <strong>
-    <a href="#what-it-solves">能解决什么</a>&nbsp;&nbsp;&nbsp;|
+    <a href="#quick-start">快速开始</a>&nbsp;&nbsp;&nbsp;|
     <a href="#agent-workflow">Agent 对话生图</a>&nbsp;&nbsp;&nbsp;|
     <a href="#model-comparison">多模型对比</a>&nbsp;&nbsp;&nbsp;|
     <a href="#studio">原生工作台</a>
@@ -24,22 +24,21 @@
   <br />
   <strong>
     <a href="#gallery">画廊管理</a>&nbsp;&nbsp;&nbsp;|
-    <a href="#quick-start">快速开始</a>&nbsp;&nbsp;&nbsp;|
     <a href="#configuration">配置模型</a>&nbsp;&nbsp;&nbsp;|
     <a href="#community">交流群</a>
   </strong>
 </p>
 
 <a id="what-it-solves"></a>
-## 它解决什么问题
+## 功能速览
 
-| 过去要反复做的事 | 现在的工作方式 |
-| --- | --- |
-| 在对话、网页生图工具和本地文件夹之间切换 | 在 DSH 对话里描述目标，Agent 等待任务并把图片显示在工具调用对应的左侧结果区域 |
-| 生图耗时很长，只能盯着页面或不断询问状态 | Agent 工具调用会保持等待直到完成，结果同时保存在对话和工作台 |
-| 第一张图不对，就重新组织全部提示词 | 直接说“换成黄色”“保留构图但改成夜景”，Agent 复用上一张图继续图生图 |
-| 多个模型各有优缺点，难以公平比较 | 用同一提示词和参数并行生成，在并列全屏视图中挑选结果 |
-| 收藏变多后无法找回、筛选或导出 | 画廊支持瀑布流、搜索、标签、批量下载和 JSON 备份 |
+| 目标 | 直接用法 | 得到什么 |
+| --- | --- | --- |
+| 快速生图 | 在工作台输入提示词，选择模型、比例和清晰度 | 文生图结果、任务状态和历史记录 |
+| 对话生图 | 在 DSH 对话中描述画面，让 Agent 调用 `generate_image` | 图片作为工具结果显示，不打断对话 |
+| 连续编辑 | 从预览区或画廊点击“加入对话”，输入 `/edit_image 修改内容` | 直接调用插件图片模型进行图生图 |
+| 并行探索 | 选择多个已配置模型，开启多模型对比 | 相同参数下的并列结果 |
+| 沉淀资产 | 将满意结果加入画廊，搜索、打标签、批量下载 | 可持续管理的图片资产 |
 
 <a id="agent-workflow"></a>
 ## Agent 对话生图与连续编辑
@@ -49,13 +48,14 @@
 接着，你可以基于结果继续提出修改。Agent 会携带该图片的引用调用图生图，不必重新上传文件，也不必重新描述全部上下文。它适合快速探索视觉方向、反复打磨 UI 视觉稿、海报或产品素材。
 
 <p align="center">
-  <video controls preload="metadata" width="100%" poster="docs/images/agent-chat-poster-workflow.png">
-    <source src="docs/videos/agent-chat-edit.mp4" type="video/mp4" />
-    <a href="docs/videos/agent-chat-edit.mp4">打开 Agent 对话生图与连续编辑演示视频</a>
-  </video>
+  <a href="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/videos/agent-chat-edit.mp4">
+    <img src="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/images/agent-chat-poster-workflow.png" alt="点击播放 Agent 对话生图与连续编辑演示视频" width="100%" />
+  </a>
+  <br />
+  <a href="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/videos/agent-chat-edit.mp4">点击播放 Agent 对话生图与连续编辑演示视频</a>
 </p>
 
-视频展示了从生成预览区或画廊把图片加入对话，再使用 `/edit_image` 调用插件图片模型继续修改的完整流程。
+点击封面或下方链接即可打开视频。视频展示了从生成预览区或画廊把图片加入对话，再使用 `/edit_image` 调用插件图片模型继续修改的完整流程。
 
 ### 可直接使用的案例提示词
 
