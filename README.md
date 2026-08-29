@@ -14,18 +14,18 @@
 
 <div align="center">
 
-**让 Agent 不只会回答，还能把想法变成图片，并在成图上继续迭代。**
+让 Agent 把想法变成图片，并在成图上继续迭代。
 
-生成 → 查看 → 加入对话 → 继续编辑，**一条工作流走到底**
+**生成 → 查看 → 加入对话 → 继续编辑**，在同一条工作流里完成。
 
-[⚡ 快速开始](#quick-start)&nbsp;&nbsp;·&nbsp;&nbsp;[🔄 核心工作流](#workflow)&nbsp;&nbsp;·&nbsp;&nbsp;[⚖️ 多模型对比](#compare)&nbsp;&nbsp;·&nbsp;&nbsp;[🖥️ 工作台](#studio)&nbsp;&nbsp;·&nbsp;&nbsp;[📚 模板库](#templates)&nbsp;&nbsp;·&nbsp;&nbsp;[🎞️ 画廊](#gallery)&nbsp;&nbsp;·&nbsp;&nbsp;[⚙️ 配置](#configuration)&nbsp;&nbsp;·&nbsp;&nbsp;[💬 交流群](#community)
+[快速开始](#quick-start)&nbsp;&nbsp;·&nbsp;&nbsp;[核心工作流](#workflow)&nbsp;&nbsp;·&nbsp;&nbsp;[多模型对比](#compare)&nbsp;&nbsp;·&nbsp;&nbsp;[工作台](#studio)&nbsp;&nbsp;·&nbsp;&nbsp;[模板库](#templates)&nbsp;&nbsp;·&nbsp;&nbsp;[画廊](#gallery)&nbsp;&nbsp;·&nbsp;&nbsp;[配置](#configuration)&nbsp;&nbsp;·&nbsp;&nbsp;[交流群](#community)
 
 </div>
 
 `dsh-imagegen` 是 DeepSeek Harness（DSH）的原生 AI 图像工作台。配置任意 OpenAI 兼容生图接口后，Agent 对话生图、`/edit_image` 斜杠命令连续编辑、多模型并列对比、441 条案例模板库与画廊资产管理都在同一个窗口完成。生成任务由宿主进程排队执行，不卡界面、不打断对话，图片也不必在多个工具之间来回搬运。
 
 <a id="quick-start"></a>
-## ⚡ 快速开始
+## 快速开始
 
 前置条件：已安装 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 和 Node.js 20+。
 
@@ -35,7 +35,7 @@ dsh plugin --profile web add @dickpy/dsh-imagegen
 
 安装后重启 `dsh web`，侧边栏的“新会话”入口会变成“新会话 / 生图”双 Tab（Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`）。
 
-**接下来只要 30 秒：**
+首次使用：
 
 1. 打开“设置 → 插件 → AI 生图”，添加一个提供方，填入 API 地址和密钥，点击“检测可用模型”，勾选生图模型后保存。
 2. 点击“生图”Tab，输入一句提示词，生成第一张图。
@@ -62,27 +62,24 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 
 <a id="highlights"></a>
 <a id="what-it-solves"></a>
-## ✨ 功能亮点
+## 功能总览
 
 <table>
   <tr>
     <td width="33%" align="center" valign="top">
       <br/>
-      🔄<br/>
       <b><a href="#workflow">连续编辑工作流</a></b><br/>
-      <sub>生成 → 查看 → 加入对话 → 继续编辑，出图不是终点</sub><br/>
+      <sub>查看、加入对话、继续编辑，不换工具、不重新传图</sub><br/>
       <br/>
     </td>
     <td width="33%" align="center" valign="top">
       <br/>
-      ⌨️<br/>
       <b><a href="#slash">/edit_image 斜杠命令</a></b><br/>
-      <sub>一行命令直接调用插件模型改图，不依赖对话模型的图片能力</sub><br/>
+      <sub>一行命令调用插件模型改图，不依赖对话模型</sub><br/>
       <br/>
     </td>
     <td width="33%" align="center" valign="top">
       <br/>
-      ⚖️<br/>
       <b><a href="#compare">多模型并列对比</a></b><br/>
       <sub>同一提示词、相同参数，多个模型并排出图</sub><br/>
       <br/>
@@ -91,23 +88,20 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
   <tr>
     <td width="33%" align="center" valign="top">
       <br/>
-      🖥️<br/>
-      <b><a href="#studio">原生三栏工作台</a></b><br/>
-      <sub>历史 · 生图 · 对话同屏，任务队列可取消、可重试</sub><br/>
+      <b><a href="#studio">三栏工作台</a></b><br/>
+      <sub>历史、生图、对话同屏，任务队列可取消、可重试</sub><br/>
       <br/>
     </td>
     <td width="33%" align="center" valign="top">
       <br/>
-      📚<br/>
-      <b><a href="#templates">441 条案例模板库</a></b><br/>
-      <sub>搜索分类、一键回填，参考图可缓存离线浏览</sub><br/>
+      <b><a href="#templates">案例模板库</a></b><br/>
+      <sub>441 条 gpt-image-2 案例，搜索筛选、一键回填</sub><br/>
       <br/>
     </td>
     <td width="33%" align="center" valign="top">
       <br/>
-      🎞️<br/>
-      <b><a href="#gallery">画廊资产管理</a></b><br/>
-      <sub>标签、收藏、批量下载、导出备份，跨设备可见</sub><br/>
+      <b><a href="#gallery">画廊</a></b><br/>
+      <sub>标签、收藏、批量下载，收藏跨设备可见</sub><br/>
       <br/>
     </td>
   </tr>
@@ -115,24 +109,24 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 
 <a id="workflow"></a>
 <a id="agent-workflow"></a>
-## 🔄 核心工作流：从一张图到下一个想法
+## 核心工作流
 
-多数生图工具到“下载图片”就结束了，dsh-imagegen 把出图当作起点。开启“允许 Agent 调用生图”后，这条闭环全部在 DSH 里完成：
+开启“允许 Agent 调用生图”后，从生成到修改都在 DSH 内完成：
 
 | 步骤 | 在哪操作 | 发生什么 |
 | --- | --- | --- |
-| **1️⃣ 生成** | 在对话里直接说，或在生图区输入提示词 | Agent 调用 `generate_image`，或工作台提交任务，由宿主排队执行 |
-| **2️⃣ 查看** | 工具结果旁 / 工作台画布 / 全屏预览 | 图片内联显示在对应位置，支持缩放、翻页、复制提示词 |
-| **3️⃣ 加入对话** | 结果卡或画廊点“加入对话” | 图片进入当前会话，自动适配附件限制，无需手动上传 |
-| **4️⃣ 继续编辑** | 对 Agent 说，或输入 `/edit_image …` | 以上一张成图为参考提交图生图，只需描述要改的地方 |
+| **生成** | 在对话里直接说，或在生图区输入提示词 | Agent 调用 `generate_image`，或工作台提交任务，由宿主排队执行 |
+| **查看** | 工具结果旁 / 工作台画布 / 全屏预览 | 图片内联显示在对应位置，支持缩放、翻页、复制提示词 |
+| **加入对话** | 结果卡或画廊点“加入对话” | 图片进入当前会话，自动适配附件限制，无需手动上传 |
+| **继续编辑** | 对 Agent 说，或输入 `/edit_image …` | 以上一张成图为参考提交图生图，只需描述要改的地方 |
 
 <div align="center">
   <img src="docs/videos/agent-chat-edit.gif" alt="Agent 对话生图与连续编辑演示" width="100%" />
-  <p><sub><a href="docs/videos/agent-chat-edit.mp4">▶ 打开高清 MP4 原视频</a>&nbsp;&nbsp;从生成预览区或画廊把图片加入对话，再用 /edit_image 继续修改的完整流程</sub></p>
+  <p><sub><a href="docs/videos/agent-chat-edit.mp4">查看高清 MP4</a> — 从把图片加入对话到 /edit_image 继续修改的完整流程</sub></p>
 </div>
 
 <a id="slash"></a>
-### ⌨️ 继续编辑的两种方式
+### 继续编辑的两种方式
 
 | | 直接对 Agent 说 | `/edit_image` 斜杠命令 |
 | --- | --- | --- |
@@ -175,9 +169,9 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 
 <a id="model-comparison"></a>
 <a id="compare"></a>
-## ⚖️ 多模型并列对比
+## 多模型并列对比
 
-同一个提示词在不同模型上往往呈现完全不同的构图、质感与文字处理。打开“多模型对比”，勾选多个已配置模型，插件会以相同参数提交任务，并在画布和全屏预览中并列展示——用一次生成的时间，看清哪个模型真正适合当前任务。
+同一个提示词在不同模型上往往呈现完全不同的构图、质感与文字处理。打开“多模型对比”，勾选多个已配置模型，插件会以相同参数提交任务，并在画布和全屏预览中并列展示，方便挑出真正适合当前任务的模型。
 
 <div align="center">
   <img src="docs/images/multi-model-comparison.png" alt="gpt-image-2、grok-imagine-image 与 doubao-seedream 的三模型并列结果对比" width="100%" />
@@ -194,7 +188,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 </details>
 
 <a id="studio"></a>
-## 🖥️ 原生图像工作台
+## 图像工作台
 
 点击“新会话 / 生图”中的“生图”Tab，工作区按“历史记录 | 生图区 | AI 对话”三栏排列，拖动分隔线即可调整对话区宽度；左侧历史区与结果预览区均可收起，专注查看大图。
 
@@ -215,14 +209,14 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 - **图生图参考图**：支持本地上传或拖拽（≤10MB），也可从结果卡、全屏预览、历史和画廊一键转为参考图。
 
 <a id="enhance"></a>
-### ✨ 提示词增强
+### 提示词增强
 
 只有一句“画只猫”也想出好图：点击增强按钮，插件会把简短想法发给一个对话模型扩写成结构完整的生图提示词，再提交生成；增强模型可复用生图 API 凭据。未配置增强模型时会弹窗引导，并自动打开设置页的对应卡片。
 
 <a id="templates"></a>
-## 📚 441 条案例模板库
+## 模板库
 
-随插件内置 441 条精选 `gpt-image-2` 提示词案例（含参考图快照），没有灵感时先逛逛别人怎么写。
+随插件内置 441 条精选 `gpt-image-2` 提示词案例（含参考图快照），没有灵感时可以先看看别人怎么写。
 
 <div align="center">
   <img src="docs/images/prompt-template-library.png" alt="提示词模板库：分类筛选与案例卡片" width="100%" />
@@ -234,9 +228,9 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 - 支持“刷新模板库”在线更新案例，界面会标明当前来源（内置快照 / 在线刷新）。
 
 <a id="gallery"></a>
-## 🎞️ 画廊：把生成结果变成可用资产
+## 画廊
 
-满意的图片可从结果卡、全屏预览或历史记录一键加入画廊；画廊中的图片也能直接加入当前对话，再用 `/edit_image` 修改。画廊不是横向缩略图条，而是为持续积累作品设计的纵向工作区：左侧筛选，右侧瀑布流或整齐网格，点击任意图片即可打开大图预览。
+满意的图片可从结果卡、全屏预览或历史记录一键加入画廊；画廊中的图片也能直接加入当前对话，再用 `/edit_image` 修改。画廊为持续积累作品设计：左侧筛选，右侧瀑布流或整齐网格，点击任意图片即可打开大图预览。
 
 <div align="center">
   <img src="docs/images/gallery-workspace.png" alt="画廊工作区：分类筛选、瀑布流和大图预览" width="100%" />
@@ -249,7 +243,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 - 收藏由 DSH 宿主持久化保存，跨同一宿主的浏览器/设备可见；同一图片内容按哈希去重，不会重复加入。
 
 <a id="configuration"></a>
-## ⚙️ 配置模型
+## 配置模型
 
 打开 DSH 的“设置 → 插件”，展开 **AI 生图（dsh-imagegen）**。每个提供方都有独立的 API 地址、密钥和模型目录，可同时配置多个服务；预置了 OpenAI、智谱、xAI、字节火山方舟（Seedream）等常用渠道，也可添加任意自定义 OpenAI 兼容渠道。
 
@@ -286,7 +280,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 </details>
 
 <a id="security"></a>
-## 🛡️ 数据与安全
+## 数据与安全
 
 - API 请求由 DSH 宿主进程代理，浏览器不直接连接上游：没有 CORS 问题，密钥不会出现在前端；宿主路由仅监听本机回环地址并校验同源请求。
 - 密钥保存于本机 DSH 设置中，设置页面仅展示“已配置”状态。
@@ -296,7 +290,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 - API 密钥属于敏感信息，请不要提交到 GitHub Issue、日志、截图或 README；发现密钥泄露时应立即在上游服务商处轮换。
 
 <a id="community"></a>
-## 💬 交流群
+## 交流群
 
 欢迎加入 QQ 群，一起交流 DSH、AI 生图和插件使用体验，也欢迎分享提示词、工作流与改进建议。
 
@@ -305,7 +299,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 </p>
 
 <a id="development"></a>
-## 🧑‍💻 开发与反馈
+## 开发与反馈
 
 ```bash
 pnpm run typecheck
@@ -317,7 +311,7 @@ node scripts/smoke.mjs
 - 发现问题请提交 [Bug 报告](https://github.com/dickpy/dsh-imagegen/issues/new?template=bug_report.yml)，附带插件版本、DSH 版本和复现步骤。请勿粘贴 API 密钥。
 - 有改进想法请提交 [功能建议](https://github.com/dickpy/dsh-imagegen/issues/new?template=feature_request.yml)。
 - 查看全部 [Release](https://github.com/dickpy/dsh-imagegen/releases) 和 [Issue](https://github.com/dickpy/dsh-imagegen/issues)。
-- 觉得好用的话，欢迎点一个 ⭐ 支持一下。
+- 如果这个插件对你有帮助，欢迎 Star。
 
 ## 许可证
 
