@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-tools'
 import { ImageGenError } from './engine.ts'
@@ -62,6 +62,132 @@ const taskResultSchema = {
 
 /** Agent calls stay pending until the provider and history write settle. */
 const AGENT_GENERATION_TIMEOUT_MS = 300_000
+
+export function ensureAgentImageConfigured(config: AgentImageToolConfig): void {
+  if (!config.enabled) throw new ImageGenError('AI image generation is disabled. Open Settings > Plugins > AI Image and enable it.', 'plugin-disabled')
+  if (!config.allowAgentImageGeneration) throw new ImageGenError('Agent image generation is disabled in Settings > Plugins > AI Image.', 'agent-generation-disabled')
+  const usable = config.channels.some(channel => channel.apiUrl.trim() !== '' && channel.apiKey.trim() !== '')
+  if (!usable) throw new ImageGenError('Image API credentials are not configured. Open Settings > Plugins > AI Image, add a channel and fill in its API URL and API key.', 'image-api-not-configured')
+}
+
+/** Resolve a configured image alias and its owning channel. */
+export function resolveAgentImageModel(config: AgentImageToolConfig, requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } {
+  const entries = config.channels.flatMap(channel => channel.models.map(model => ({ channel, alias: model.alias, upstream: model.id })))
+  if (entries.length === 0) {
+    throw new ImageGenError('No image models are configured. Open Settings > Plugins > AI Image and add a channel with at least one model.', 'no-models-configured')
+  }
+  const wanted = typeof requested === 'string' && requested.trim() !== '' ? requested.trim() : ''
+  if (wanted === '') {
+    if (entries.length === 1) return entries[0]!
+    const options = config.channels.flatMap(channel => channel.models.map(model => `"${channel.name} · ${model.alias}"`)).join(', ')
+    throw new ImageGenError(`Multiple image models are available — ask the user which channel and model to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
+  }
+  const hosting = entries.filter(entry => entry.alias === wanted)
+  if (hosting.length === 0) {
+    const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
+    throw new ImageGenError(`Image model "${wanted}" is not configured in any channel. Choose one of: ${available}.`, 'image-model-not-configured')
+  }
+  const preferred = hosting.find(entry => entry.channel.id === config.defaultChannelId)
+  return preferred ?? hosting[0]!
+}
+
+function findAgentImageTask(runtime: ImageGenerationRuntime, id: string): GenerationTask {
+  const task = runtime.queue.list().find(candidate => candidate.id === id)
+  if (task === undefined) throw new ImageGenError(`Image generation task ${id} was not found.`, 'task-not-found')
+  return task
+}
+
+/** Wait for a queue task without sending anything through the chat model. */
+export function waitForAgentImageTask(runtime: ImageGenerationRuntime, id: string, signal: AbortSignal | undefined): Promise<GenerationTask> {
+  return new Promise<GenerationTask>((resolveTask, rejectTask) => {
+    let settled = false
+    let dispose = (): void => {}
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let abort = (): void => {}
+
+    const cleanup = (): void => {
+      dispose()
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
+    const resolve = (task: GenerationTask): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolveTask(task)
+    }
+    const reject = (error: unknown): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      rejectTask(error)
+    }
+    abort = (): void => {
+      if (settled) return
+      const reason = signal?.reason instanceof Error ? signal.reason : new Error('Image generation was cancelled.')
+      settled = true
+      cleanup()
+      runtime.queue.cancel(id)
+      rejectTask(reason)
+    }
+    const onChange = (updated: GenerationTask): void => {
+      if (updated.id === id && isFinalTask(updated)) resolve(updated)
+    }
+
+    if (signal?.aborted === true) {
+      abort()
+      return
+    }
+    dispose = runtime.queue.subscribe(onChange)
+    signal?.addEventListener('abort', abort, { once: true })
+    timer = setTimeout(() => {
+      if (settled) return
+      const timeout = new ImageGenError(`Image generation task ${id} timed out after ${AGENT_GENERATION_TIMEOUT_MS / 1000} seconds.`, 'generation-timeout')
+      settled = true
+      cleanup()
+      runtime.queue.cancel(id)
+      rejectTask(timeout)
+    }, AGENT_GENERATION_TIMEOUT_MS)
+    let current: GenerationTask
+    try {
+      current = findAgentImageTask(runtime, id)
+    } catch (error) {
+      reject(error)
+      return
+    }
+    if (isFinalTask(current)) resolve(current)
+  })
+}
+
+/** Submit the same image-edit request used by the Agent tool. */
+export async function submitAgentImageEdit(
+  attachments: Pick<AttachmentStore, 'readImage'>,
+  runtime: ImageGenerationRuntime,
+  resolve: () => AgentImageToolConfig,
+  input: { prompt: string; sourceImage: ImageAttachmentRef; signal?: AbortSignal },
+): Promise<GenerationTask> {
+  const config = resolve()
+  ensureAgentImageConfigured(config)
+  const reference = await attachments.readImage(input.sourceImage, input.signal)
+  const defaultChannel = config.channels.find(channel => channel.id === config.defaultChannelId) ?? config.channels[0]
+  const defaultModel = defaultChannel?.models[0]?.alias ?? config.channels.flatMap(channel => channel.models)[0]?.alias
+  const picked = resolveAgentImageModel(config, defaultModel)
+  const task = runtime.queue.submit({
+    mode: 'edit',
+    model: picked.alias,
+    upstream: picked.upstream,
+    channelId: picked.channel.id,
+    channel: picked.channel.name,
+    prompt: input.prompt.trim(),
+    size: 'auto',
+    quality: 'auto',
+    n: 1,
+    detail: '',
+    image: imageDataUrl(reference),
+    ...reference.ref.name === undefined ? {} : { refName: reference.ref.name },
+  })
+  return waitForAgentImageTask(runtime, task.id, input.signal)
+}
 
 function acceptedMediaType(value: string): value is ImageMediaType {
   return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif'
@@ -158,42 +284,8 @@ function presentImageResult(_args: unknown, result: ToolResult): ToolResultView 
 /** Register the global Agent tools and unregister them with the plugin lifecycle. */
 export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRuntime, resolve: () => AgentImageToolConfig): () => void {
   const attachmentRefs = new Map<string, Promise<AgentImageRef[]>>()
-  const ensureConfigured = (): void => {
-    const config = resolve()
-    if (!config.enabled) throw new ImageGenError('AI image generation is disabled. Open Settings > Plugins > AI Image and enable it.', 'plugin-disabled')
-    if (!config.allowAgentImageGeneration) throw new ImageGenError('Agent image generation is disabled in Settings > Plugins > AI Image.', 'agent-generation-disabled')
-    const usable = config.channels.some(channel => channel.apiUrl.trim() !== '' && channel.apiKey.trim() !== '')
-    if (!usable) throw new ImageGenError('Image API credentials are not configured. Open Settings > Plugins > AI Image, add a channel and fill in its API URL and API key.', 'image-api-not-configured')
-  }
-
-  /**
-   * Resolve the requested model alias onto a channel. Rules:
-   *  - a named alias must exist in some channel's catalog (several channels
-   *    may host it; the default channel wins);
-   *  - with no alias, a single configured model is used directly, while
-   *    multiple models require the Agent to ask the user first.
-   * @returns the channel plus the alias and its upstream id.
-   */
-  const resolveModel = (requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } => {
-    const config = resolve()
-    const entries = config.channels.flatMap(channel => channel.models.map(model => ({ channel, alias: model.alias, upstream: model.id })))
-    if (entries.length === 0) {
-      throw new ImageGenError('No image models are configured. Open Settings > Plugins > AI Image and add a channel with at least one model.', 'no-models-configured')
-    }
-    const wanted = typeof requested === 'string' && requested.trim() !== '' ? requested.trim() : ''
-    if (wanted === '') {
-      if (entries.length === 1) return entries[0]!
-      const options = config.channels.flatMap(channel => channel.models.map(model => `"${channel.name} · ${model.alias}"`)).join(', ')
-      throw new ImageGenError(`Multiple image models are available — ask the user which channel and model to use, then call this tool again with that exact model name. Options: ${options}.`, 'model-choice-required')
-    }
-    const hosting = entries.filter(entry => entry.alias === wanted)
-    if (hosting.length === 0) {
-      const available = [...new Set(entries.map(entry => entry.alias))].join(', ')
-      throw new ImageGenError(`Image model "${wanted}" is not configured in any channel. Choose one of: ${available}.`, 'image-model-not-configured')
-    }
-    const preferred = hosting.find(entry => entry.channel.id === config.defaultChannelId)
-    return preferred ?? hosting[0]!
-  }
+  const ensureConfigured = (): void => { ensureAgentImageConfigured(resolve()) }
+  const resolveModel = (requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } => resolveAgentImageModel(resolve(), requested)
   const materializeTaskImages = (task: GenerationTask): Promise<AgentImageRef[]> => {
     if (task.status !== 'completed') return Promise.resolve([])
     const existing = attachmentRefs.get(task.id)
@@ -222,71 +314,8 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
       images,
     }
   }
-  const findTask = (id: string): GenerationTask => {
-    const task = runtime.queue.list().find(candidate => candidate.id === id)
-    if (task === undefined) throw new ImageGenError(`Image generation task ${id} was not found.`, 'task-not-found')
-    return task
-  }
-  const waitForTask = (id: string, signal: AbortSignal | undefined): Promise<GenerationTask> => new Promise((resolveTask, rejectTask) => {
-    let settled = false
-    let dispose = (): void => {}
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let abort = (): void => {}
-
-    const cleanup = (): void => {
-      dispose()
-      if (timer !== undefined) clearTimeout(timer)
-      signal?.removeEventListener('abort', abort)
-    }
-    const resolve = (task: GenerationTask): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolveTask(task)
-    }
-    const reject = (error: unknown): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      rejectTask(error)
-    }
-    abort = (): void => {
-      if (settled) return
-      const reason = signal?.reason instanceof Error ? signal.reason : new Error('Image generation was cancelled.')
-      // Remove the listener before publishing cancellation so the queue event
-      // cannot turn an execution abort into a successful cancelled result.
-      settled = true
-      cleanup()
-      runtime.queue.cancel(id)
-      rejectTask(reason)
-    }
-    const onChange = (updated: GenerationTask): void => {
-      if (updated.id === id && isFinalTask(updated)) resolve(updated)
-    }
-
-    if (signal?.aborted === true) {
-      abort()
-      return
-    }
-    dispose = runtime.queue.subscribe(onChange)
-    signal?.addEventListener('abort', abort, { once: true })
-    timer = setTimeout(() => {
-      if (settled) return
-      const timeout = new ImageGenError(`Image generation task ${id} timed out after ${AGENT_GENERATION_TIMEOUT_MS / 1000} seconds.`, 'generation-timeout')
-      settled = true
-      cleanup()
-      runtime.queue.cancel(id)
-      rejectTask(timeout)
-    }, AGENT_GENERATION_TIMEOUT_MS)
-    let current: GenerationTask
-    try {
-      current = findTask(id)
-    } catch (error) {
-      reject(error)
-      return
-    }
-    if (isFinalTask(current)) resolve(current)
-  })
+  const findTask = (id: string): GenerationTask => findAgentImageTask(runtime, id)
+  const waitForTask = (id: string, signal: AbortSignal | undefined): Promise<GenerationTask> => waitForAgentImageTask(runtime, id, signal)
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'generate_image',

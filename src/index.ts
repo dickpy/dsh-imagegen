@@ -14,19 +14,22 @@ import z from 'schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the systemPrompt Context merge (announcement section).
 import type {} from '@deepseek-ai/dsh-system-prompt'
+// Type-only: pulls the human slash-command registry Context merge.
+import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { IMAGEGEN_SETTINGS_NAMESPACE, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
 import { ImageGenerationRuntime, type ChannelsView, type RuntimeChannel } from './generation-runtime.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
+import { registerEditImageCommand } from './edit-image-command.ts'
 import { presetById } from './presets.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'imagegen'
 
 /** Services required before the surfaces can mount. */
-export const inject = ['webServer', 'systemPrompt']
+export const inject = ['webServer', 'systemPrompt', 'commands']
 
 // Internals re-exported for smoke tests and host-side debugging; the plugin
 // contract only requires name / inject / Config / apply.
@@ -34,6 +37,7 @@ export { makeRoutes } from './routes.ts'
 export { generateImage, ImageGenError } from './engine.ts'
 export { ImageGenerationRuntime } from './generation-runtime.ts'
 export { registerAgentImageTools } from './agent-image-tools.ts'
+export { latestSessionImage, registerEditImageCommand } from './edit-image-command.ts'
 export { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 export { listTemplates, readTemplateImage, refreshTemplates, clearTemplateMemo } from './templates-store.ts'
 export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
@@ -111,7 +115,7 @@ const DEFAULT_ALLOW_AGENT_IMAGE_GENERATION = true
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：通过「渠道」对接 OpenAI 兼容图像生成 API（每个渠道 = 一个 API 端点 + 各自的模型目录），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送；智谱 `glm-image` 使用官方 `/api/paas/v4/images/generations`，当前仅支持文生图）。API 地址与密钥在 GUI 设置中按渠道配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。模型只能使用用户在各渠道配置目录中的模型；检测模型时会过滤聊天、Embedding 等非图片模型，但模型出现在 /models 中仍不等于其网关原生支持生图协议，遇到 Qwen、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条提示词案例，可搜索、筛选与复用。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
+export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：侧边栏「AI 生图」入口。能力：通过「渠道」对接 OpenAI 兼容图像生成 API（每个渠道 = 一个 API 端点 + 各自的模型目录），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送；智谱 `glm-image` 使用官方 `/api/paas/v4/images/generations`，当前仅支持文生图）。API 地址与密钥在 GUI 设置中按渠道配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回面板，可预览与下载。模型只能使用用户在各渠道配置目录中的模型；检测模型时会过滤聊天、Embedding 等非图片模型，但模型出现在 /models 中仍不等于其网关原生支持生图协议，遇到 Qwen、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。可一键把满意的图片加入「画廊」。内置「提示词模板库」（面板提示词框左下角「模板库」按钮）：打包 awesome-gpt-image-2 的数百条提示词案例，可搜索、筛选与复用。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。用户也可以使用 `/edit_image <修改描述>`，命令会直接读取当前对话最近图片并调用插件图片模型，不经过对话模型的图片能力检查。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务；模板库在线刷新与参考图首次加载需要访问 vibeui.top。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图 / 画廊 / 提示词模板」时即指本插件，请据此协作。'
 
 /** Append the live channel × model table so an Agent can honor user choices. */
 function guidanceFor(channels: RuntimeChannel[], defaultChannelId: string): string {
@@ -235,6 +239,7 @@ export function apply(ctx: Context, config?: Config): void {
   // entry points; Agent tools wait for their task result by default and render
   // images in the tool result instead of injecting a synthetic user message.
   const runtime = new ImageGenerationRuntime(channelsView)
+  const pendingConversationImages = new Map<string, ImageAttachmentRef>()
 
   // The route family mounts once, gated on the settings seam (the bridge
   // serves it; without the seam there is nothing to expose). Route handlers
@@ -267,6 +272,7 @@ export function apply(ctx: Context, config?: Config): void {
             return [...new Set(value.channels.flatMap(channel => channel.models.map(model => model.alias)))]
           },
           attachments: sctx.attachments,
+          pendingConversationImages,
           runtime,
         })
         const disposers = routes.map(route => ctx.webServer.register(route))
@@ -276,16 +282,29 @@ export function apply(ctx: Context, config?: Config): void {
     )
   })
 
-  ctx.inject(['tools', 'attachments'], (tctx) => {
-    tctx.effect(() => registerAgentImageTools(tctx, runtime, () => {
-      const value = resolve()
-      return {
-        enabled: value.enabled,
-        allowAgentImageGeneration: value.allowAgentImageGeneration,
-        channels: value.channels,
-        defaultChannelId: value.defaultChannelId,
+  ctx.inject(['tools', 'attachments', 'commands'], (tctx) => {
+    tctx.effect(() => {
+      const resolveAgentConfig = () => {
+        const value = resolve()
+        return {
+          enabled: value.enabled,
+          allowAgentImageGeneration: value.allowAgentImageGeneration,
+          channels: value.channels,
+          defaultChannelId: value.defaultChannelId,
+        }
       }
-    }), 'dsh-imagegen: agent image tools')
+      const disposeTools = registerAgentImageTools(tctx, runtime, resolveAgentConfig)
+      const disposeCommand = registerEditImageCommand(tctx, runtime, resolveAgentConfig, {
+        get: sessionId => pendingConversationImages.get(sessionId),
+        consume: (sessionId, ref) => {
+          if (pendingConversationImages.get(sessionId)?.attachmentId === ref.attachmentId) pendingConversationImages.delete(sessionId)
+        },
+      })
+      return () => {
+        disposeCommand()
+        disposeTools()
+      }
+    }, 'dsh-imagegen: agent image tools and commands')
   })
 
   // System-prompt announcement (toggled by settings changes).

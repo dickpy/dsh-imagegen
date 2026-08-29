@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.3.1'
+export const PLUGIN_VERSION = '1.4.1'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -35,6 +35,9 @@ export const PRESETS_API = '/api/dsh-imagegen/presets' as const
 
 /** Loopback-only image reader for Agent tool-result previews. */
 export const AGENT_IMAGE_API = '/api/dsh-imagegen/agent-image' as const
+
+/** Store the current composer image for the direct edit_image command. */
+export const CONVERSATION_IMAGE_API = '/api/dsh-imagegen/conversation-image' as const
 
 /**
  * Host-computed per-channel usage counters (generation-count badges in the

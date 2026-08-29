@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 
 const root = new URL('../', import.meta.url)
 const results = []
+const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 /** Run one check; async-aware and sequential so nothing races the servers. */
 async function check(name, fn) {
   try {
@@ -51,7 +52,7 @@ const host = await import(new URL('lib/index.js', root).href)
 await check('A1 host exports the plugin contract', () => {
   assert.equal(typeof host.apply, 'function')
   assert.equal(host.name, 'imagegen')
-  assert.deepEqual(host.inject, ['webServer', 'systemPrompt'])
+  assert.deepEqual(host.inject, ['webServer', 'systemPrompt', 'commands'])
   assert.equal(typeof host.Config, 'function')
   assert.equal(typeof host.ImageGenSettingsNamespace, 'string') // branded at runtime as string
   assert.equal(typeof host.makeRoutes, 'function')
@@ -68,6 +69,7 @@ await check('A2 Config schema validates + marks apiKey secret', () => {
   assert.equal(host.Config.dict?.apiKey?.meta?.role, 'secret')
 })
 await check('A3 updater parses stable Releases and caches checks', async () => {
+  assert.equal(host.CURRENT_VERSION, packageJson.version)
   assert.equal(host.compareVersions('v1.0.3', '1.0.2') > 0, true)
   assert.equal(host.compareVersions('1.0.2', '1.0.2'), 0)
   assert.equal(host.profileFromProcess(['node', 'dsh', '--profile', 'desktop'], {}), 'desktop')
@@ -155,9 +157,10 @@ const upstream = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const body = Buffer.concat(chunks).toString('utf8')
     assert.ok(req.headers['content-type'].startsWith('multipart/form-data'), 'multipart expected')
-    assert.ok(body.includes('name="prompt"') && body.includes('edit this'), 'prompt part missing')
+    const commandEdit = body.includes('edit via command') || body.includes('edit attached image')
+    assert.ok(body.includes('name="prompt"') && (body.includes('edit this') || commandEdit), 'prompt part missing')
     assert.ok(body.includes('name="model"') && body.includes('gpt-image-2'), 'model part missing')
-    assert.ok(body.includes('name="size"') && body.includes('1536x1024'), 'size part missing')
+    if (!commandEdit) assert.ok(body.includes('name="size"') && body.includes('1536x1024'), 'size part missing')
     assert.ok(!body.includes('name="n"'), 'n must not be sent (batch param rejected)')
     assert.ok(body.includes('name="image"'), 'image part missing')
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -447,13 +450,25 @@ const attachments = {
     assert.equal(ref.bytes, agentPreviewRef.bytes)
     return { ref: agentPreviewRef, data: agentPreviewImage }
   },
+  async saveImage(input) {
+    return {
+      attachmentId: `sha256:${'b'.repeat(64)}`,
+      mediaType: input.mediaType,
+      bytes: input.data.byteLength,
+      width: 1,
+      height: 1,
+      name: input.name,
+    }
+  },
 }
+const pendingConversationImages = new Map()
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   history,
   templates,
   attachments,
+  pendingConversationImages,
 })
 const server = createServer((req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://x').pathname
@@ -478,7 +493,12 @@ const post = async (path, body, headers = {}) => {
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   })
-  return { status: response.status, body: await response.json() }
+  const text = await response.text()
+  try {
+    return { status: response.status, body: JSON.parse(text) }
+  } catch {
+    throw new Error(`HTTP ${response.status} returned non-JSON body: ${text || '<empty>'}`)
+  }
 }
 
 await check('C1 settings describe serves the redacted namespace', async () => {
@@ -604,7 +624,18 @@ await check('C7 Agent tool-result image route serves durable attachments without
   assert.equal(invalid.status, 400)
 })
 
-await check('C8 Agent tools wait for results, keep images in the UI view, edit, and enforce the allow setting', async () => {
+await check('C8 composer images can be staged for the direct edit_image command', async () => {
+  const staged = await post('/api/dsh-imagegen/conversation-image', {
+    sessionId: 'session-staged',
+    dataUrl: `data:image/png;base64,${pngBytes.toString('base64')}`,
+    name: 'staged.png',
+  })
+  assert.equal(staged.body.ok, true)
+  assert.equal(pendingConversationImages.has('session-staged'), true)
+  assert.equal(pendingConversationImages.get('session-staged').mediaType, 'image/png')
+})
+
+await check('C9 Agent tools wait for results, keep images in the UI view, edit, and enforce the allow setting', async () => {
   const tools = new Map()
   const saved = new Map()
   let serial = 0
@@ -619,12 +650,14 @@ await check('C8 Agent tools wait for results, keep images in the UI view, edit, 
       })
     },
     async readImage(ref) {
+      lastReadImageAttachmentId = ref.attachmentId
       const storedImage = saved.get(ref.attachmentId)
       assert.ok(storedImage, 'the returned source_image must resolve through the attachment store')
       return storedImage
     },
   }
   let enabled = true
+  let lastReadImageAttachmentId
   const sent = []
   const agent = { send: (...args) => { sent.push(args) } }
   const runtime = new host.ImageGenerationRuntime(
@@ -699,7 +732,82 @@ await check('C8 Agent tools wait for results, keep images in the UI view, edit, 
     const edited = await tools.get('edit_image').execute({ prompt: 'edit this', source_image: complete.images[0], size: '3:2', quality: '2k' }, { signal: new AbortController().signal })
     assert.equal(edited.status, 'completed', 'image edits also wait for completion')
     assert.equal(edited.images.length, 1)
+    const editedRendered = tools.get('edit_image').output.render({ prompt: 'edit this' }, edited)
+    assert.equal(editedRendered.filter(block => block.type === 'image').length, 0, 'edit_image output stays out of model-visible image context')
     assert.equal(saved.size, 5)
+
+    const commands = new Map()
+    const pending = new Map()
+    const commandDispose = host.registerEditImageCommand({
+      commands: { register: definition => { commands.set(definition.name, definition); return () => { commands.delete(definition.name) } } },
+      attachments: attachmentStore,
+    }, runtime, () => ({
+      enabled: true,
+      allowAgentImageGeneration: true,
+      defaultChannelId: 'default',
+      channels: [{
+        id: 'default',
+        preset: '',
+        name: 'Default',
+        apiUrl: 'configured',
+        apiKey: 'configured',
+        models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
+      }],
+    }), {
+      get: sessionId => pending.get(sessionId),
+      consume: (sessionId, ref) => { if (pending.get(sessionId)?.attachmentId === ref.attachmentId) pending.delete(sessionId) },
+    })
+    try {
+      assert.ok(commands.has('edit_image'), 'the /edit_image command is registered')
+      const command = commands.get('edit_image')
+      assert.deepEqual(command.input, { hint: 'Describe how to modify the latest image', images: true }, 'the command accepts composer images')
+      const noImageAgent = { session: { deriveMessages: () => [] } }
+      assert.deepEqual(await command.handler({ agent: noImageAgent, rawInput: '   ', signal: new AbortController().signal }), {
+        kind: 'error',
+        text: '请提供图片修改描述，例如：/edit_image 把背景改成夜景',
+      })
+      assert.deepEqual(await command.handler({ agent: noImageAgent, rawInput: 'edit this', signal: new AbortController().signal }), {
+        kind: 'error',
+        text: '当前对话没有可用图片，请先上传图片或把画廊图片加入对话。',
+      })
+      const commandSource = complete.images[0]
+      const commandReference = {
+        attachmentId: commandSource.attachment_id,
+        mediaType: commandSource.media_type,
+        bytes: commandSource.bytes,
+        width: commandSource.width,
+        height: commandSource.height,
+        name: commandSource.name,
+      }
+      const commandAgent = { session: { deriveMessages: () => [{ content: [{ type: 'image', attachment: commandReference }] }] } }
+      const commandResult = await command.handler({ agent: commandAgent, rawInput: 'edit via command', signal: new AbortController().signal })
+      assert.equal(commandResult.kind, 'success')
+      assert.match(commandResult.text, /图片编辑已完成/)
+      assert.equal(sent.length, 0, 'slash command does not send a chat-model message')
+      const invocationReference = { ...commandReference, attachmentId: `sha256:${'d'.repeat(64)}` }
+      saved.set(invocationReference.attachmentId, { ref: invocationReference, data: pngBytes })
+      const invocationResult = await command.handler({
+        agent: noImageAgent,
+        attachments: [{ type: 'image', attachment: invocationReference }],
+        rawInput: 'edit attached image',
+        signal: new AbortController().signal,
+      })
+      assert.equal(invocationResult.kind, 'success', 'an image carried by the command reaches the plugin edit path')
+      assert.equal(lastReadImageAttachmentId, invocationReference.attachmentId, 'the invocation image is used as the edit source')
+      const pendingRef = { ...commandReference, attachmentId: `sha256:${'c'.repeat(64)}` }
+      saved.set(pendingRef.attachmentId, { ref: pendingRef, data: pngBytes })
+      pending.set('pending-session', pendingRef)
+      const pendingResult = await command.handler({
+        agent: { id: 'pending-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment: commandReference }] }] } },
+        rawInput: 'edit via command',
+        signal: new AbortController().signal,
+      })
+      assert.equal(pendingResult.kind, 'success', 'staged composer image is accepted without a chat message')
+      assert.equal(lastReadImageAttachmentId, pendingRef.attachmentId, 'the staged image takes precedence over older session history')
+      assert.equal(pending.has('pending-session'), false, 'staged image is consumed after a successful edit')
+    } finally {
+      commandDispose()
+    }
 
     const aborted = new AbortController()
     aborted.abort(new Error('test cancellation'))
@@ -775,6 +883,11 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   )
   const jsdomWindow = dom.window
   const jsdomDocument = jsdomWindow.document
+  let confirmationCalls = 0
+  jsdomWindow.confirm = () => {
+    confirmationCalls += 1
+    return false
+  }
 
   // Stateful bridge stub: describe + mutate (same wire shapes as the routes).
   // The redacted view never returns the key; the secrets sidecar tracks it.
@@ -849,7 +962,22 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
         }),
       }
     }
+    if (path.endsWith('/gallery/list')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          entries: [{ id: 'gallery-one', createdAt: 3, mode: 'text', model: 'gpt-image-2', prompt: 'gallery prompt', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/api/dsh-imagegen/gallery/image/gallery.png', mime: 'image/png' }] }],
+        }),
+      }
+    }
     if (path.startsWith('/history/')) {
+      return {
+        ok: true,
+        blob: async () => new jsdomWindow.Blob([pngBytes], { type: 'image/png' }),
+      }
+    }
+    if (path.startsWith('/api/dsh-imagegen/gallery/image/')) {
       return {
         ok: true,
         blob: async () => new jsdomWindow.Blob([pngBytes], { type: 'image/png' }),
@@ -893,6 +1021,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     MutationObserver: jsdomWindow.MutationObserver,
     CustomEvent: jsdomWindow.CustomEvent,
     HTMLElement: jsdomWindow.HTMLElement,
+    FileReader: jsdomWindow.FileReader,
     fetch: fetchStub,
     console,
   }
@@ -993,6 +1122,11 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-chat-resizer]') !== null, 'chat resizer was mounted')
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history moved into the sidebar region')
     assert.equal(view.querySelector('[data-dsh-imagegen-history]'), null, 'studio no longer owns the history column')
+    assert.ok(jsdomDocument.querySelector('[data-history-new]') !== null, 'new creation button rendered beside history clear')
+    assert.ok(jsdomDocument.querySelector('[data-history-clear]') !== null, 'history clear button rendered')
+    jsdomDocument.querySelector('[data-history-clear]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(confirmationCalls, 1, 'history clear asks for confirmation')
     // The panel header rendered.
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-view] h2') !== null, 'panel header rendered')
     const connectionStatus = jsdomDocument.querySelector('[data-dsh-imagegen-view] [data-connected]')
@@ -1006,13 +1140,28 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(modeTabs.length, 3, 'text, edit, and gallery tabs are present')
     modeTabs[2]?.click()
     await new Promise(resolve => setTimeout(resolve, 50))
+    await waitForSelector(view, '[data-gallery-add-conversation]')
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history remains visible in gallery mode')
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 2, 'gallery mode is active')
+    assert.ok(view.querySelector('[data-gallery="true"] [data-gallery-add-conversation]') !== null, 'gallery entries expose add-to-conversation action')
     const galleryHistoryMain = jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history-main]')
     assert.ok(galleryHistoryMain !== null, 'gallery mode exposes clickable history')
     galleryHistoryMain.click()
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitForSelector(view, '[data-count]')
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 0, 'history click returns to text-to-image')
+    assert.ok(view.querySelectorAll('[data-count]').length > 0, 'history result is visible before starting a new creation')
+    jsdomDocument.querySelector('[data-history-new]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(view.querySelectorAll('[data-count]').length, 0, 'new creation clears the image preview')
+    assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 0, 'new creation returns to text-to-image')
+
+    const galleryTab = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('画廊'))
+    galleryTab?.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.ok(view.querySelector('[data-gallery-clear]') !== null, 'gallery clear button rendered')
+    view.querySelector('[data-gallery-clear]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(confirmationCalls, 2, 'gallery clear asks for confirmation')
     // The settings card registered into the official plugin-config slot.
     assert.equal(registered.length, 1)
     assert.equal(registered[0].key, 'dsh-imagegen')

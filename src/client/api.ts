@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, TASK_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
+import { CONVERSATION_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, TASK_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -82,6 +82,16 @@ export class ImageGenApi {
     })
     const body = await readEnvelope<{ ok: true; prompt: string }>(response)
     return body.prompt
+  }
+
+  /** Stage a generated image as a durable reference for `/edit_image`. */
+  async attachConversationImage(sessionId: string, dataUrl: string, name: string): Promise<void> {
+    const response = await fetch(CONVERSATION_IMAGE_API, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, dataUrl, name }),
+    })
+    await readEnvelope<{ ok: true }>(response)
   }
 
   async taskSubmit(request: GenerateRequest): Promise<GenerationTask> {

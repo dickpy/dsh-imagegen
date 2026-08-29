@@ -8,7 +8,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
@@ -19,7 +19,7 @@ import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGalle
 import { listTemplates, readTemplateImage, refreshTemplates } from './templates-store.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, USAGE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
+import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, USAGE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -49,6 +49,11 @@ export interface ImageGenRoutesDeps {
   /** Host attachment storage used by Agent tool-result previews. */
   attachments?: {
     readImage: (ref: ImageAttachmentRef) => Promise<{ ref: ImageAttachmentRef; data: Uint8Array }>
+    saveImage?: (input: SaveImageAttachment) => Promise<ImageAttachmentRef>
+  }
+  /** Latest composer image staged for the direct edit_image command. */
+  pendingConversationImages?: {
+    set: (sessionId: string, ref: ImageAttachmentRef) => void
   }
   /** Overrideable history backend, primarily for host integration tests. */
   history?: {
@@ -241,6 +246,13 @@ function isImageMediaType(value: string): value is ImageMediaType {
   return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif'
 }
 
+function imageDataUrl(value: string): { mediaType: ImageMediaType; data: Uint8Array } | undefined {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.*)$/su.exec(value.trim())
+  if (match === null || match[1] === undefined || match[2] === undefined) return undefined
+  const data = Buffer.from(match[2], 'base64')
+  return data.byteLength === 0 ? undefined : { mediaType: match[1] as ImageMediaType, data }
+}
+
 /** Project one settings descriptor onto the bridge wire view. */
 function toView(descriptor: SettingsDescriptor): Record<string, unknown> {
   return {
@@ -351,6 +363,32 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   }
 
   return [
+    // ---------------------------- composer image for /edit_image (exact)
+    ...(deps.attachments?.saveImage === undefined || deps.pendingConversationImages === undefined ? [] : [{
+      kind: 'exact' as const,
+      path: CONVERSATION_IMAGE_API,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req, MAX_JSON_BODY_BYTES)
+        const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
+        const dataUrl = typeof body?.dataUrl === 'string' ? imageDataUrl(body.dataUrl) : undefined
+        if (sessionId === '' || dataUrl === undefined) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'sessionId and image data are required' })
+          return
+        }
+        try {
+          const ref = await deps.attachments!.saveImage!({
+            data: dataUrl.data,
+            mediaType: dataUrl.mediaType,
+            ...typeof body?.name === 'string' && body.name.trim() !== '' ? { name: body.name.trim() } : {},
+          })
+          deps.pendingConversationImages!.set(sessionId, ref)
+          writeJson(res, 200, { ok: true })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'image-save-failed', message: messageOf(error) })
+        }
+      },
+    } satisfies WebRoute]),
     // ------------------------------------ Agent tool-result image (prefix)
     ...(deps.attachments === undefined ? [] : [{
       kind: 'prefix' as const,

@@ -52,9 +52,15 @@ const QUALITIES = ['auto', '1k', '2k', '4k'] as const
 const DETAILS = ['', 'standard', 'high'] as const
 
 const REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+// The local DSH attachment backend defaults to a 2000px per-side limit. Keep
+// the full-resolution result in the studio, but normalize the conversation
+// copy before it enters the native composer and durable edit staging route.
+const CONVERSATION_IMAGE_MAX_DIMENSION = 2000
+const CONVERSATION_IMAGE_JPEG_QUALITY = 0.9
 const PREVIEW_SCALE_MIN = 0.5
 const PREVIEW_SCALE_MAX = 3
 const PREVIEW_SCALE_STEP = 0.25
+const CONFIG_COLLAPSED_STORAGE_KEY = 'dsh-imagegen-config-collapsed'
 
 /** Legacy pixel sizes saved by older versions, mapped onto the current
  *  aspect-ratio vocabulary so restoring old history entries still works. */
@@ -88,6 +94,16 @@ function normalizeQuality(value: string): string {
 
 function clampPreviewScale(scale: number): number {
   return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, scale))
+}
+
+/** Keep the image canvas preference across panel remounts without making it
+ * part of the host settings document. */
+function readConfigCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(CONFIG_COLLAPSED_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
 }
 
 /** Read the current config from the settings scope snapshot. */
@@ -156,6 +172,62 @@ function generatedImageToFile(image: GeneratedImage, index: number): File {
   const bytes = new Uint8Array(binary.length)
   for (let offset = 0; offset < binary.length; offset += 1) bytes[offset] = binary.charCodeAt(offset)
   return new File([bytes], `dsh-image-${index + 1}.${extensionOf(image.mime)}`, { type: image.mime })
+}
+
+/** Decode a data URL into a browser File for the native composer. */
+function dataUrlToFile(dataUrl: string, name: string): File {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.*)$/su.exec(dataUrl)
+  if (match === null || match[1] === undefined || match[2] === undefined) throw new Error('image processing returned an invalid data URL')
+  const binary = atob(match[2])
+  const bytes = new Uint8Array(binary.length)
+  for (let offset = 0; offset < binary.length; offset += 1) bytes[offset] = binary.charCodeAt(offset)
+  return new File([bytes], name, { type: match[1] })
+}
+
+/** Read intrinsic dimensions without changing the original preview. */
+function imageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      const width = image.naturalWidth || image.width
+      const height = image.naturalHeight || image.height
+      if (width < 1 || height < 1) reject(new Error('image dimensions are unavailable'))
+      else resolve({ width, height })
+    }
+    image.onerror = () => reject(new Error('image decode failed'))
+    image.src = dataUrl
+  })
+}
+
+/** Prepare the smaller conversation copy required by the host attachment policy. */
+async function prepareConversationImage(image: GeneratedImage, index: number): Promise<{ file: File; dataUrl: string }> {
+  const dataUrl = srcOf(image)
+  const { width, height } = await imageDimensions(dataUrl)
+  const longestSide = Math.max(width, height)
+  if (longestSide <= CONVERSATION_IMAGE_MAX_DIMENSION) {
+    return { file: generatedImageToFile(image, index), dataUrl }
+  }
+
+  const scale = CONVERSATION_IMAGE_MAX_DIMENSION / longestSide
+  const targetWidth = Math.max(1, Math.round(width * scale))
+  const targetHeight = Math.max(1, Math.round(height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = targetWidth
+  canvas.height = targetHeight
+  const context = canvas.getContext('2d')
+  if (context === null) throw new Error('image resize is unavailable in this browser')
+  const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const sourceImage = new Image()
+    sourceImage.onload = () => resolve(sourceImage)
+    sourceImage.onerror = () => reject(new Error('image decode failed'))
+    sourceImage.src = dataUrl
+  })
+  context.drawImage(source, 0, 0, targetWidth, targetHeight)
+  const resizedDataUrl = canvas.toDataURL('image/jpeg', CONVERSATION_IMAGE_JPEG_QUALITY)
+  return {
+    dataUrl: resizedDataUrl,
+    file: dataUrlToFile(resizedDataUrl, `dsh-image-${index + 1}.jpg`),
+  }
 }
 
 /** Follow the native session selection while the image panel stays mounted. */
@@ -295,7 +367,8 @@ export function ImageGenPanel(props: {
   const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
-  const [addingToConversation, setAddingToConversation] = useState<number | null>(null)
+  const [addingToConversation, setAddingToConversation] = useState<number | string | null>(null)
+  const [galleryConversationAddingId, setGalleryConversationAddingId] = useState<string | null>(null)
   const [conversationMessage, setConversationMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Submission is brief; actual generation stays visible until the host
@@ -336,6 +409,7 @@ export function ImageGenPanel(props: {
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
+  const [configCollapsed, setConfigCollapsed] = useState(readConfigCollapsed)
   const currentSessionId = useCurrentSessionId(sessions)
   const sidebarHistoryHost = useSidebarHistoryHost()
   const modeModels = tab === 'edit'
@@ -348,6 +422,14 @@ export function ImageGenPanel(props: {
   const generating = submitting || activeTasks.length > 0
   const generationStartedAt = activeTask?.startedAt ?? activeTask?.createdAt ?? null
   const elapsed = useElapsed(generating, generationStartedAt)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CONFIG_COLLAPSED_STORAGE_KEY, String(configCollapsed))
+    } catch {
+      // Embedded shells may disable local storage; the in-memory toggle still works.
+    }
+  }, [configCollapsed])
 
   // A saved settings change is authoritative. Keep the active selection and
   // comparison choices in that allow-list without disturbing valid choices.
@@ -715,8 +797,29 @@ export function ImageGenPanel(props: {
     }
   }
 
+  /** Reset the workspace for a fresh image-generation run. */
+  const startNewCreation = (): void => {
+    setTab('text')
+    setPrompt('')
+    setRefImage(null)
+    setImages([])
+    setPreview(null)
+    setPreviewScale(1)
+    setPromptCopied(false)
+    setViewingHistoryId(null)
+    setGalleryViewingId(null)
+    setGallerySelecting(false)
+    setSelectedGalleryIds(new Set())
+    setComparison(null)
+    setComparisonFullscreen(false)
+    setError(null)
+    setConversationMessage(null)
+    setGalleryMessage(null)
+  }
+
   /** Remove all history entries. */
   const clearHistory = async (): Promise<void> => {
+    if (!window.confirm(tt('history.clearConfirm'))) return
     setHistory([])
     setViewingHistoryId(null)
     try {
@@ -767,7 +870,7 @@ export function ImageGenPanel(props: {
   }
 
   /** Put a generated image into the native conversation composer. */
-  const addImageToConversation = async (image: GeneratedImage, index: number): Promise<void> => {
+  const addImageToConversation = async (image: GeneratedImage, index: number, actionKey: number | string = index): Promise<void> => {
     if (addingToConversation !== null) return
     if (conversation === undefined || sessions === undefined || currentSessionId === undefined) {
       setError(tt('conversation.noSession'))
@@ -778,17 +881,25 @@ export function ImageGenPanel(props: {
       setError(tt('conversation.unavailable'))
       return
     }
-    setAddingToConversation(index)
+    setAddingToConversation(actionKey)
     let attachments: ReturnType<ConversationService['createDraftImages']> = []
     let added = false
     try {
-      const file = generatedImageToFile(image, index)
+      const prepared = await prepareConversationImage(image, index)
+      const file = prepared.file
       attachments = conversation.createDraftImages([file])
       const input = conversation.input.for(sessionScope)
       if (!input.addImages(attachments.map(attachment => attachment.id))) {
         throw new Error(tt('conversation.busy'))
       }
       added = true
+      try {
+        await api.attachConversationImage(String(currentSessionId), prepared.dataUrl, file.name)
+      } catch (caught) {
+        for (const attachment of attachments) input.removeImage(attachment.id)
+        added = false
+        throw caught
+      }
       if (input.state.getSnapshot().draft.trim() === '' && prompt.trim() !== '') input.setDraft(prompt.trim())
       setConversationMessage(tt('conversation.added'))
       window.setTimeout(() => { setConversationMessage(null) }, 2200)
@@ -810,6 +921,21 @@ export function ImageGenPanel(props: {
       await addToGallery(image, entry)
     } catch (caught) {
       setError(errorMessage(caught))
+    }
+  }
+
+  /** Load a persisted gallery image and add it to the current chat draft. */
+  const addGalleryEntryToConversation = async (entry: HistoryEntry): Promise<void> => {
+    if (galleryConversationAddingId !== null || addingToConversation !== null || entry.images.length === 0) return
+    setGalleryConversationAddingId(entry.id)
+    try {
+      const [image] = await historyImagesToGenerated(entry.images.slice(0, 1))
+      if (image === undefined) return
+      await addImageToConversation(image, 0, `gallery:${entry.id}`)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setGalleryConversationAddingId(null)
     }
   }
 
@@ -861,6 +987,7 @@ export function ImageGenPanel(props: {
 
   /** Remove every gallery entry. */
   const clearGalleryAll = async (): Promise<void> => {
+    if (!window.confirm(tt('gallery.clearConfirm'))) return
     setGallery([])
     setGalleryViewingId(null)
     try {
@@ -935,6 +1062,7 @@ export function ImageGenPanel(props: {
   }
 
   const generateDisabled = submitting || modeModels.length === 0
+  const conversationBusy = addingToConversation !== null || galleryConversationAddingId !== null
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
@@ -983,11 +1111,23 @@ export function ImageGenPanel(props: {
     <aside className={css.history} data-dsh-imagegen-history>
       <header className={css.historyHeader}>
         <span className={css.historyTitle}>{tt('history.title')}</span>
-        {history.length > 0 ? (
-          <button type="button" className={css.historyClear} onClick={() => { void clearHistory() }}>
-            {tt('history.clear')}
+        <div className={css.historyHeaderActions}>
+          <button
+            type="button"
+            className={css.historyNew}
+            data-history-new=""
+            aria-label={tt('canvas.new')}
+            title={tt('canvas.newHint')}
+            onClick={startNewCreation}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
           </button>
-        ) : null}
+          {history.length > 0 ? (
+            <button type="button" className={css.historyClear} data-history-clear="" onClick={() => { void clearHistory() }}>
+              {tt('history.clear')}
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <div className={css.historyFilters}>
@@ -1110,7 +1250,25 @@ export function ImageGenPanel(props: {
         {/* ------------------------------- left history + generation workspace */}
         <div className={css.generation}>
           {/* ------------------------------------------------ config sidebar */}
-          <aside className={css.config} data-gallery={tab === 'gallery' ? 'true' : undefined}>
+          <aside
+            className={css.config}
+            data-collapsed={configCollapsed ? 'true' : 'false'}
+            data-gallery={tab === 'gallery' ? 'true' : undefined}
+          >
+          <div className={css.configHeader}>
+            <button
+              type="button"
+              className={css.configToggle}
+              aria-expanded={!configCollapsed}
+              aria-label={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
+              title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
+              onClick={() => { setConfigCollapsed(previous => !previous) }}
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d={configCollapsed ? 'M6 3l5 5-5 5' : 'M10 3L5 8l5 5'} />
+              </svg>
+            </button>
+          </div>
           {tab === 'gallery' ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
@@ -1407,7 +1565,7 @@ export function ImageGenPanel(props: {
                     <option value="newest">{tt('gallery.newest')}</option>
                     <option value="oldest">{tt('gallery.oldest')}</option>
                   </select>
-                  {gallery.length > 0 ? <button type="button" className={css.galleryClear} onClick={() => { void clearGalleryAll() }}>{tt('gallery.clear')}</button> : null}
+                  {gallery.length > 0 ? <button type="button" className={css.galleryClear} data-gallery-clear="" onClick={() => { void clearGalleryAll() }}>{tt('gallery.clear')}</button> : null}
                 </div>
               </header>
               {selectedGalleryIds.size > 0 ? (
@@ -1436,6 +1594,19 @@ export function ImageGenPanel(props: {
                           <img className={css.galleryImage} src={image.url} alt={entry.prompt} />
                           <span className={css.galleryBadge}>{entry.mode === 'edit' ? tt('mode.edit') : tt('mode.text')}</span>
                         </button>
+                        <div className={css.galleryCardActions}>
+                          <button
+                            type="button"
+                            className={css.galleryCardAction}
+                            data-gallery-add-conversation=""
+                            disabled={conversationBusy}
+                            title={tt('conversation.addHint')}
+                            onClick={(event) => { event.stopPropagation(); void addGalleryEntryToConversation(entry) }}
+                          >
+                            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
+                            {galleryConversationAddingId === entry.id || addingToConversation === `gallery:${entry.id}` ? tt('conversation.adding') : tt('conversation.add')}
+                          </button>
+                        </div>
                         <div className={css.galleryCardFooter}>
                           <span className={css.galleryAvatar}>{entry.model.toLowerCase().startsWith('nanobanana') ? 'N' : entry.model.toLowerCase().startsWith('seedream') ? 'S' : entry.model.startsWith('grok') ? 'G' : 'D'}</span>
                           <span className={css.galleryCardInfo}>
@@ -1598,7 +1769,7 @@ export function ImageGenPanel(props: {
                         type="button"
                         className={css.conversationAdd}
                         title={tt('conversation.add')}
-                        disabled={addingToConversation !== null}
+                        disabled={conversationBusy}
                         onClick={(event) => { event.stopPropagation(); void addImageToConversation(image, index) }}
                       >
                         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
@@ -1733,7 +1904,7 @@ export function ImageGenPanel(props: {
               <div className={css.lightboxMeta}>
                 <span className={css.lightboxIndex}>{tt('preview.index', { index: preview.index + 1, total: preview.images.length })}</span>
                 <span className={css.lightboxActions}>
-                  <button type="button" className={css.lightboxEdit} disabled={addingToConversation !== null} onClick={() => { void addImageToConversation(previewImage, preview.index) }}>
+                  <button type="button" className={css.lightboxEdit} disabled={conversationBusy} title={tt('conversation.addHint')} onClick={() => { void addImageToConversation(previewImage, preview.index) }}>
                     {addingToConversation === preview.index ? tt('conversation.adding') : tt('conversation.add')}
                   </button>
                   <button type="button" className={css.lightboxEdit} disabled={galleryAdding} onClick={() => { void addToGallery(previewImage) }}>
