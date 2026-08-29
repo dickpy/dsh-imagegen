@@ -48,14 +48,12 @@
 接着，你可以基于结果继续提出修改。Agent 会携带该图片的引用调用图生图，不必重新上传文件，也不必重新描述全部上下文。它适合快速探索视觉方向、反复打磨 UI 视觉稿、海报或产品素材。
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/videos/agent-chat-edit.mp4">
-    <img src="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/images/agent-chat-poster-workflow.png" alt="点击播放 Agent 对话生图与连续编辑演示视频" width="100%" />
-  </a>
-  <br />
-  <a href="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/videos/agent-chat-edit.mp4">点击播放 Agent 对话生图与连续编辑演示视频</a>
+  <video controls preload="metadata" width="100%" src="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/videos/agent-chat-edit.mp4">
+    你的浏览器不支持内嵌视频，请<a href="https://raw.githubusercontent.com/dickpy/dsh-imagegen/main/docs/videos/agent-chat-edit.mp4">打开视频</a>。
+  </video>
 </p>
 
-点击封面或下方链接即可打开视频。视频展示了从生成预览区或画廊把图片加入对话，再使用 `/edit_image` 调用插件图片模型继续修改的完整流程。
+视频展示了从生成预览区或画廊把图片加入对话，再使用 `/edit_image` 调用插件图片模型继续修改的完整流程。
 
 ### 可直接使用的案例提示词
 
