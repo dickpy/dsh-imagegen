@@ -154,6 +154,11 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
     ...typeof body.channelId === 'string' && body.channelId !== '' ? { channelId: body.channelId } : {},
     ...typeof body.comparisonId === 'string' && body.comparisonId !== '' ? { comparisonId: body.comparisonId } : {},
     ...comparisonModels.length > 1 ? { comparisonModels } : {},
+    ...body.workflow === 'ecommerce' ? { workflow: 'ecommerce' as const } : {},
+    ...typeof body.projectId === 'string' && body.projectId !== '' ? { projectId: body.projectId } : {},
+    ...typeof body.projectName === 'string' && body.projectName !== '' ? { projectName: body.projectName } : {},
+    ...typeof body.slotKey === 'string' && body.slotKey !== '' ? { slotKey: body.slotKey } : {},
+    ...typeof body.slotLabel === 'string' && body.slotLabel !== '' ? { slotLabel: body.slotLabel } : {},
   }
 }
 
@@ -198,6 +203,11 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
     ...typeof entry.channel === 'string' ? { channel: entry.channel } : {},
     ...typeof entry.comparisonId === 'string' ? { comparisonId: entry.comparisonId } : {},
     ...comparisonModels.length > 1 ? { comparisonModels } : {},
+    ...entry.workflow === 'ecommerce' ? { workflow: 'ecommerce' as const } : {},
+    ...typeof entry.projectId === 'string' ? { projectId: entry.projectId } : {},
+    ...typeof entry.projectName === 'string' ? { projectName: entry.projectName } : {},
+    ...typeof entry.slotKey === 'string' ? { slotKey: entry.slotKey } : {},
+    ...typeof entry.slotLabel === 'string' ? { slotLabel: entry.slotLabel } : {},
   }
 }
 

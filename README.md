@@ -18,11 +18,11 @@
 
 **生成 → 查看 → 加入对话 → 继续编辑**，在同一条工作流里完成。
 
-[快速开始](#quick-start)&nbsp;&nbsp;·&nbsp;&nbsp;[核心工作流](#workflow)&nbsp;&nbsp;·&nbsp;&nbsp;[多模型对比](#compare)&nbsp;&nbsp;·&nbsp;&nbsp;[工作台](#studio)&nbsp;&nbsp;·&nbsp;&nbsp;[模板库](#templates)&nbsp;&nbsp;·&nbsp;&nbsp;[画廊](#gallery)&nbsp;&nbsp;·&nbsp;&nbsp;[配置](#configuration)&nbsp;&nbsp;·&nbsp;&nbsp;[交流群](#community)
+[快速开始](#quick-start)&nbsp;&nbsp;·&nbsp;&nbsp;[核心工作流](#workflow)&nbsp;&nbsp;·&nbsp;&nbsp;[电商模式](#ecommerce)&nbsp;&nbsp;·&nbsp;&nbsp;[多模型对比](#compare)&nbsp;&nbsp;·&nbsp;&nbsp;[工作台](#studio)&nbsp;&nbsp;·&nbsp;&nbsp;[模板库](#templates)&nbsp;&nbsp;·&nbsp;&nbsp;[画廊](#gallery)&nbsp;&nbsp;·&nbsp;&nbsp;[配置](#configuration)&nbsp;&nbsp;·&nbsp;&nbsp;[交流群](#community)
 
 </div>
 
-`dsh-imagegen` 是 DeepSeek Harness（DSH）的原生 AI 图像工作台。配置任意 OpenAI 兼容生图接口后，Agent 对话生图、`/edit_image` 斜杠命令连续编辑、多模型并列对比、441 条案例模板库与画廊资产管理都在同一个窗口完成。生成任务由宿主进程排队执行，不卡界面、不打断对话，图片也不必在多个工具之间来回搬运。
+`dsh-imagegen` 是 DeepSeek Harness（DSH）的原生 AI 图像工作台。配置任意 OpenAI 兼容生图接口后，Agent 对话生图、`/edit_image` 斜杠命令连续编辑、多模型并列对比、441 条案例模板库与画廊资产管理都在同一个窗口完成；电商模式还能把一张商品图扩展成主图、卖点图、场景图等一整套商品视觉。生成任务由宿主进程排队执行，不卡界面、不打断对话，图片也不必在多个工具之间来回搬运。
 
 <a id="quick-start"></a>
 ## 快速开始
@@ -102,6 +102,26 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
       <br/>
       <b><a href="#gallery">画廊</a></b><br/>
       <sub>标签、收藏、批量下载，收藏跨设备可见</sub><br/>
+      <br/>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top">
+      <br/>
+      <b><a href="#ecommerce">电商模式（预览）</a></b><br/>
+      <sub>一张商品图扩展成主图、卖点图、场景图整套视觉</sub><br/>
+      <br/>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <br/>
+      <b><a href="#studio">可自定义的界面</a></b><br/>
+      <sub>对话面板可收起，参数栏宽度可拖拽调整</sub><br/>
+      <br/>
+    </td>
+    <td width="33%" align="center" valign="top">
+      <br/>
+      <b><a href="#workflow">宿主任务队列</a></b><br/>
+      <sub>批量任务并行执行，进度、取消、重试一体化</sub><br/>
       <br/>
     </td>
   </tr>
@@ -187,14 +207,39 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 
 </details>
 
+<a id="ecommerce"></a>
+## 电商模式
+
+顶部导航切换到「电商模式」，把一张商品图扩展成一套可发布的商品视觉：上传商品素材（主体 / 包装 / 细节 / 风格，最多 4 张），选择平台、文案语言、比例与类目，填写商品卖点，然后用卡片勾选套图结构（主图、卖点图、场景图、细节图、规格图、使用图）与每种用途的数量。
+
+<div align="center">
+  <img src="docs/images/ecommerce-mode.png" alt="电商模式：商品信息、参数选择、套图结构与结果" width="100%" />
+  <p><sub>左侧规划套图结构，右侧按用途分组查看结果，支持逐张预览、下载、加入画廊或对话</sub></p>
+</div>
+
+- **锚定生成**：确认后先生成主图，其余图片自动以主图为参考生成，并在提示词中附加商品一致性约束，保证整套是同一个商品。
+- **先预览后生成**：点击「生成套图预览」只输出计划（各用途与数量），确认后才批量提交，不浪费额度。
+- **商品一致性**：每张参考素材按角色标注，主图之外的图片默认跟随主图锚定；可在「参考图设置」中为每种用途单独指定参考。
+- **结果管理**：结果按用途分组展示，支持单张重新生成、下载、加入画廊或对话；一键导出 JSON 清单，记录每张图的提示词与参数，方便复现。
+- **历史与恢复**：套图在历史记录中按项目折叠，跨会话点击即可恢复整组结果继续编辑。
+
+<details>
+<summary><b>电商模式说明</b></summary>
+
+- 电商模式目前为预览功能，入口带有「预览」角标；生成仍走已配置的生图渠道与任务队列，额度消耗与普通生成一致。
+- 套图数量与结构可自由组合，规格图、使用图等用途默认关闭，点击卡片即可启用。
+- 未上传商品图时主图会按文字描述生成并作为锚定基准，建议先上传清晰的主图获得更高一致性。
+
+</details>
+
 <a id="studio"></a>
 ## 图像工作台
 
-点击“新会话 / 生图”中的“生图”Tab，工作区按“历史记录 | 生图区 | AI 对话”三栏排列，拖动分隔线即可调整对话区宽度；左侧历史区与结果预览区均可收起，专注查看大图。
+点击“新会话 / 生图”中的“生图”Tab，工作区按“历史记录 | 生图区 | AI 对话”三栏排列。顶部导航在普通生图（文生图 / 图生图）、画廊与电商模式之间切换；右侧对话面板默认收起，点击头部的「对话」按钮随时展开，拖动分隔线即可调整对话区宽度；左侧参数栏的宽度也可拖拽调整并自动记忆。
 
 <div align="center">
   <img src="docs/images/image-generation-studio-three-column.png" alt="三栏工作台" width="100%" />
-  <p><sub>历史记录 ｜ 生图区 ｜ AI 对话 三栏同屏，分隔线可拖拽</sub></p>
+  <p><sub>顶部导航切换模式，历史记录 ｜ 生图区 ｜ AI 对话 三栏同屏</sub></p>
 </div>
 
 <div align="center">

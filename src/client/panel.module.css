@@ -220,6 +220,31 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh
   white-space: nowrap;
 }
 
+/* Collapsed sidebar rail: the injected tabs become plain stacked icon
+ * buttons that match the shell's native rail entries. */
+[data-sidebar-collapsed] .sessionTabs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: auto;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+[data-sidebar-collapsed] .sessionTab {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 9px;
+  font-size: 0;
+}
+
+[data-sidebar-collapsed] .sessionTabLabel {
+  display: none;
+}
+
 .sessionTab:hover,
 .sessionTab[data-active] {
   color: var(--dsw-alias-label-primary);
@@ -321,6 +346,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 }
 
 .panelHeader {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -475,9 +501,10 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   flex-direction: column;
   gap: 12px;
   flex: none;
-  width: min(300px, 42%);
-  min-width: 220px;
-  max-width: 300px;
+  position: relative;
+  width: clamp(240px, var(--dsh-imagegen-config-width, 300px), 480px);
+  min-width: 240px;
+  max-width: 480px;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -857,7 +884,667 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   flex: none;
 }
 
-/* --- mode tabs (system Pill switcher) ------------------------------------------ */
+.ecommerceWorkspace {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 6px 2px 12px;
+}
+
+/* Flat sections in the CapyAI style: plain headings, no card boxes. */
+.ecommerceSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ecommerceSection h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ecommerceSectionHint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.ecommerceSection input:not([type="checkbox"]), .ecommerceSection select, .ecommerceSection textarea { box-sizing: border-box; width: 100%; padding: 8px 10px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; font: inherit; }
+.ecommerceSection textarea { min-height: 60px; resize: vertical; }
+
+.ecommerceField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ecommerceFieldLabel {
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.ecommerceParamGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 8px;
+}
+
+.ecommerceUploadHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 78px;
+  padding: 12px;
+  border: 1.5px dashed var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+}
+
+.ecommerceUploadHero:hover {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-label-dimmed);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.ecommerceUploadHero span {
+  font-size: 12px;
+}
+
+.ecommerceUploadHero small {
+  font-size: 10.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.ecommerceStructureGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.ecommerceSlotCard {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ecommerceSlotCard:hover {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+.ecommerceSlotCard[data-active] {
+  background: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-base);
+  font-weight: 600;
+}
+
+.ecommerceSlotCount {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--dsw-alias-brand-primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+.ecommerceRefRow {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.ecommerceRefRow > span {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.ecommercePrimaryAction {
+  width: 100%;
+  height: 38px;
+  border-radius: 999px;
+  font-size: 13.5px;
+}
+
+.previewBadge {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--dsw-alias-brand-primary);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 13px;
+  letter-spacing: 0.02em;
+}
+
+.ecommercePlanNote {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.ecommercePlanWarn {
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.ecommerceAssets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.ecommerceAsset {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.ecommerceAsset img {
+  width: 100%;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+.ecommerceAsset select {
+  width: 100%;
+  min-width: 0;
+  padding: 2px;
+  font-size: 10px;
+}
+
+.ecommerceAsset button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.ecommerceAsset button:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.ecommerceAssetAdd {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 78px;
+  border: 1.5px dashed var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.ecommerceAssetAdd:hover {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-label-dimmed);
+}
+
+.ecommerceAssetAdd span {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ecommerceAssetAdd small {
+  font-size: 10px;
+}
+
+.ecommerceAdvancedToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.ecommerceAdvancedToggle:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.ecommerceAdvancedChevron {
+  font-size: 11px;
+}
+
+.ecommerceAdvancedBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ecommerceFooterBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ecommercePlanMini {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--dsw-alias-brand-primary);
+  border-radius: 10px;
+}
+
+.ecommercePlanMini > strong {
+  font-size: 12.5px;
+}
+
+.ecommercePlanList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 116px;
+  overflow-y: auto;
+}
+
+.ecommercePlanList > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+}
+
+.ecommercePlanBack {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.ecommercePlanBack:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.ecommerceFooterHint { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+
+.ecommerceResults {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.ecommerceResultsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ecommerceResultsHeader h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ecommerceResultsHeader > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ecommerceResultsHeader span {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.ecommerceResultsActions {
+  display: flex;
+  gap: 8px;
+}
+
+.ecommerceResultsEmpty {
+  padding: 32px 16px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  text-align: center;
+  border: 1.5px dashed var(--dsw-alias-border-l2);
+  border-radius: 12px;
+}
+
+.ecommerceGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ecommerceGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ecommerceGroup > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.ecommerceGroup > header strong {
+  font-size: 13px;
+}
+
+.ecommerceGroup > header span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.ecommerceGroup > header button {
+  margin-left: auto;
+}
+
+.ecommerceGroupGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.ecommerceTaskCard {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 1;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-3);
+  overflow: hidden;
+}
+
+.ecommerceTaskCard[data-status="failed"],
+.ecommerceTaskCard[data-status="cancelled"] {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.ecommerceTaskCard .imageCard {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.ecommerceTaskCard .image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ecommerceResultBadge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+.ecommerceTaskActions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  padding: 10px 4px 5px;
+  background: linear-gradient(transparent, rgb(0 0 0 / 55%));
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.ecommerceTaskCard:hover .ecommerceTaskActions {
+  opacity: 1;
+}
+
+.ecommerceActionChip {
+  border: none;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 92%);
+  color: #111;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 18px;
+  padding: 0 6px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ecommerceActionChip:hover {
+  background: #fff;
+}
+
+.ecommerceActionChip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ecommerceTaskState {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  text-align: center;
+  word-break: break-all;
+}
+
+.ecommerceTaskState b {
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+}
+
+
+
+/* --- top navigation (mode tabs live in the panel header row) -------------------- */
+
+.topNav {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: none;
+}
+
+.topNavItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.topNavItem,
+.topNavItem span {
+  white-space: nowrap;
+}
+
+.topNavItem:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.topNavItem[data-active] {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-base);
+  font-weight: 600;
+}
+
+.topNavDivider {
+  width: 1px;
+  height: 16px;
+  margin: 0 8px;
+  background: var(--dsw-alias-border-l2);
+}
+
+/* chat pane toggle + collapse */
+
+.panelHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chatToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.chatToggle:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.chatToggle[data-open='true'] {
+  color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+/* Drop the conversation column entirely while the chat toggle is collapsed. */
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'],
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Drop the conversation column entirely while the chat toggle is collapsed.
+   The hide rule must out-specify the base `display: flex !important`. */
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
+  display: none !important;
+}
+
+html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
+  display: none !important;
+}
+
+/* config panel drag handle */
+
+.configResizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 6;
+}
+
+.configResizer:hover {
+  background: linear-gradient(90deg, transparent, var(--dsw-alias-border-l2));
+}
+
+.config[data-collapsed='true'] .configResizer {
+  display: none;
+}
+
+/* --- generation sub-modes (inside the normal workspace) ------------------------ */
 
 .modeRow {
   display: flex;
@@ -869,7 +1556,14 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   flex: 1;
   justify-content: center;
   height: 28px;
-  font-size: 13px;
+  font-size: 12.5px;
+}
+
+.modePill,
+.modePill span,
+.modePill div {
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* --- reference image upload (edit mode) ---------------------------------------- */

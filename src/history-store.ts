@@ -51,6 +51,11 @@ interface StoredEntry {
   channel?: string
   comparisonId?: string
   comparisonModels?: string[]
+  workflow?: 'ecommerce'
+  projectId?: string
+  projectName?: string
+  slotKey?: string
+  slotLabel?: string
 }
 
 /** The index.json shape. */
@@ -121,6 +126,11 @@ function isStoredEntry(value: unknown): value is StoredEntry {
   return typeof entry.id === 'string'
     && typeof entry.createdAt === 'number'
     && (entry.mode === 'text' || entry.mode === 'edit')
+    && (entry.workflow === undefined || entry.workflow === 'ecommerce')
+    && (entry.projectId === undefined || typeof entry.projectId === 'string')
+    && (entry.projectName === undefined || typeof entry.projectName === 'string')
+    && (entry.slotKey === undefined || typeof entry.slotKey === 'string')
+    && (entry.slotLabel === undefined || typeof entry.slotLabel === 'string')
     && typeof entry.prompt === 'string'
     && Array.isArray(entry.images)
     && entry.images.every(image => {
@@ -159,6 +169,11 @@ function toWire(entry: StoredEntry): HistoryEntry {
     ...entry.channelId === undefined ? {} : { channelId: entry.channelId },
     ...entry.comparisonId === undefined ? {} : { comparisonId: entry.comparisonId },
     ...entry.comparisonModels === undefined ? {} : { comparisonModels: entry.comparisonModels },
+    ...entry.workflow === undefined ? {} : { workflow: entry.workflow },
+    ...entry.projectId === undefined ? {} : { projectId: entry.projectId },
+    ...entry.projectName === undefined ? {} : { projectName: entry.projectName },
+    ...entry.slotKey === undefined ? {} : { slotKey: entry.slotKey },
+    ...entry.slotLabel === undefined ? {} : { slotLabel: entry.slotLabel },
   }
 }
 
@@ -205,6 +220,11 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
       ...input.channel === undefined ? {} : { channel: input.channel },
       ...input.comparisonId === undefined ? {} : { comparisonId: input.comparisonId },
       ...input.comparisonModels === undefined ? {} : { comparisonModels: input.comparisonModels },
+      ...input.workflow === undefined ? {} : { workflow: input.workflow },
+      ...input.projectId === undefined ? {} : { projectId: input.projectId },
+      ...input.projectName === undefined ? {} : { projectName: input.projectName },
+      ...input.slotKey === undefined ? {} : { slotKey: input.slotKey },
+      ...input.slotLabel === undefined ? {} : { slotLabel: input.slotLabel },
     }
     const merged = [entry, ...await readIndex()]
     const kept = merged.slice(0, HISTORY_MAX)

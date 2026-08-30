@@ -8,7 +8,7 @@
  * a platform module) so the studio matches the dsh shell look by construction.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ISessions, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
@@ -16,7 +16,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
-import type { GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, HistoryEntry, HistoryImageRef, UpdateInfo } from '../protocol.ts'
+import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
@@ -61,6 +61,35 @@ const PREVIEW_SCALE_MIN = 0.5
 const PREVIEW_SCALE_MAX = 3
 const PREVIEW_SCALE_STEP = 0.25
 const CONFIG_COLLAPSED_STORAGE_KEY = 'dsh-imagegen-config-collapsed'
+const ECOMMERCE_DRAFT_STORAGE_KEY = 'dsh-imagegen-ecommerce-draft'
+/** Reference roles an uploaded product asset can play (slot selections can
+ *  also pick 'none'). */
+const ECOMMERCE_ASSET_ROLES = ['product', 'packaging', 'detail', 'style'] as const
+type EcommerceAssetRole = Exclude<EcommerceRefRole, 'none'>
+const MAX_ECOMMERCE_ASSETS = 4
+const ECOMMERCE_ROLE_PROMPT_LABELS: Record<EcommerceAssetRole, string> = {
+  product: '商品主体',
+  packaging: '包装',
+  detail: '细节/角度',
+  style: '风格参考',
+}
+/** One uploaded product asset. Session-only: data URLs are far too large for
+ *  the localStorage draft, so assets never persist across reloads. */
+interface ProductAsset {
+  id: string
+  dataUrl: string
+  name: string
+  role: EcommerceAssetRole
+}
+
+const PRODUCT_SET_SLOTS: ProductSetSlot[] = [
+  { key: 'main', label: '主图', description: '干净背景，突出商品主体', count: 1, enabled: true, refRole: 'product' },
+  { key: 'selling-point', label: '卖点图', description: '用画面展示商品核心卖点', count: 2, enabled: true, refRole: 'product' },
+  { key: 'scene', label: '场景图', description: '真实生活或使用场景', count: 2, enabled: true, refRole: 'product' },
+  { key: 'detail', label: '细节图', description: '材质、结构或工艺特写', count: 1, enabled: true, refRole: 'detail' },
+  { key: 'spec', label: '规格图', description: '尺寸、容量或参数展示', count: 1, enabled: false, refRole: 'product' },
+  { key: 'model', label: '使用图', description: '人物上手或穿戴效果', count: 1, enabled: false, refRole: 'product' },
+]
 
 /** Legacy pixel sizes saved by older versions, mapped onto the current
  *  aspect-ratio vocabulary so restoring old history entries still works. */
@@ -104,6 +133,31 @@ function readConfigCollapsed(): boolean {
   } catch {
     return false
   }
+}
+
+const CHAT_COLLAPSED_STORAGE_KEY = 'dsh-imagegen:chat-collapsed'
+const CONFIG_WIDTH_STORAGE_KEY = 'dsh-imagegen:config-width'
+const CONFIG_WIDTH_MIN = 260
+const CONFIG_WIDTH_MAX = 480
+const CONFIG_WIDTH_DEFAULT = 300
+
+/** The chat pane starts collapsed unless the user explicitly opened it. */
+function readChatOpen(): boolean {
+  try {
+    return window.localStorage.getItem(CHAT_COLLAPSED_STORAGE_KEY) === 'open'
+  } catch {
+    return false
+  }
+}
+
+function readConfigWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(CONFIG_WIDTH_STORAGE_KEY)
+    if (raw === null) return CONFIG_WIDTH_DEFAULT
+    const value = Number(raw)
+    if (Number.isFinite(value) && value > 0) return Math.min(CONFIG_WIDTH_MAX, Math.max(CONFIG_WIDTH_MIN, Math.round(value)))
+  } catch { /* storage unavailable */ }
+  return CONFIG_WIDTH_DEFAULT
 }
 
 /** Read the current config from the settings scope snapshot. */
@@ -292,12 +346,53 @@ function formatTime(timestamp: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+function defaultEcommerceDraft(): ProductSetDraft {
+  return {
+    projectId: '', projectName: '', category: '通用商品', platform: '通用', language: '中文', size: '1:1',
+    productName: '', sellingPoints: '', protectedFeatures: '', styleHint: '',
+    slots: PRODUCT_SET_SLOTS.map(slot => ({ ...slot })),
+  }
+}
+
+function ecommercePrompt(draft: ProductSetDraft, slot: ProductSetSlot): string {
+  const points = draft.sellingPoints.trim() || '突出商品真实材质、结构和核心价值'
+  const protectedFeatures = draft.protectedFeatures.trim() || '保持商品颜色、形状、Logo、包装文字和结构真实，不添加不存在的配件'
+  const refClause = slot.refRole !== undefined && slot.refRole !== 'none'
+    ? `本图以上传的${ECOMMERCE_ROLE_PROMPT_LABELS[slot.refRole]}图片为参考，商品与风格必须与参考图保持一致；`
+    : ''
+  return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${draft.language}。商品卖点：${points}。必须遵守：${protectedFeatures}。${refClause}整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布；${draft.styleHint.trim()}`
+}
+
+/** Consistency prefix for slots generated after the main image exists. */
+function withAnchorNote(prompt: string): string {
+  return '商品套图一致性约束：附件是本套商品的主图，图中商品（外形、颜色、材质、Logo、包装文字）必须与附件完全一致，不得重新发明商品。' + prompt
+}
+
 /** Studio tabs: the two generation modes plus the gallery view. */
 type PanelTab = GenerateMode | 'gallery'
+
+/** Top-level workspaces inside the panel. 'normal' is the classic studio;
+ *  more task-oriented modes (prototype, …) can join alongside 'ecommerce'. */
+type PanelWorkspace = 'normal' | 'ecommerce'
 
 type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
 type HistoryGroup = { key: string; entries: HistoryEntry[]; models: string[] }
+
+/** One image unit in the ecommerce results canvas: a live queue task or a
+ *  restored history entry of the viewed product set. */
+interface EcommerceResultItem {
+  id: string
+  label: string
+  slotKey: string
+  status: GenerationTaskStatus
+  model: string
+  prompt: string
+  error?: string
+  images: GeneratedImage[]
+  /** The request to resubmit when regenerating this slot. */
+  source: GenerateRequest
+}
 
 function modelsOfHistoryEntry(entry: HistoryEntry): string[] {
   return entry.comparisonModels?.length !== undefined && entry.comparisonModels.length > 1
@@ -305,11 +400,18 @@ function modelsOfHistoryEntry(entry: HistoryEntry): string[] {
     : [entry.model]
 }
 
+/** Comparison runs collapse by comparisonId, product sets by projectId. */
+function historyGroupKey(entry: HistoryEntry): string {
+  if (entry.comparisonId !== undefined) return entry.comparisonId
+  if (entry.workflow === 'ecommerce' && entry.projectId !== undefined) return `project:${entry.projectId}`
+  return entry.id
+}
+
 /** Collapse the per-model history rows that belong to one comparison run. */
 function groupHistoryEntries(entries: HistoryEntry[]): HistoryGroup[] {
   const groups = new Map<string, HistoryGroup>()
   for (const entry of entries) {
-    const key = entry.comparisonId ?? entry.id
+    const key = historyGroupKey(entry)
     const existing = groups.get(key)
     if (existing === undefined) {
       groups.set(key, { key, entries: [entry], models: modelsOfHistoryEntry(entry) })
@@ -356,6 +458,12 @@ export function ImageGenPanel(props: {
   const connected = enabled && configured && apiKeySet
 
   const [tab, setTab] = useState<PanelTab>('text')
+  const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
+  /** Switch to a normal-generation tab, leaving any task workspace. */
+  const openTab = (next: PanelTab): void => {
+    setWorkspace('normal')
+    setTab(next)
+  }
   const [prompt, setPrompt] = useState('')
   const [size, setSize] = useState<string>('auto')
   const [quality, setQuality] = useState<string>('auto')
@@ -409,7 +517,36 @@ export function ImageGenPanel(props: {
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
+  const [ecommerce, setEcommerce] = useState<ProductSetDraft>(() => {
+    try {
+      const saved = window.localStorage.getItem(ECOMMERCE_DRAFT_STORAGE_KEY)
+      if (saved !== null) {
+        const merged: ProductSetDraft = { ...defaultEcommerceDraft(), ...JSON.parse(saved) as Partial<ProductSetDraft> }
+        // Drafts saved before reference roles existed keep working: every slot
+        // defaults to following the product image.
+        if (Array.isArray(merged.slots)) {
+          merged.slots = merged.slots.map(slot => ({ ...slot, refRole: slot.refRole ?? 'product' }))
+        }
+        return merged
+      }
+    } catch { /* ignore malformed or unavailable storage */ }
+    return defaultEcommerceDraft()
+  })
+  const [ecommercePreview, setEcommercePreview] = useState(false)
+  const [ecommerceGenerating, setEcommerceGenerating] = useState(false)
+  const [ecommerceProjectId, setEcommerceProjectId] = useState<string | null>(null)
+  const [ecommerceAssets, setEcommerceAssets] = useState<ProductAsset[]>([])
+  /** History-restored product set currently shown in the results canvas. */
+  const [ecommerceRestored, setEcommerceRestored] = useState<{ projectId: string; projectName: string; items: EcommerceResultItem[] } | null>(null)
+  /** Pending main-image anchor: the main image task is in flight; once it
+   *  completes, the remaining slots are resubmitted with it as their shared
+   *  reference so every image in the set shows the same product. */
+  const [ecommerceAnchor, setEcommerceAnchor] = useState<{ projectId: string; mainTaskIds: string[]; remaining: GenerateRequest[] } | null>(null)
+  const [ecommerceRefOpen, setEcommerceRefOpen] = useState(false)
   const [configCollapsed, setConfigCollapsed] = useState(readConfigCollapsed)
+  const [chatOpen, setChatOpen] = useState(readChatOpen)
+  const [configWidth, setConfigWidth] = useState(readConfigWidth)
+  const configAsideRef = useRef<HTMLElement>(null)
   const currentSessionId = useCurrentSessionId(sessions)
   const sidebarHistoryHost = useSidebarHistoryHost()
   const modeModels = tab === 'edit'
@@ -424,12 +561,57 @@ export function ImageGenPanel(props: {
   const elapsed = useElapsed(generating, generationStartedAt)
 
   useEffect(() => {
+    try { window.localStorage.setItem(ECOMMERCE_DRAFT_STORAGE_KEY, JSON.stringify(ecommerce)) } catch { /* optional draft persistence */ }
+  }, [ecommerce])
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(CONFIG_COLLAPSED_STORAGE_KEY, String(configCollapsed))
     } catch {
       // Embedded shells may disable local storage; the in-memory toggle still works.
     }
   }, [configCollapsed])
+
+  // Chat-pane visibility rides a document-level attribute so the center-column
+  // grid can drop the conversation entirely. Collapsed by default.
+  useEffect(() => {
+    if (chatOpen) delete document.documentElement.dataset.dshImagegenChatCollapsed
+    else document.documentElement.dataset.dshImagegenChatCollapsed = '1'
+    try { window.localStorage.setItem(CHAT_COLLAPSED_STORAGE_KEY, chatOpen ? 'open' : 'collapsed') } catch { /* optional */ }
+  }, [chatOpen])
+
+  useEffect(() => () => { delete document.documentElement.dataset.dshImagegenChatCollapsed }, [])
+
+  // Main-image anchor chain: when the main image task of a product set
+  // completes, resubmit the remaining slots with the generated main image as
+  // their shared reference. Cleared up front so a re-render cannot double-
+  // submit; failures surface as a canvas error.
+  useEffect(() => {
+    if (ecommerceAnchor === null) return
+    const anchor = ecommerceAnchor
+    const mains = tasks.filter(task => anchor.mainTaskIds.includes(task.id))
+    if (mains.length === 0) return
+    if (mains.every(task => task.status === 'failed' || task.status === 'cancelled')) {
+      setEcommerceAnchor(null)
+      setError(tt('ecommerce.anchorFailed'))
+      return
+    }
+    const done = mains.find(task => task.status === 'completed' && task.result !== undefined && task.result.images.length > 0)
+    if (done === undefined) return
+    setEcommerceAnchor(null)
+    const dataUrl = srcOf(done.result!.images[0]!)
+    const requests = anchor.remaining.map(request => ({
+      ...request,
+      mode: 'edit' as const,
+      image: dataUrl,
+      refName: 'set-main-anchor',
+      prompt: withAnchorNote(request.prompt),
+    }))
+    void Promise.all(requests.map(request => api.taskSubmit(request)))
+      .then(submitted => { setTasks(previous => [...submitted, ...previous]) })
+      .catch(caught => { setError(errorMessage(caught)) })
+  }, [api, tasks, ecommerceAnchor])
+
 
   // A saved settings change is authoritative. Keep the active selection and
   // comparison choices in that allow-list without disturbing valid choices.
@@ -487,7 +669,7 @@ export function ImageGenPanel(props: {
       if (detail === undefined || currentSessionId === undefined || detail.sessionId !== currentSessionId) return
       void Promise.all(detail.refs.map(attachmentToGenerated))
         .then(next => {
-          setTab('text')
+          openTab('text')
           setImages(next)
           setComparison(null)
           setViewingHistoryId(null)
@@ -630,6 +812,33 @@ export function ImageGenPanel(props: {
     reader.readAsDataURL(file)
   }
 
+  /** Read uploaded product assets into session-only data-URL chips, capped at
+   *  MAX_ECOMMERCE_ASSETS. Each starts as the product-role reference. */
+  const acceptEcommerceFiles = (files: FileList | undefined): void => {
+    if (files === undefined) return
+    const incoming = Array.from(files).filter(file => file.type.startsWith('image/') && file.size <= REF_IMAGE_MAX_BYTES)
+    if (incoming.length === 0) {
+      setError(tt('edit.uploadHint'))
+      return
+    }
+    for (const file of incoming) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') return
+        const dataUrl = reader.result
+        setEcommerceAssets(previous => {
+          if (previous.length >= MAX_ECOMMERCE_ASSETS) {
+            setError(tt('ecommerce.assetsFull'))
+            return previous
+          }
+          return [...previous, { id: newComparisonId(), dataUrl, name: file.name, role: 'product' }]
+        })
+      }
+      reader.onerror = () => { setError(tt('edit.uploadHint')) }
+      reader.readAsDataURL(file)
+    }
+  }
+
   /** Run one generation. */
   const handleGenerate = async (): Promise<void> => {
     if (submitting) return
@@ -651,7 +860,7 @@ export function ImageGenPanel(props: {
       return
     }
     const request: GenerateRequest = {
-      mode: tab === 'gallery' ? 'text' : tab,
+      mode: tab === 'edit' ? 'edit' : 'text',
       model: modeModels.includes(model) ? model : modeModels[0] ?? '',
       prompt: promptText,
       size,
@@ -682,7 +891,163 @@ export function ImageGenPanel(props: {
     }
   }
 
-  /** Open the full-screen image preview at a given index. */
+  const handleEcommerceGenerate = async (): Promise<void> => {
+    if (ecommerceGenerateDisabled) return
+    if (!enabled || !configured || !apiKeySet) { openSettingsGuide('generation'); return }
+    const projectId = ecommerce.projectId || newComparisonId()
+    const buildRequest = (slot: ProductSetSlot, index: number): GenerateRequest => {
+      // Each slot picks one reference by asset role; a slot without a matching
+      // asset (or 'none') falls back to text-to-image.
+      const refRole = slot.refRole ?? 'product'
+      const asset = refRole === 'none' ? undefined : ecommerceAssets.find(item => item.role === refRole)
+      return {
+        mode: asset !== undefined ? 'edit' as const : 'text' as const,
+        model: modeModels.includes(model) ? model : modeModels[0] ?? '',
+        prompt: ecommercePrompt(ecommerce, slot),
+        size: ecommerce.size,
+        quality,
+        n: 1,
+        detail,
+        ...(defaultChannelId !== undefined ? { channelId: defaultChannelId } : {}),
+        ...(asset !== undefined ? { image: asset.dataUrl, refName: asset.name } : {}),
+        workflow: 'ecommerce' as const,
+        projectId,
+        projectName: ecommerce.projectName.trim() || ecommerce.productName.trim(),
+        slotKey: `${slot.key}-${index + 1}`,
+        slotLabel: slot.label,
+      }
+    }
+    // Anchor chain: with a main-image slot enabled, only the main image is
+    // submitted now; the remaining slots follow once it completes (see the
+    // anchor effect) so the whole set shares one product. Without a main
+    // slot, every slot submits immediately with its own reference.
+    const mainSlots = ecommerceSlots.filter(slot => slot.key === 'main')
+    const otherSlots = ecommerceSlots.filter(slot => slot.key !== 'main')
+    const anchorChain = mainSlots.length > 0 && otherSlots.length > 0
+    const leadSlots = anchorChain ? mainSlots : ecommerceSlots
+    const requests = leadSlots.flatMap(slot => Array.from({ length: slot.count }, (_, index) => buildRequest(slot, index)))
+    const remaining = anchorChain
+      ? otherSlots.flatMap(slot => Array.from({ length: slot.count }, (_, index) => {
+        const { image: _image, refName: _refName, ...rest } = buildRequest(slot, index)
+        return rest
+      }))
+      : []
+    setEcommerceGenerating(true); setSubmitting(true); setError(null); setEcommerceProjectId(projectId); setEcommerceRestored(null); setEcommerceAnchor(null)
+    try {
+      const submitted = await Promise.all(requests.map(request => api.taskSubmit(request)))
+      setTasks(previous => [...submitted, ...previous])
+      setEcommercePreview(false)
+      if (anchorChain) setEcommerceAnchor({ projectId, mainTaskIds: submitted.map(task => task.id), remaining })
+    } catch (caught) { setError(errorMessage(caught)) } finally { setSubmitting(false); setEcommerceGenerating(false) }
+  }
+
+  /** Start over with a fresh product draft (the old results stay in history). */
+  const newEcommerceProduct = (): void => {
+    setEcommerce(defaultEcommerceDraft())
+    setEcommercePreview(false)
+    setEcommerceProjectId(null)
+    setEcommerceRestored(null)
+    setEcommerceAnchor(null)
+    setEcommerceAssets([])
+    setRefImage(null)
+    setError(null)
+  }
+
+  /** Re-run every image of one slot with its original request. */
+  const regenerateEcommerceSlot = async (label: string): Promise<void> => {
+    if (ecommerceGenerating) return
+    const group = ecommerceMergedItems.filter(item => item.label === label)
+    if (group.length === 0) return
+    setEcommerceGenerating(true)
+    setError(null)
+    try {
+      const submitted = await Promise.all(group.map(item => api.taskSubmit({ ...item.source })))
+      setTasks(previous => [...submitted, ...previous])
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setEcommerceGenerating(false)
+    }
+  }
+
+  /** Open one persisted product set from history: rebuild the grouped results
+   *  canvas from its entries. Reference images are not persisted, so restored
+   *  edit-mode slots regenerate as text-to-image. */
+  const viewEcommerceProject = async (group: HistoryGroup): Promise<void> => {
+    const entry = group.entries[0]
+    if (entry === undefined || entry.projectId === undefined) return
+    try {
+      const items: EcommerceResultItem[] = await Promise.all(group.entries.map(async item => ({
+        id: item.id,
+        label: item.slotLabel ?? '',
+        slotKey: item.slotKey ?? '',
+        status: 'completed' as const,
+        model: item.model,
+        prompt: item.prompt,
+        images: await historyImagesToGenerated(item.images),
+        source: {
+          mode: item.mode === 'edit' ? 'text' as const : item.mode,
+          model: item.model,
+          prompt: item.prompt,
+          size: item.size,
+          quality: item.quality,
+          detail: item.detail,
+          n: 1,
+          ...item.channelId !== undefined ? { channelId: item.channelId } : {},
+          workflow: 'ecommerce' as const,
+          projectId: entry.projectId!,
+          projectName: entry.projectName ?? '',
+          slotKey: item.slotKey ?? '',
+          slotLabel: item.slotLabel ?? '',
+        },
+      })))
+      setWorkspace('ecommerce')
+      setEcommerceRestored({ projectId: entry.projectId, projectName: entry.projectName ?? '', items })
+      setEcommerceProjectId(entry.projectId)
+      setEcommercePreview(false)
+      setError(null)
+      setViewingHistoryId(entry.id)
+      setGalleryViewingId(null)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    }
+  }
+
+  /** Download a JSON manifest describing the whole product set (prompts,
+   *  slots and task outcomes) so results stay reproducible outside the panel. */
+  const exportEcommerceManifest = (): void => {
+    const manifest = {
+      project: {
+        id: ecommerceProjectId,
+        name: ecommerce.projectName || ecommerce.productName,
+        productName: ecommerce.productName,
+        category: ecommerce.category,
+        platform: ecommerce.platform,
+        language: ecommerce.language,
+        size: ecommerce.size,
+        sellingPoints: ecommerce.sellingPoints,
+        protectedFeatures: ecommerce.protectedFeatures,
+        styleHint: ecommerce.styleHint,
+      },
+      generatedAt: new Date().toISOString(),
+      images: ecommerceMergedItems.map(item => ({
+        slotKey: item.slotKey,
+        slotLabel: item.label,
+        status: item.status,
+        model: item.model,
+        prompt: item.prompt,
+        error: item.error,
+      })),
+    }
+    const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `dsh-product-set-${(ecommerce.projectName || ecommerce.productName || 'set').replace(/[^\w-]+/g, '-')}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
   const openPreview = (previewImages: GeneratedImage[], index: number): void => {
     setPreview({ images: previewImages, index })
     setPreviewScale(1)
@@ -743,9 +1108,15 @@ export function ImageGenPanel(props: {
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined) return
+    // Product sets rebuild their grouped results canvas instead of the
+    // generic image workspace.
+    if (entry.workflow === 'ecommerce' && entry.projectId !== undefined) {
+      await viewEcommerceProject(group)
+      return
+    }
     // History is also the bridge out of the gallery: show the image workspace
     // immediately, then hydrate the selected result into its canvas.
-    setTab('text')
+    openTab('text')
     try {
       setImages(await loadHistoryGroup(group))
       setComparison(null)
@@ -761,9 +1132,15 @@ export function ImageGenPanel(props: {
   const restoreHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined) return
+    // The product-set form draft cannot be rebuilt from a compiled prompt, so
+    // restoring a product set reopens its grouped results canvas.
+    if (entry.workflow === 'ecommerce' && entry.projectId !== undefined) {
+      await viewEcommerceProject(group)
+      return
+    }
     try {
       const restored = await loadHistoryGroup(group)
-      setTab(entry.mode)
+      openTab(entry.mode)
       setPrompt(entry.prompt)
       setSize(normalizeSize(entry.size))
       setQuality(normalizeQuality(entry.quality))
@@ -788,6 +1165,11 @@ export function ImageGenPanel(props: {
     const ids = new Set(group.entries.map(entry => entry.id))
     setHistory(previous => previous.filter(entry => !ids.has(entry.id)))
     if (viewingHistoryId !== null && ids.has(viewingHistoryId)) setViewingHistoryId(null)
+    if (ecommerceRestored !== null && group.entries.some(entry => entry.projectId === ecommerceRestored.projectId)) {
+      setEcommerceRestored(null)
+      setEcommerceProjectId(null)
+      setEcommerceAnchor(null)
+    }
     try {
       let next = history
       for (const id of ids) next = await api.historyRemove(id)
@@ -799,7 +1181,7 @@ export function ImageGenPanel(props: {
 
   /** Reset the workspace for a fresh image-generation run. */
   const startNewCreation = (): void => {
-    setTab('text')
+    openTab('text')
     setPrompt('')
     setRefImage(null)
     setImages([])
@@ -812,6 +1194,7 @@ export function ImageGenPanel(props: {
     setSelectedGalleryIds(new Set())
     setComparison(null)
     setComparisonFullscreen(false)
+    setEcommerceRestored(null)
     setError(null)
     setConversationMessage(null)
     setGalleryMessage(null)
@@ -834,7 +1217,7 @@ export function ImageGenPanel(props: {
    *  metadata + first image are saved); otherwise the current form state is
    *  used. */
   const addToGallery = async (image: GeneratedImage, entry?: HistoryEntry): Promise<void> => {
-    if (galleryAdding || tab === 'gallery') return
+    if (galleryAdding || (workspace === 'normal' && tab === 'gallery')) return
     const source = entry ?? viewingEntry ?? {
       mode: tab === 'edit' ? 'edit' as GenerateMode : 'text' as GenerateMode,
       model,
@@ -957,7 +1340,7 @@ export function ImageGenPanel(props: {
   const restoreGalleryEntry = async (entry: HistoryEntry): Promise<void> => {
     try {
       const restored = await historyImagesToGenerated(entry.images)
-      setTab(entry.mode)
+      openTab(entry.mode)
       setPrompt(entry.prompt)
       setSize(normalizeSize(entry.size))
       setQuality(normalizeQuality(entry.quality))
@@ -1062,6 +1445,38 @@ export function ImageGenPanel(props: {
   }
 
   const generateDisabled = submitting || modeModels.length === 0
+  const ecommerceSlots = ecommerce.slots.filter(slot => slot.enabled && slot.count > 0)
+  const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0)
+  const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === ''
+  const ecommerceFileInput = useRef<HTMLInputElement>(null)
+  // The results canvas merges live tasks of the active project with restored
+  // history entries of the same project; restored slots that were regenerated
+  // this session are covered by their live counterparts (same slotKey).
+  const ecommerceProjectTasks = ecommerceProjectId === null
+    ? []
+    : tasks.filter(task => task.request.workflow === 'ecommerce' && task.request.projectId === ecommerceProjectId)
+  const liveSlotKeys = new Set(ecommerceProjectTasks.map(task => task.request.slotKey ?? task.id))
+  const ecommerceMergedItems: EcommerceResultItem[] = [
+    ...ecommerceProjectTasks.map(task => ({
+      id: task.id,
+      label: task.request.slotLabel ?? '',
+      slotKey: task.request.slotKey ?? '',
+      status: task.status,
+      model: task.request.model,
+      prompt: task.request.prompt,
+      ...task.error !== undefined ? { error: task.error } : {},
+      images: task.result?.images ?? [],
+      source: task.request,
+    })),
+    ...(ecommerceRestored !== null && ecommerceRestored.projectId === ecommerceProjectId
+      ? ecommerceRestored.items.filter(item => !liveSlotKeys.has(item.slotKey))
+      : []),
+  ]
+  const ecommerceDoneCount = ecommerceMergedItems.filter(item => item.status === 'completed').length
+  const ecommerceFailedCount = ecommerceMergedItems.filter(item => item.status === 'failed' || item.status === 'cancelled').length
+  const ecommerceResultGroups = [...new Set(ecommerceMergedItems.map(item => item.label))]
+    .filter(label => label !== '')
+    .map(label => ({ label, items: ecommerceMergedItems.filter(item => item.label === label) }))
   const conversationBusy = addingToConversation !== null || galleryConversationAddingId !== null
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
@@ -1070,6 +1485,29 @@ export function ImageGenPanel(props: {
   const comparisonResults = comparisonTasks.filter(task => task.status === 'completed' && task.result !== undefined)
   const previewFrameScale = Math.max(1, previewScale)
   const previewImageScale = previewScale / previewFrameScale
+
+  /** Drag the config panel's right edge to resize it (persisted per browser). */
+  const onConfigResizeStart = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const aside = configAsideRef.current
+    if (aside === null) return
+    const left = aside.getBoundingClientRect().left
+    const onMove = (move: PointerEvent): void => {
+      const width = Math.round(Math.min(CONFIG_WIDTH_MAX, Math.max(CONFIG_WIDTH_MIN, move.clientX - left)))
+      setConfigWidth(width)
+      try { window.localStorage.setItem(CONFIG_WIDTH_STORAGE_KEY, String(width)) } catch { /* optional */ }
+    }
+    const onUp = (): void => {
+      window.removeEventListener('pointermove', onMove)
+      document.documentElement.style.removeProperty('cursor')
+      document.documentElement.style.removeProperty('user-select')
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+    document.documentElement.style.setProperty('cursor', 'col-resize')
+    document.documentElement.style.setProperty('user-select', 'none')
+  }
 
   const copyPreviewPrompt = async (text: string): Promise<void> => {
     try {
@@ -1095,7 +1533,7 @@ export function ImageGenPanel(props: {
 
   const addPreviewToEdit = (): void => {
     if (previewImage === null || preview === null) return
-    setTab('edit')
+    openTab('edit')
     setRefImage({
       dataUrl: srcOf(previewImage),
       name: `dsh-image-${preview.index + 1}.${extensionOf(previewImage.mime)}`,
@@ -1171,7 +1609,11 @@ export function ImageGenPanel(props: {
                   <span className={css.historyInfo}>
                     <span className={css.historyPrompt}>{entry.prompt}</span>
                     <span className={css.historyMeta}>
-                      {isComparison ? tt('compare.title') : tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
+                      {isComparison
+                        ? tt('compare.title')
+                        : entry.workflow === 'ecommerce'
+                          ? `${tt('ecommerce.short')}${entry.projectName !== undefined && entry.projectName !== '' ? ` · ${entry.projectName}` : ''}`
+                          : tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
                       {' · '}{isComparison ? group.models.join(' · ') : entry.model}
                       {' · '}{formatTime(entry.createdAt)}
                       {' · '}{imageCount} {tt('history.images')}
@@ -1221,15 +1663,34 @@ export function ImageGenPanel(props: {
             <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
           </a>
         </span>
-        <button
-          type="button"
-          className={css.connectionStatus}
-          data-connected={connected ? 'true' : 'false'}
-          aria-label={tt(connected ? 'connection.connected' : 'connection.disconnected')}
-        >
-          <span className={css.connectionDot} aria-hidden="true" />
-          {tt(connected ? 'connection.connected' : 'connection.disconnected')}
-        </button>
+        <nav className={css.topNav} role="tablist" aria-label={tt('workspace.label')}>
+          <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab !== 'gallery' ? '' : undefined} onClick={() => { if (workspace !== 'normal' || tab === 'gallery') openTab('text') }}>{tt('workspace.normal')}</button>
+          <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab === 'gallery' ? '' : undefined} onClick={() => { openTab('gallery') }}>{tt('gallery.title')}</button>
+          <span className={css.topNavDivider} aria-hidden="true" />
+          <button type="button" className={css.topNavItem} data-active={workspace === 'ecommerce' ? '' : undefined} onClick={() => { setWorkspace('ecommerce') }}>{tt('workspace.ecommerce')}<span className={css.previewBadge}>{tt('ecommerce.badge')}</span></button>
+        </nav>
+        <span className={css.panelHeaderActions}>
+          <button
+            type="button"
+            className={css.chatToggle}
+            data-open={chatOpen ? 'true' : 'false'}
+            aria-pressed={chatOpen}
+            title={chatOpen ? tt('chat.collapse') : tt('chat.expand')}
+            onClick={() => { setChatOpen(open => !open) }}
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v7.5H6.8L3.8 13.6v-2.6H2.5z"/></svg>
+            {tt('chat.toggle')}
+          </button>
+          <button
+            type="button"
+            className={css.connectionStatus}
+            data-connected={connected ? 'true' : 'false'}
+            aria-label={tt(connected ? 'connection.connected' : 'connection.disconnected')}
+          >
+            <span className={css.connectionDot} aria-hidden="true" />
+            {tt(connected ? 'connection.connected' : 'connection.disconnected')}
+          </button>
+        </span>
       </header>
 
       {update !== null ? (
@@ -1251,10 +1712,13 @@ export function ImageGenPanel(props: {
         <div className={css.generation}>
           {/* ------------------------------------------------ config sidebar */}
           <aside
+            ref={configAsideRef}
             className={css.config}
+            style={{ '--dsh-imagegen-config-width': `${configWidth}px` } as CSSProperties}
             data-collapsed={configCollapsed ? 'true' : 'false'}
-            data-gallery={tab === 'gallery' ? 'true' : undefined}
+            data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}
           >
+            <div className={css.configResizer} title={tt('config.resizeHint')} onPointerDown={onConfigResizeStart} />
           <div className={css.configHeader}>
             <button
               type="button"
@@ -1269,7 +1733,7 @@ export function ImageGenPanel(props: {
               </svg>
             </button>
           </div>
-          {tab === 'gallery' ? (
+          {workspace === 'normal' && tab === 'gallery' ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
               {[
@@ -1316,16 +1780,182 @@ export function ImageGenPanel(props: {
             </div>
           ) : null}
           <div className={css.configScroll}>
-            {/* mode / gallery tabs */}
-            <section className={css.card}>
-              <div className={css.modeRow} role="tablist" aria-label={tt('panel.title')}>
-                <Pill active={tab === 'text'} onClick={() => { setTab('text') }} className={css.modePill}>{tt('mode.text')}</Pill>
-                <Pill active={tab === 'edit'} onClick={() => { setTab('edit') }} className={css.modePill}>{tt('mode.edit')}</Pill>
-                <Pill active={tab === 'gallery'} onClick={() => { setTab('gallery') }} className={css.modePill}>{tt('gallery.title')}</Pill>
-              </div>
-            </section>
+            {/* generation sub-modes live inside the normal workspace */}
+            {workspace === 'normal' && tab !== 'gallery' ? (
+              <section className={css.card}>
+                <div className={css.modeRow} role="tablist" aria-label={tt('panel.title')}>
+                  <Pill active={tab === 'text'} onClick={() => { setTab('text') }} className={css.modePill}>{tt('mode.text')}</Pill>
+                  <Pill active={tab === 'edit'} onClick={() => { setTab('edit') }} className={css.modePill}>{tt('mode.edit')}</Pill>
+                </div>
+              </section>
+            ) : null}
 
-            {/* reference image (edit mode) */}
+            {workspace === 'ecommerce' ? (
+              <section className={css.ecommerceWorkspace} data-ecommerce-workspace="">
+                <div className={css.ecommerceSection}>
+                  <h3>{tt('ecommerce.product')}</h3>
+                  <label className={css.ecommerceField}>
+                    <span className={css.ecommerceFieldLabel}>{tt('ecommerce.productName')}</span>
+                    <input value={ecommerce.productName} placeholder={tt('ecommerce.productName')} onChange={event => setEcommerce(previous => ({ ...previous, productName: event.target.value }))} />
+                  </label>
+                  <label className={css.ecommerceField}>
+                    <span className={css.ecommerceFieldLabel}>{tt('ecommerce.projectName')}</span>
+                    <input value={ecommerce.projectName} placeholder={tt('ecommerce.projectName')} onChange={event => setEcommerce(previous => ({ ...previous, projectName: event.target.value }))} />
+                  </label>
+                  {ecommerceAssets.length === 0 ? (
+                    <button
+                      type="button"
+                      className={css.ecommerceUploadHero}
+                      data-ecommerce-upload=""
+                      onClick={() => { ecommerceFileInput.current?.click() }}
+                      onDragOver={(event) => { event.preventDefault() }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        acceptEcommerceFiles(event.dataTransfer.files ?? undefined)
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 10V3.5"/><path d="M5.5 5.5L8 3l2.5 2.5"/><path d="M3 9.5V12a1.5 1.5 0 001.5 1.5h7A1.5 1.5 0 0013 12V9.5"/></svg>
+                      <span>{tt('ecommerce.uploadRef')}</span>
+                      <small>{tt('edit.uploadHint')}</small>
+                    </button>
+                  ) : (
+                    <div className={css.ecommerceAssets}>
+                      {ecommerceAssets.map(asset => (
+                        <div key={asset.id} className={css.ecommerceAsset} data-ecommerce-asset="">
+                          <img src={asset.dataUrl} alt={asset.name} />
+                          <select
+                            value={asset.role}
+                            data-ecommerce-asset-role=""
+                            aria-label={tt('ecommerce.refSelect')}
+                            onChange={event => setEcommerceAssets(previous => previous.map(item => item.id === asset.id ? { ...item, role: event.target.value as EcommerceAssetRole } : item))}
+                          >
+                            {ECOMMERCE_ASSET_ROLES.map(role => (
+                              <option key={role} value={role}>{tt(`ecommerce.role.${role}` as never)}</option>
+                            ))}
+                          </select>
+                          <button type="button" aria-label={tt('edit.remove')} onClick={() => { setEcommerceAssets(previous => previous.filter(item => item.id !== asset.id)) }}>×</button>
+                        </div>
+                      ))}
+                      {ecommerceAssets.length < MAX_ECOMMERCE_ASSETS ? (
+                        <button
+                          type="button"
+                          className={css.ecommerceAssetAdd}
+                          data-ecommerce-upload=""
+                          title={tt('ecommerce.uploadRef')}
+                          onClick={() => { ecommerceFileInput.current?.click() }}
+                          onDragOver={(event) => { event.preventDefault() }}
+                          onDrop={(event) => {
+                            event.preventDefault()
+                            acceptEcommerceFiles(event.dataTransfer.files ?? undefined)
+                          }}
+                        >
+                          <span aria-hidden="true">＋</span>
+                          <small>{tt('ecommerce.uploadShort')}</small>
+                        </button>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+                <div className={css.ecommerceSection}>
+                  <h3>{tt('ecommerce.params')}</h3>
+                  <div className={css.ecommerceParamGrid}>
+                    <label className={css.ecommerceField}>
+                      <span className={css.ecommerceFieldLabel}>{tt('ecommerce.platformLabel')}</span>
+                      <select value={ecommerce.platform} onChange={event => setEcommerce(previous => ({ ...previous, platform: event.target.value }))}><option>通用</option><option>淘宝 / 京东</option><option>Amazon</option></select>
+                    </label>
+                    <label className={css.ecommerceField}>
+                      <span className={css.ecommerceFieldLabel}>{tt('ecommerce.languageLabel')}</span>
+                      <select value={ecommerce.language} onChange={event => setEcommerce(previous => ({ ...previous, language: event.target.value }))}><option>中文</option><option>English</option></select>
+                    </label>
+                    <label className={css.ecommerceField}>
+                      <span className={css.ecommerceFieldLabel}>{tt('ecommerce.ratioLabel')}</span>
+                      <select value={ecommerce.size} onChange={event => setEcommerce(previous => ({ ...previous, size: event.target.value }))}>{SIZES.filter(size => size !== 'auto').map(size => <option key={size}>{size}</option>)}</select>
+                    </label>
+                    <label className={css.ecommerceField}>
+                      <span className={css.ecommerceFieldLabel}>{tt('ecommerce.categoryLabel')}</span>
+                      <select value={ecommerce.category} onChange={event => setEcommerce(previous => ({ ...previous, category: event.target.value }))}><option>通用商品</option><option>食品饮料</option><option>美妆个护</option><option>服装配饰</option><option>家居用品</option><option>3C 数码</option></select>
+                    </label>
+                  </div>
+                </div>
+                <div className={css.ecommerceSection}>
+                  <h3>{tt('ecommerce.sellingTitle')}</h3>
+                  <textarea value={ecommerce.sellingPoints} placeholder={tt('ecommerce.sellingPoints')} onChange={event => setEcommerce(previous => ({ ...previous, sellingPoints: event.target.value }))} />
+                </div>
+                <div className={css.ecommerceSection}>
+                  <h3>{tt('ecommerce.setStructure')}<small className={css.ecommerceSectionHint}>{tt('ecommerce.multiSelect')}</small></h3>
+                  <div className={css.ecommerceStructureGrid}>
+                    {ecommerce.slots.map(slot => (
+                      <button
+                        key={slot.key}
+                        type="button"
+                        className={css.ecommerceSlotCard}
+                        data-active={slot.enabled ? '' : undefined}
+                        title={`${slot.label}：${slot.description}`}
+                        onClick={() => setEcommerce(previous => ({ ...previous, slots: previous.slots.map(item => item.key === slot.key ? { ...item, enabled: !item.enabled } : item) }))}
+                      >
+                        {slot.label}
+                        {slot.enabled ? (
+                          <span
+                            className={css.ecommerceSlotCount}
+                            title={tt('ecommerce.countHint')}
+                            onClick={event => {
+                              event.stopPropagation()
+                              setEcommerce(previous => ({ ...previous, slots: previous.slots.map(item => item.key === slot.key ? { ...item, count: item.count >= 4 ? 1 : item.count + 1 } : item) }))
+                            }}
+                          >
+                            {slot.count}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                  {ecommerceSlots.length > 0 ? (
+                    <>
+                      <button type="button" className={css.ecommerceAdvancedToggle} aria-expanded={ecommerceRefOpen} onClick={() => { setEcommerceRefOpen(open => !open) }}>
+                        {tt('ecommerce.refSettings')}
+                        <span className={css.ecommerceAdvancedChevron} aria-hidden="true">{ecommerceRefOpen ? '⌃' : '⌄'}</span>
+                      </button>
+                      {ecommerceRefOpen ? (
+                        <div className={css.ecommerceAdvancedBody}>
+                          {ecommerceSlots.map(slot => (
+                            <label key={slot.key} className={css.ecommerceRefRow}>
+                              <span>{slot.label}</span>
+                              <select value={slot.refRole ?? 'product'} data-ecommerce-ref-select="" aria-label={`${tt('ecommerce.refSelect')} · ${slot.label}`} onChange={event => setEcommerce(previous => ({ ...previous, slots: previous.slots.map(item => item.key === slot.key ? { ...item, refRole: event.target.value as EcommerceRefRole } : item) }))}>
+                                <option value="none">{tt('ecommerce.refNone')}</option>
+                                {ECOMMERCE_ASSET_ROLES.map(role => <option key={role} value={role}>{tt(`ecommerce.role.${role}` as never)}</option>)}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+                <div className={css.ecommerceSection}>
+                  <h3>{tt('ecommerce.generation')}</h3>
+                  <select value={modeModels.includes(model) ? model : modeModels[0] ?? ''} aria-label={tt('model.label')} onChange={event => setModel(event.target.value)}>{modeModels.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                  <div className={css.optionRow}>{QUALITIES.map(option => <Pill key={option} active={quality === option} onClick={() => { setQuality(option) }} className={css.optionPill}>{tt(`quality.${option}` as const)}</Pill>)}</div>
+                </div>
+                <div className={css.ecommerceSection}>
+                  <h3>{tt('ecommerce.styleTitle')}</h3>
+                  <textarea value={ecommerce.styleHint} placeholder={tt('ecommerce.styleHint')} onChange={event => setEcommerce(previous => ({ ...previous, styleHint: event.target.value }))} />
+                  <span className={css.ecommerceFieldLabel}>{tt('ecommerce.protectedLabel')}</span>
+                  <textarea value={ecommerce.protectedFeatures} placeholder={tt('ecommerce.protectedFeatures')} onChange={event => setEcommerce(previous => ({ ...previous, protectedFeatures: event.target.value }))} />
+                </div>
+                <input
+                  ref={ecommerceFileInput}
+                  type="file"
+                  multiple
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className={css.hiddenFile}
+                  onChange={(event) => {
+                    acceptEcommerceFiles(event.target.files ?? undefined)
+                    event.target.value = ''
+                  }}
+                />
+              </section>
+            ) : null}
+
             {tab === 'edit' ? (
               <section className={css.card}>
                 {refImage === null
@@ -1373,7 +2003,8 @@ export function ImageGenPanel(props: {
               </section>
             ) : null}
 
-                {/* prompt */}
+                {/* prompt (normal workspace only — ecommerce has its own form) */}
+                {workspace === 'normal' ? (<>
                 <section className={css.card}>
               <textarea
                 className={css.prompt}
@@ -1468,12 +2099,36 @@ export function ImageGenPanel(props: {
                 <span className={css.paramHint}>{tt('detail.hint')}</span>
               </div>
             </section>
+            </>) : null}
           </div>
 
           {/* footer: model + generate — a fixed sibling of the scroll area, so
               it never overlaps the cards scrolling above it. */}
             <section className={css.footer}>
-            <label className={css.modelWrap}>
+            {workspace === 'ecommerce' ? (
+              <div className={css.ecommerceFooterBody}>
+                {ecommercePreview ? (
+                  <>
+                    <div className={css.ecommercePlanMini}>
+                      <strong>{tt('ecommerce.planTitle', { count: ecommerceTotal })}</strong>
+                      <div className={css.ecommercePlanList}>
+                        {ecommerceSlots.map(slot => <div key={slot.key}><span>{slot.label}</span><span>×{slot.count}</span></div>)}
+                      </div>
+                      <div className={css.ecommercePlanNote}>{tt('ecommerce.anchorNote')}</div>
+                      {ecommerceAssets.length === 0 ? <div className={css.ecommercePlanWarn}>{tt('ecommerce.noAssetWarn')}</div> : null}
+                    </div>
+                    <Button variant="primary" size="md" className={css.ecommercePrimaryAction} disabled={ecommerceGenerateDisabled} onClick={() => { void handleEcommerceGenerate() }}>{ecommerceGenerating ? tt('generating') : tt('ecommerce.confirm')}</Button>
+                    <button type="button" className={css.ecommercePlanBack} onClick={() => { setEcommercePreview(false) }}>{tt('gallery.tagsCancel')}</button>
+                  </>
+                ) : (
+                  <>
+                    <span className={css.ecommerceFooterHint}>{ecommerceTotal > 0 ? tt('ecommerce.footerReady', { count: ecommerceTotal }) : tt('ecommerce.footerEmpty')}</span>
+                    <Button variant="primary" size="md" className={css.ecommercePrimaryAction} disabled={ecommerce.productName.trim() === '' || ecommerceTotal === 0} onClick={() => setEcommercePreview(true)}>{tt('ecommerce.preview')}</Button>
+                  </>
+                )}
+              </div>
+            ) : null}
+            {workspace === 'ecommerce' ? null : <label className={css.modelWrap}>
               <span className={css.modelLabel}>{tt('model.label')}</span>
               <span ref={modelMenuRef} className={css.modelMenu} data-open={modelOpen ? 'true' : 'false'}>
                 <button
@@ -1505,8 +2160,8 @@ export function ImageGenPanel(props: {
                   </div>
                 ) : null}
               </span>
-            </label>
-            <div className={css.compareControl}>
+            </label>}
+            {workspace !== 'ecommerce' ? <div className={css.compareControl}>
               <label className={css.compareToggle}>
                 <input type="checkbox" checked={compareEnabled} onChange={event => { setCompareEnabled(event.target.checked) }} />
                 <span>{tt('compare.enable')}</span>
@@ -1521,8 +2176,8 @@ export function ImageGenPanel(props: {
                   ))}
                 </div>
               ) : null}
-            </div>
-            <Button
+            </div> : null}
+            {workspace !== 'ecommerce' ? <Button
               variant="primary"
               size="md"
               className={css.generateButton}
@@ -1535,13 +2190,13 @@ export function ImageGenPanel(props: {
                   {tt('generating')}
                 </span>
               ) : tt('generate')}
-              </Button>
+              </Button> : null}
             </section>
           </aside>
 
           {/* ------------------------------------------------------- canvas */}
-          <section className={css.canvas} data-gallery={tab === 'gallery' ? 'true' : undefined}>
-          {tab === 'gallery' ? (
+          <section className={css.canvas} data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}>
+          {workspace === 'normal' && tab === 'gallery' ? (
             <div className={css.galleryWorkspace}>
               <header className={css.galleryToolbar}>
                 <div>
@@ -1633,7 +2288,75 @@ export function ImageGenPanel(props: {
               )}
             </div>
           ) : null}
-          {tab !== 'gallery' && tasks.length > 0 ? (
+          {workspace === 'ecommerce' ? (
+            <div className={css.ecommerceResults} data-ecommerce-results="">
+              <header className={css.ecommerceResultsHeader}>
+                <div>
+                  <h3>{tt('ecommerce.results.title')}</h3>
+                  {ecommerceRestored !== null && ecommerceRestored.projectId === ecommerceProjectId && ecommerceRestored.projectName !== '' ? (
+                    <span>{ecommerceRestored.projectName}</span>
+                  ) : null}
+                  {ecommerceMergedItems.length > 0 ? (
+                    <span>
+                      {tt('ecommerce.results.progress', { done: ecommerceDoneCount, total: ecommerceMergedItems.length })}
+                      {ecommerceFailedCount > 0 ? ` · ${tt('ecommerce.results.failed', { count: ecommerceFailedCount })}` : ''}
+                    </span>
+                  ) : null}
+                  {ecommerceAnchor !== null ? <span data-ecommerce-anchor="">{tt('ecommerce.anchorPending')}</span> : null}
+                </div>
+                <div className={css.ecommerceResultsActions}>
+                  {ecommerceMergedItems.length > 0 ? <button type="button" className={css.galleryBulkButton} data-ecommerce-export="" onClick={exportEcommerceManifest}>{tt('ecommerce.results.export')}</button> : null}
+                  <button type="button" className={css.galleryBulkButton} data-ecommerce-new="" onClick={newEcommerceProduct}>{tt('ecommerce.results.newProduct')}</button>
+                </div>
+              </header>
+              {ecommerceMergedItems.length === 0 ? (
+                <div className={css.ecommerceResultsEmpty}>{tt('ecommerce.results.empty')}</div>
+              ) : (
+                <div className={css.ecommerceGroups}>
+                  {ecommerceResultGroups.map(group => (
+                    <section key={group.label} className={css.ecommerceGroup} data-ecommerce-group={group.label}>
+                      <header>
+                        <strong>{group.label}</strong>
+                        <span>{group.items.filter(item => item.status === 'completed').length}/{group.items.length}</span>
+                        <button type="button" className={css.galleryBulkButton} disabled={ecommerceGenerating} onClick={() => { void regenerateEcommerceSlot(group.label) }}>{tt('ecommerce.results.regenerate')}</button>
+                      </header>
+                      <div className={css.ecommerceGroupGrid}>
+                        {group.items.map(item => (
+                          <div key={item.id} className={css.ecommerceTaskCard} data-status={item.status}>
+                            {item.status === 'completed' && item.images.length > 0 ? item.images.map((image, imageIndex) => (
+                              <figure
+                                key={imageIndex}
+                                className={css.imageCard}
+                                role="button"
+                                tabIndex={0}
+                                title={tt('preview.open')}
+                                onClick={() => { openPreview(item.images, imageIndex) }}
+                              >
+                                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} />
+                                <span className={css.ecommerceResultBadge}>{group.label}</span>
+                                <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
+                                  <a className={css.ecommerceActionChip} href={srcOf(image)} download={`product-${item.slotKey || item.id}-${imageIndex + 1}.${extensionOf(image.mime)}`}>{tt('download')}</a>
+                                  <button type="button" className={css.ecommerceActionChip} disabled={galleryAdding} onClick={() => { void addToGallery(image) }}>{tt('gallery.add')}</button>
+                                  <button type="button" className={css.ecommerceActionChip} disabled={conversationBusy} onClick={() => { void addImageToConversation(image, imageIndex, `${item.id}:${imageIndex}`) }}>{addingToConversation === `${item.id}:${imageIndex}` ? tt('conversation.adding') : tt('conversation.add')}</button>
+                                </span>
+                              </figure>
+                            )) : (
+                              <span className={css.ecommerceTaskState}>
+                                <b>{group.label}</b>
+                                {tt(`tasks.${item.status}` as never)}
+                                {item.error !== undefined ? ` · ${item.error}` : ''}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+          {(workspace === 'ecommerce' || tab !== 'gallery') && tasks.length > 0 ? (
             <section className={css.taskTray} data-open={taskTrayOpen ? 'true' : 'false'} aria-label={tt('tasks.title')}>
               <header className={css.taskTrayHeader}>
                 <button type="button" className={css.taskTrayToggle} aria-expanded={taskTrayOpen} onClick={() => { setTaskTrayOpen(open => !open) }}>
@@ -1655,7 +2378,7 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {tab !== 'gallery' && comparison !== null ? (
+          {workspace === 'normal' && tab !== 'gallery' && comparison !== null ? (
             <section className={css.comparisonBoard} aria-label={tt('compare.title')}>
               <header><div><strong>{tt('compare.title')}</strong><span>{comparisonResults.length} / {comparisonTasks.length}{generating ? ` · ${tt('canvas.elapsed', { seconds: elapsed })}` : ''}</span></div><button type="button" disabled={comparisonResults.length === 0} onClick={() => { setComparisonFullscreen(true) }}>{tt('compare.fullscreen')}</button></header>
               <div className={css.comparisonGrid}>
@@ -1681,7 +2404,7 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {generating && comparison === null ? (
+          {generating && comparison === null && workspace !== 'ecommerce' ? (
             <div className={css.canvasState} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <span className={css.bigSpinner} />
               <span className={css.canvasStateTitle}>
@@ -1703,7 +2426,7 @@ export function ImageGenPanel(props: {
             <div className={css.canvasError} role="alert">{tt('canvas.error', { error })}</div>
           ) : null}
 
-          {!generating && !error && images.length === 0 ? (
+          {!generating && !error && images.length === 0 && workspace !== 'ecommerce' ? (
             <div className={css.canvasState}>
               <span className={css.canvasEmptyIcon}>
                 <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
@@ -1713,7 +2436,7 @@ export function ImageGenPanel(props: {
             </div>
           ) : null}
 
-          {!generating && images.length > 0 ? (
+          {!generating && images.length > 0 && workspace !== 'ecommerce' ? (
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>
@@ -1803,7 +2526,7 @@ export function ImageGenPanel(props: {
           api={api}
           onClose={() => { setLibraryOpen(false) }}
           onUse={(text) => {
-            setTab('text')
+            openTab('text')
             setPrompt(text)
             setError(null)
             setLibraryOpen(false)

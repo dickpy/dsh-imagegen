@@ -63,6 +63,11 @@ interface StoredEntry {
   tags?: string[]
   channelId?: string
   channel?: string
+  workflow?: 'ecommerce'
+  projectId?: string
+  projectName?: string
+  slotKey?: string
+  slotLabel?: string
 }
 
 /** The index.json shape. */
@@ -140,6 +145,11 @@ function isStoredEntry(value: unknown): value is StoredEntry {
   return typeof entry.id === 'string'
     && typeof entry.createdAt === 'number'
     && (entry.mode === 'text' || entry.mode === 'edit')
+    && (entry.workflow === undefined || entry.workflow === 'ecommerce')
+    && (entry.projectId === undefined || typeof entry.projectId === 'string')
+    && (entry.projectName === undefined || typeof entry.projectName === 'string')
+    && (entry.slotKey === undefined || typeof entry.slotKey === 'string')
+    && (entry.slotLabel === undefined || typeof entry.slotLabel === 'string')
     && typeof entry.prompt === 'string'
     && Array.isArray(entry.images)
     && entry.images.every(image => {
@@ -177,6 +187,11 @@ function toWire(entry: StoredEntry): HistoryEntry {
     ...entry.tags === undefined ? {} : { tags: entry.tags },
     ...entry.channel === undefined ? {} : { channel: entry.channel },
     ...entry.channelId === undefined ? {} : { channelId: entry.channelId },
+    ...entry.workflow === undefined ? {} : { workflow: entry.workflow },
+    ...entry.projectId === undefined ? {} : { projectId: entry.projectId },
+    ...entry.projectName === undefined ? {} : { projectName: entry.projectName },
+    ...entry.slotKey === undefined ? {} : { slotKey: entry.slotKey },
+    ...entry.slotLabel === undefined ? {} : { slotLabel: entry.slotLabel },
   }
 }
 
@@ -231,6 +246,11 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
       ...input.refName === undefined ? {} : { refName: input.refName },
       ...input.channelId === undefined ? {} : { channelId: input.channelId },
       ...input.channel === undefined ? {} : { channel: input.channel },
+      ...input.workflow === undefined ? {} : { workflow: input.workflow },
+      ...input.projectId === undefined ? {} : { projectId: input.projectId },
+      ...input.projectName === undefined ? {} : { projectName: input.projectName },
+      ...input.slotKey === undefined ? {} : { slotKey: input.slotKey },
+      ...input.slotLabel === undefined ? {} : { slotLabel: input.slotLabel },
     }
     const merged = [entry, ...await readIndex()]
     await writeIndex(merged)

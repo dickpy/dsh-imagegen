@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.4.1'
+export const PLUGIN_VERSION = '1.5.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -152,8 +152,47 @@ export interface TemplateRefreshResult {
 /** Generation modes. */
 export type GenerateMode = 'text' | 'edit'
 
+/** Metadata shared by the ecommerce product-set workflow. */
+export interface EcommerceTaskMeta {
+  workflow?: 'ecommerce'
+  projectId?: string
+  projectName?: string
+  slotKey?: string
+  slotLabel?: string
+}
+
+/** Role an uploaded product asset plays in the ecommerce workflow. 'none' is
+ *  only used as a slot selection meaning "generate without a reference". */
+export type EcommerceRefRole = 'none' | 'product' | 'packaging' | 'detail' | 'style'
+
+/** One planned image slot in a product set. */
+export interface ProductSetSlot {
+  key: string
+  label: string
+  description: string
+  count: number
+  enabled: boolean
+  /** Which uploaded asset role this slot uses as its edit reference. */
+  refRole?: EcommerceRefRole
+}
+
+/** A browser-local ecommerce product-set draft. */
+export interface ProductSetDraft {
+  projectId: string
+  projectName: string
+  category: string
+  platform: string
+  language: string
+  size: string
+  productName: string
+  sellingPoints: string
+  protectedFeatures: string
+  styleHint: string
+  slots: ProductSetSlot[]
+}
+
 /** A client → host generate request (what the panel collects). */
-export interface GenerateRequest {
+export interface GenerateRequest extends EcommerceTaskMeta {
   /** text-to-image (images/generations) or image-to-image (images/edits). */
   mode: GenerateMode
   /**
@@ -261,7 +300,7 @@ export interface PresetProviderView {
 
 export type GenerationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
-export interface GenerationTask {
+export interface GenerationTask extends EcommerceTaskMeta {
   id: string
   request: GenerateRequest
   status: GenerationTaskStatus
@@ -292,7 +331,7 @@ export interface HistoryImageRef {
 }
 
 /** A saved generation as the browser consumes it (metadata + served images). */
-export interface HistoryEntry {
+export interface HistoryEntry extends EcommerceTaskMeta {
   id: string
   createdAt: number
   mode: GenerateMode
@@ -318,7 +357,7 @@ export interface HistoryEntry {
 }
 
 /** A history entry the client submits for persistence (images still carry base64). */
-export interface HistoryEntryInput {
+export interface HistoryEntryInput extends EcommerceTaskMeta {
   id: string
   createdAt: number
   mode: GenerateMode

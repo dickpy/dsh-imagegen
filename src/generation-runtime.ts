@@ -70,6 +70,11 @@ export class ImageGenerationRuntime {
         ...request.channel === undefined ? {} : { channel: request.channel },
         ...request.comparisonId === undefined ? {} : { comparisonId: request.comparisonId },
         ...request.comparisonModels === undefined ? {} : { comparisonModels: request.comparisonModels },
+        ...request.workflow === undefined ? {} : { workflow: request.workflow },
+        ...request.projectId === undefined ? {} : { projectId: request.projectId },
+        ...request.projectName === undefined ? {} : { projectName: request.projectName },
+        ...request.slotKey === undefined ? {} : { slotKey: request.slotKey },
+        ...request.slotLabel === undefined ? {} : { slotLabel: request.slotLabel },
       })
       return { ...result, history }
     } catch (error) {

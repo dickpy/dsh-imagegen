@@ -906,6 +906,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   }
   const channelSecrets = () => [{ path: ['channelSecrets', 'default'], set: keyState.set }]
   const mutateCalls = []
+  const ecommerceSubmissions = []
   const fetchStub = async (input, init) => {
     const path = String(input)
     if (path.endsWith('/settings/describe')) {
@@ -958,6 +959,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
           entries: [
             { id: 'history-grok', createdAt: 2, mode: 'text', model: 'grok-imagine-image', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/grok.png', mime: 'image/png' }], ...comparisonHistory },
             { id: 'history-gpt', createdAt: 1, mode: 'text', model: 'gpt-image-2', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/gpt.png', mime: 'image/png' }], ...comparisonHistory },
+            { id: 'hist-ecom-1', createdAt: 4, mode: 'text', model: 'gpt-image-2', prompt: 'product main image', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom1.png', mime: 'image/png' }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'main-1', slotLabel: '主图' },
+            { id: 'hist-ecom-2', createdAt: 5, mode: 'text', model: 'gpt-image-2', prompt: 'product selling point', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom2.png', mime: 'image/png' }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'sp-1', slotLabel: '卖点图' },
           ],
         }),
       }
@@ -1006,6 +1009,30 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
           origin: 'bundled',
           repository: 'example/templates',
           fetchedAt: '2026-08-19T00:00:00.000Z',
+        }),
+      }
+    }
+    if (path.endsWith('/tasks/submit')) {
+      const payload = JSON.parse(init.body)
+      ecommerceSubmissions.push(payload)
+      // Freeze the id eagerly: the json() closure runs after all concurrent
+      // submits pushed, so a lazy template literal would hand every response
+      // the same id.
+      const task = { id: `ecommerce-task-${ecommerceSubmissions.length}`, request: payload, status: 'queued', createdAt: 1 }
+      return { ok: true, json: async () => ({ ok: true, task }) }
+    }
+    if (path.endsWith('/tasks/list')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          tasks: ecommerceSubmissions.map((payload, index) => ({
+            id: `ecommerce-task-${index + 1}`,
+            request: payload,
+            status: index === 0 ? 'completed' : 'queued',
+            createdAt: 1,
+            ...index === 0 ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png' }] } } : {},
+          })),
         }),
       }
     }
@@ -1136,9 +1163,56 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
 
     // Gallery keeps the sidebar history visible, and selecting one history
     // group returns the center workspace to text-to-image.
-    const modeTabs = [...view.querySelectorAll('[role="tablist"] button')]
-    assert.equal(modeTabs.length, 3, 'text, edit, and gallery tabs are present')
-    modeTabs[2]?.click()
+    const tablistButtons = [...view.querySelectorAll('[role="tablist"] button')]
+    assert.equal(tablistButtons.length, 5, 'top nav has three entries and the normal workspace shows two generation modes')
+    const ecommerceSwitch = tablistButtons.find(button => button.textContent?.includes('电商模式'))
+    assert.ok(ecommerceSwitch !== undefined, 'ecommerce top-nav entry is present')
+    const normalSwitch = tablistButtons.find(button => button.textContent?.includes('普通生图'))
+    assert.ok(normalSwitch !== undefined, 'normal top-nav entry is present')
+    ecommerceSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.ok(view.querySelector('[data-ecommerce-workspace]') !== null, 'ecommerce workspace is rendered')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 3, 'generation sub-modes hide in the ecommerce workspace')
+    assert.equal([...view.querySelectorAll('textarea')].some(textarea => (textarea.getAttribute('placeholder') ?? '').includes('描述你想要的画面')), false, 'normal prompt card is hidden in ecommerce workspace')
+    const ecommerceName = view.querySelector('input[placeholder="商品名称（必填）"]')
+    assert.ok(ecommerceName !== null, 'ecommerce product form is rendered')
+    // Fill the product name through the native value setter (React 18 +
+    // jsdom), then open the local plan preview: this must not call the host.
+    const nativeInputSetter = Object.getOwnPropertyDescriptor(jsdomWindow.HTMLInputElement.prototype, 'value').set
+    nativeInputSetter.call(ecommerceName, '测试保温杯')
+    ecommerceName.dispatchEvent(new jsdomWindow.Event('input', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // Upload one product asset through the multi-file input and mark the
+    // scene slot as reference-free: the confirm flow must resolve each slot's
+    // reference role into an edit or text request accordingly.
+    const ecommerceUploadInput = view.querySelector('input[type="file"][multiple]')
+    assert.ok(ecommerceUploadInput !== null, 'ecommerce multi-upload input is rendered')
+    const assetFile = new jsdomWindow.File(['cup'], 'cup.png', { type: 'image/png' })
+    Object.defineProperty(ecommerceUploadInput, 'files', { value: { 0: assetFile, length: 1 }, configurable: true })
+    ecommerceUploadInput.dispatchEvent(new jsdomWindow.Event('change', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.ok(view.querySelector('[data-ecommerce-asset]') !== null, 'uploaded product asset renders as a chip')
+    const refToggle = [...view.querySelectorAll('button')].find(button => button.textContent?.includes('参考图设置'))
+    assert.ok(refToggle !== undefined, 'reference-role settings toggle is rendered')
+    refToggle.click()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const refSelects = [...view.querySelectorAll('select[data-ecommerce-ref-select]')]
+    assert.equal(refSelects.length, 4, 'every enabled slot exposes a reference-role selector')
+    refSelects[2].value = 'none'
+    refSelects[2].dispatchEvent(new jsdomWindow.Event('change', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const previewSet = [...view.querySelectorAll('button')].find(button => button.textContent?.includes('生成套图预览'))
+    assert.ok(previewSet !== undefined, 'ecommerce preview action is rendered')
+    previewSet.click()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.ok(view.textContent?.includes('预计生成'), 'ecommerce plan preview is shown')
+    assert.equal(ecommerceSubmissions.length, 0, 'plan preview must not submit generation tasks')
+    // Back to the normal workspace via the top nav: gallery works as before.
+    normalSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 5, 'generation sub-modes return in the normal workspace')
+    const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('画廊'))
+    galleryPill?.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     await waitForSelector(view, '[data-gallery-add-conversation]')
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history remains visible in gallery mode')
@@ -1203,6 +1277,52 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       mutateCalls.some(m => m.ops.some(o => o.path[0] === 'channelSecrets' && o.path[1] === 'default' && o.op === 'set' && o.value === 'sk-new')),
       'channel key write sent with the typed value',
     )
+
+    // Ecommerce submission flow: with the channel key set, confirming the plan
+    // fans out one queued task per planned image carrying the set metadata.
+    const ecommerceTabAgain = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('电商模式'))
+    assert.ok(ecommerceTabAgain !== undefined, 'ecommerce switch still present for submission flow')
+    ecommerceTabAgain.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const confirmSet = [...view.querySelectorAll('button')].find(button => button.textContent?.includes('确认生成整套图片'))
+    assert.ok(confirmSet !== undefined, 'ecommerce confirm action is rendered')
+    confirmSet.click()
+    await new Promise(resolve => setTimeout(resolve, 3500))
+    assert.equal(ecommerceSubmissions.length, 6, 'anchor chain submits the main image first, then the remaining slots')
+    assert.ok(ecommerceSubmissions.every(payload => payload.workflow === 'ecommerce' && typeof payload.projectId === 'string' && payload.projectId !== ''), 'submissions carry the ecommerce workflow and project id')
+    assert.ok(ecommerceSubmissions.every(payload => typeof payload.slotLabel === 'string' && payload.slotLabel !== '' && typeof payload.slotKey === 'string' && payload.slotKey !== ''), 'submissions carry slot metadata')
+    const mainPayload = ecommerceSubmissions.find(payload => payload.slotKey === 'main-1')
+    assert.ok(mainPayload !== undefined && mainPayload.mode === 'edit' && mainPayload.refName === 'cup.png', 'main image uses the uploaded product asset')
+    const anchored = ecommerceSubmissions.filter(payload => payload.slotKey !== 'main-1')
+    assert.equal(anchored.length, 5, 'remaining slots are anchored after the main image')
+    assert.ok(anchored.every(payload => payload.mode === 'edit' && payload.refName === 'set-main-anchor' && typeof payload.image === 'string' && payload.image.startsWith('data:')), 'anchored slots reference the generated main image')
+    assert.ok(anchored.every(payload => payload.prompt.startsWith('商品套图一致性约束')), 'anchored prompts carry the consistency constraint')
+    assert.ok(ecommerceSubmissions.every(payload => payload.projectName === '测试保温杯'), 'submissions carry the product name snapshot')
+    const ecommerceResults = view.querySelector('[data-ecommerce-results]')
+    assert.ok(ecommerceResults !== null, 'product set results section is rendered')
+    assert.ok(ecommerceResults.textContent?.includes('1/6'), 'results header reports task progress')
+    const mainGroup = ecommerceResults.querySelector('[data-ecommerce-group="主图"]')
+    assert.ok(mainGroup !== null, 'results are grouped by slot label')
+    assert.ok(mainGroup.querySelector('img') !== null, 'completed slot renders its image')
+    let draftSnapshot = null
+    try { draftSnapshot = jsdomWindow.localStorage.getItem('dsh-imagegen-ecommerce-draft') } catch { /* opaque origin: draft persistence is optional */ }
+    if (draftSnapshot !== null) {
+      assert.ok(draftSnapshot.includes('测试保温杯'), 'ecommerce draft persists to local storage')
+    }
+
+    // Restore one persisted product set from history: the sidebar collapses
+    // its rows into one project entry, and clicking it rebuilds the grouped
+    // results canvas from the stored entries.
+    const ecommerceHistoryRow = [...jsdomDocument.querySelectorAll('[data-dsh-imagegen-history-main]')]
+      .find(button => button.textContent?.includes('历史保温杯'))
+    assert.ok(ecommerceHistoryRow !== undefined, 'ecommerce history rows collapse into one project entry')
+    ecommerceHistoryRow.click()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const restoredResults = view.querySelector('[data-ecommerce-results]')
+    assert.ok(restoredResults !== null, 'restored project keeps the ecommerce canvas')
+    assert.ok(restoredResults.textContent?.includes('2/2'), 'restored results report history progress')
+    assert.ok(restoredResults.querySelector('[data-ecommerce-group="卖点图"] img') !== null, 'restored groups render stored images')
+
     // The clear path: resetting the key stages an explicit clear and must
     // also report success.
     face.channels.setChannelKey('default', '')
