@@ -12,7 +12,7 @@
  *  - path ops never navigate *inside* the channels array.
  */
 
-import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ChannelConfig, ModelMapping } from '../protocol.ts'
 import type { ImageGenScope, SettingsOp } from './settings-scope.ts'
 

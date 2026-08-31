@@ -9,7 +9,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { SettingsConflictError, settingsNamespace, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
+import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
 import { normalizeImageModels } from './image-models.ts'
@@ -563,7 +563,9 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         }
         const expectedRevision = typeof body.expectedRevision === 'number' ? body.expectedRevision : undefined
         try {
-          await deps.settings.mutate(settingsNamespace(ns), body.ops, expectedRevision)
+          // The alpha.2 settings package no longer exports settingsNamespace;
+          // the bridge already checked this value against our fixed namespace.
+          await deps.settings.mutate(ns, body.ops, expectedRevision)
         } catch (error) {
           writeJson(res, 200, failureOf(error))
           return

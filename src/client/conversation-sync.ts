@@ -1,6 +1,6 @@
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ConversationController, IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 
 /** Document event used to bridge chat tool results into the image workspace. */
 export const CHAT_IMAGE_EVENT = 'dsh-imagegen:chat-images'

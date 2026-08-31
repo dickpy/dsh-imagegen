@@ -8,7 +8,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { installSettingsSectionCompat, settingsNamespaceCompat } from './settings-compat.ts'
 import z from 'schemastery'
 // Type-only: pulls the webServer Context merge (route registration).
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -43,7 +43,7 @@ export { listTemplates, readTemplateImage, refreshTemplates, clearTemplateMemo }
 export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
 
 /** The branded settings namespace of this plugin (the card edits it). */
-export const ImageGenSettingsNamespace = settingsNamespace(IMAGEGEN_SETTINGS_NAMESPACE)
+export const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTINGS_NAMESPACE)
 
 /**
  * Plugin config, validated by the same-named schemastery schema.
@@ -323,7 +323,7 @@ export function apply(ctx: Context, config?: Config): void {
     })
   }
 
-  installSettingsSection(ctx, ImageGenSettingsNamespace, Config, config ?? {}, {
+  installSettingsSectionCompat(ctx, ImageGenSettingsNamespace, Config, config ?? {}, {
     setSource: (source) => {
       current = source
       sync()

@@ -15,7 +15,7 @@
  * and both get the `position: relative` base in panel.module.css.
  */
 
-import type { ISessions } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { createRoot, type Root } from 'react-dom/client'
 import type { ImageGenApi } from './api.ts'
 import type { ImageGenController } from './controller.ts'

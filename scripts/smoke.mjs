@@ -851,7 +851,7 @@ await check('D1 client bundle registers via __ModuleLoader__', () => {
     'react-dom': {},
     'react-dom/client': { createRoot: () => ({ render: () => {}, unmount: () => {} }) },
     '@deepseek-ai/dsh-client-ui-primitives': {},
-    '@deepseek-ai/dsh-client-runtime/client': { createSnapshotStore: (initial) => ({
+    '@deepseek-ai/dsh-client-store': { createSnapshotStore: (initial) => ({
       getSnapshot: () => initial,
       set: () => {},
       update: () => {},
@@ -1101,7 +1101,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // in a bare Node realm; this minimal store mirrors the snapshot-store
     // contract (mutable-draft update, wholesale set, subscriber fan-out) that
     // the plugin's scope lifecycle depends on.
-    '@deepseek-ai/dsh-client-runtime/client': {
+    '@deepseek-ai/dsh-client-store': {
       createSnapshotStore: (initial) => {
         let snapshot = initial
         const listeners = new Set()

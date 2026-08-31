@@ -21,7 +21,7 @@ const ID = '@dickpy/dsh-imagegen'
 
 /**
  * The module specifiers the web shell shares into the frozen module table
- * (mirror of @deepseek-ai/dsh-client-web PLATFORM_MODULES) plus the runtime
+ * (mirror of @deepseek-ai/dsh-client-web PLATFORM_MODULES) plus the store
  * store exemption. Anything else is inlined by the bundle.
  */
 const CLIENT_EXTERNALS: readonly string[] = [
@@ -31,7 +31,7 @@ const CLIENT_EXTERNALS: readonly string[] = [
   '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-ui-attachment',
   '@deepseek-ai/dsh-client-schema-form',
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-store',
 ]
 
 /** Virtual-id wrapper keeping module CSS away from tsdown's own css pipeline. */

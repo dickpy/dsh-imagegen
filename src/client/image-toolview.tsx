@@ -1,7 +1,10 @@
 /** Inline renderer for image-generation tool-result attachments. */
 
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import type { ClientContext, SessionId, ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { useEffect, useMemo, useState } from 'react'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import { CHAT_IMAGE_EVENT } from './conversation-sync.ts'
@@ -33,8 +36,7 @@ function isSettled(block: ToolCallBlock): block is Extract<ToolCallBlock, { kind
 
 function imageRefsOf(block: ToolCallBlock): ImageAttachmentRef[] {
   if (!isSettled(block)) return []
-  const resultContent = block.resultView?.card === 'generic' ? block.resultView.content ?? [] : []
-  return [...block.content, ...resultContent]
+  return block.content
     .flatMap(content => content.type === 'image' ? [content.attachment] : [])
 }
 
@@ -170,7 +172,11 @@ export function registerImageToolviews(ctx: ClientContext): void {
 
   ctx.slots.inject('tool.call.toolview', function* () {
     for (const key of ['generate_image', 'edit_image', 'get_image_generation_task']) {
-      yield ctx.slots.register({ name: 'tool.call.toolview', key }, ImageToolView)
+      yield ctx.slots.register({
+        name: 'tool.call.toolview',
+        key,
+        inject: (sessionId: string) => ({ sessionId: sessionId as SessionId }),
+      }, ImageToolView)
     }
   })
 }
