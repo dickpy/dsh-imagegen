@@ -92,6 +92,60 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* --- source tabs --------------------------------------------------------- */
+
+.sourceTabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 18px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  flex: none;
+}
+
+.sourceTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 9px 9px 0 0;
+  border-bottom: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sourceTab:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.sourceTab[data-active] {
+  border-color: var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-brand-primary);
+}
+
+.sourceTabCount {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.sourceTab[data-active] .sourceTabCount {
+  color: var(--dsw-alias-label-secondary);
+}
+
 /* --- toolbar ----------------------------------------------------------- */
 
 .toolbar {
@@ -261,6 +315,47 @@
   color: var(--dsw-alias-bg-base);
   font-size: 11px;
   font-weight: 600;
+}
+
+.favStar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.card:hover .favStar,
+.favStar:focus-visible,
+.favStar[data-active] {
+  opacity: 1;
+}
+
+.favStar:hover {
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+}
+
+.favStar[data-active] {
+  color: #ffb020;
+}
+
+/* Touch shells have no hover: keep the star reachable. */
+@media (hover: none) {
+  .favStar {
+    opacity: 1;
+  }
 }
 
 .cardBody {

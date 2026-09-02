@@ -17,6 +17,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { InspirationGallery } from './InspirationGallery.tsx'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
@@ -2428,13 +2429,13 @@ export function ImageGenPanel(props: {
           ) : null}
 
           {!generating && !error && images.length === 0 && workspace !== 'ecommerce' ? (
-            <div className={css.canvasState}>
-              <span className={css.canvasEmptyIcon}>
-                <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-              </span>
-              <span className={css.canvasStateTitle}>{tt('canvas.emptyTitle')}</span>
-              <span className={css.canvasStateHint}>{tt('canvas.emptyHint')}</span>
-            </div>
+            <InspirationGallery
+              api={api}
+              onUse={(text) => {
+                setPrompt(text)
+                setError(null)
+              }}
+            />
           ) : null}
 
           {!generating && images.length > 0 && workspace !== 'ecommerce' ? (

@@ -16,10 +16,11 @@ import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
-import { listTemplates, readTemplateImage, refreshTemplates } from './templates-store.ts'
+import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
+import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATES_API, UPDATE_API, USAGE_API, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateListResult, type TemplateRefreshResult } from './protocol.ts'
+import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -74,9 +75,16 @@ export interface ImageGenRoutesDeps {
   }
   /** Overrideable template-library backend, primarily for host integration tests. */
   templates?: {
-    list: () => Promise<TemplateListResult>
-    refresh: () => Promise<TemplateRefreshResult>
-    readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
+    list: (sourceId: string) => Promise<TemplateListResult>
+    refresh: (sourceId: string) => Promise<TemplateRefreshResult>
+    sample: (count: number) => Promise<TemplateSample[]>
+    readImage: (sourceId: string, file: string) => Promise<{ data: Buffer; mime: string } | undefined>
+  }
+  /** Overrideable template-favorites backend, primarily for host integration tests. */
+  favorites?: {
+    list: () => Promise<TemplateFavorite[]>
+    add: (sourceId: string, item: TemplateFavorite['case']) => Promise<TemplateFavorite[]>
+    remove: (key: string) => Promise<TemplateFavorite[]>
   }
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
@@ -133,6 +141,13 @@ async function readJsonBody(req: IncomingMessage, maxBytes = MAX_JSON_BODY_BYTES
 /** Human-readable text from an unknown thrown value. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Validate the { source } body of a template-library request. */
+function templateSourceOf(body: Record<string, unknown> | undefined): string | undefined {
+  const raw = body?.source
+  if (raw === undefined || raw === '') return DEFAULT_TEMPLATE_SOURCE_ID
+  return typeof raw === 'string' && isTemplateSourceId(raw) ? raw : undefined
 }
 
 function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | undefined {
@@ -311,7 +326,13 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   const templates = deps.templates ?? {
     list: listTemplates,
     refresh: refreshTemplates,
+    sample: sampleTemplates,
     readImage: readTemplateImage,
+  }
+  const favorites = deps.favorites ?? {
+    list: listTemplateFavorites,
+    add: addTemplateFavorite,
+    remove: removeTemplateFavorite,
   }
   const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
   const resolveImageModels = deps.resolveImageModels ?? (() => normalizeImageModels(undefined))
@@ -908,8 +929,14 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       path: TEMPLATES_API.list,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const sourceId = templateSourceOf(body)
+        if (sourceId === undefined) {
+          writeJson(res, 200, { ok: false, code: 'templates-source-unknown', message: `未知的模板库来源：${String(body?.source ?? '')}` })
+          return
+        }
         try {
-          const result = await templates.list()
+          const result = await templates.list(sourceId)
           writeJson(res, 200, { ok: true, ...result })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'templates-failed', message: messageOf(error) })
@@ -922,11 +949,33 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       path: TEMPLATES_API.refresh,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const sourceId = templateSourceOf(body)
+        if (sourceId === undefined) {
+          writeJson(res, 200, { ok: false, code: 'templates-source-unknown', message: `未知的模板库来源：${String(body?.source ?? '')}` })
+          return
+        }
         try {
-          const result = await templates.refresh()
+          const result = await templates.refresh(sourceId)
           writeJson(res, 200, { ok: true, ...result })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'templates-refresh-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // --------------------------------------------- templates random sample
+    {
+      kind: 'exact',
+      path: TEMPLATES_API.sample,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const requested = Number(body?.count)
+        const count = Number.isFinite(requested) ? requested : 9
+        try {
+          writeJson(res, 200, { ok: true, samples: await templates.sample(count) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'templates-sample-failed', message: messageOf(error) })
         }
       },
     },
@@ -943,12 +992,17 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           writeJson(res, 405, { error: `method not allowed: ${req.method}` })
           return
         }
-        const file = imageFileFrom(req.url, TEMPLATES_API.image)
-        if (file === undefined) {
+        // Source-scoped: /image/<sourceId>/<file> (file names collide across
+        // sources, so the pool on disk is per source).
+        const raw = imageFileFrom(req.url, TEMPLATES_API.image)
+        const slash = raw?.indexOf('/') ?? -1
+        const sourceId = slash > 0 ? raw!.slice(0, slash) : ''
+        const file = slash > 0 ? raw!.slice(slash + 1) : ''
+        if (sourceId === '' || !isTemplateSourceId(sourceId) || file === '') {
           writeJson(res, 404, { error: 'not found' })
           return
         }
-        const found = await templates.readImage(file)
+        const found = await templates.readImage(sourceId, file)
         if (found === undefined) {
           writeJson(res, 404, { error: 'not found' })
           return
@@ -960,6 +1014,66 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           'cache-control': 'private, max-age=86400',
         })
         res.end(found.data)
+      },
+    },
+    // ------------------------------------------ template favorites: list
+    {
+      kind: 'exact',
+      path: TEMPLATE_FAVORITES_API.list,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try {
+          writeJson(res, 200, { ok: true, favorites: await favorites.list() })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'template-favorites-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ------------------------------------------- template favorites: add
+    {
+      kind: 'exact',
+      path: TEMPLATE_FAVORITES_API.add,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const sourceId = templateSourceOf(body)
+        const rawCase = body?.case
+        if (sourceId === undefined || rawCase === null || typeof rawCase !== 'object') {
+          writeJson(res, 200, { ok: false, code: 'template-favorite-invalid', message: '收藏请求缺少有效的来源或模板数据' })
+          return
+        }
+        const record = rawCase as Record<string, unknown>
+        const id = Number(record.id)
+        const title = typeof record.title === 'string' ? record.title.trim() : ''
+        const prompt = typeof record.prompt === 'string' ? record.prompt.trim() : ''
+        if (!Number.isInteger(id) || title === '' || prompt === '') {
+          writeJson(res, 200, { ok: false, code: 'template-favorite-invalid', message: '收藏请求缺少有效的模板数据' })
+          return
+        }
+        try {
+          writeJson(res, 200, { ok: true, favorites: await favorites.add(sourceId, rawCase as TemplateFavorite['case']) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'template-favorites-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ---------------------------------------- template favorites: remove
+    {
+      kind: 'exact',
+      path: TEMPLATE_FAVORITES_API.remove,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const key = typeof body?.key === 'string' ? body.key : ''
+        if (key === '') {
+          writeJson(res, 200, { ok: false, code: 'template-favorite-invalid', message: '取消收藏请求缺少模板标识' })
+          return
+        }
+        try {
+          writeJson(res, 200, { ok: true, favorites: await favorites.remove(key) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'template-favorites-failed', message: messageOf(error) })
+        }
       },
     },
   ]

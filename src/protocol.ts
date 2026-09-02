@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.5.1'
+export const PLUGIN_VERSION = '1.5.2'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -92,16 +92,67 @@ export const GALLERY_API = {
 export const HISTORY_MAX = 50
 
 /**
- * Same-origin route family for the bundled prompt-template library
- * (awesome-gpt-image-2 mirror). The case list ships inside the package and is
- * served by the host; reference images are proxied through the `image` prefix
- * route and cached on disk so repeated views never hit the network again.
+ * Same-origin route family for the prompt-template libraries. The library is
+ * multi-source: every request names a source id from {@link TEMPLATE_SOURCES},
+ * each source keeps an independent snapshot/image cache host-side, and
+ * reference images are proxied through the source-scoped `image` prefix route
+ * (`…/image/<sourceId>/<file>`) and cached on disk so repeated views never hit
+ * the network again.
  */
 export const TEMPLATES_API = {
   list: '/api/dsh-imagegen/templates/list',
   refresh: '/api/dsh-imagegen/templates/refresh',
+  sample: '/api/dsh-imagegen/templates/sample',
   image: '/api/dsh-imagegen/templates/image',
 } as const
+
+/** Same-origin route family for the user's saved (favorited) templates. */
+export const TEMPLATE_FAVORITES_API = {
+  list: '/api/dsh-imagegen/templates/favorites/list',
+  add: '/api/dsh-imagegen/templates/favorites/add',
+  remove: '/api/dsh-imagegen/templates/favorites/remove',
+} as const
+
+/** One prompt-template library source (a tab in the library overlay). */
+export interface TemplateSourceMeta {
+  /** Stable source id: snapshot dir name, image-cache dir, and request key. */
+  id: string
+  /** Tab label shown in the library overlay. */
+  label: string
+  /** Source homepage linked in the overlay footer. */
+  homepage: string
+  /** One-line description of the source (tab tooltip). */
+  description: string
+}
+
+/**
+ * The template-library source registry. Each entry is fully independent (own
+ * upstream JSON, own image pool, own refresh state) and renders as its own
+ * tab; adding a source later means appending an entry here plus a host-side
+ * fetch definition in templates-store.ts and an optional bundled snapshot.
+ */
+export const TEMPLATE_SOURCES: TemplateSourceMeta[] = [
+  {
+    id: 'vibeui',
+    label: '精选案例库',
+    homepage: 'https://vibeui.top/',
+    description: 'awesome-gpt-image-2 精选提示词案例（vibeui.top 镜像）',
+  },
+  {
+    id: 'canghe',
+    label: '沧河案例库',
+    homepage: 'https://gpt-image2.canghe.ai/',
+    description: 'GPT-Image2 Prompt Gallery（gpt-image2.canghe.ai，定期更新）',
+  },
+]
+
+/** Default source id when a request does not name one (legacy clients). */
+export const DEFAULT_TEMPLATE_SOURCE_ID = TEMPLATE_SOURCES[0]!.id
+
+/** True when the id names a registered template source. */
+export function isTemplateSourceId(id: string): boolean {
+  return TEMPLATE_SOURCES.some(source => source.id === id)
+}
 
 /** One prompt-library case as the browser consumes it. */
 export interface TemplateCase {
@@ -131,8 +182,10 @@ export interface TemplateCase {
   featured: boolean
 }
 
-/** Template-library list payload. */
+/** Template-library list payload (one source). */
 export interface TemplateListResult {
+  /** The source this list belongs to. */
+  sourceId: string
   cases: TemplateCase[]
   total: number
   /** Where the served list came from. */
@@ -143,10 +196,31 @@ export interface TemplateListResult {
   fetchedAt: string
 }
 
-/** Template-library refresh outcome. */
+/** Template-library refresh outcome (one source). */
 export interface TemplateRefreshResult {
+  sourceId: string
   total: number
   fetchedAt: string
+}
+
+/** One random inspiration pick served to the studio's empty state. */
+export interface TemplateSample {
+  /** Source the case came from (drives the image proxy URL). */
+  sourceId: string
+  /** The sampled case (full prompt is handed to the form on use). */
+  case: TemplateCase
+}
+
+/** One favorited template as persisted host-side and served to the browser. */
+export interface TemplateFavorite {
+  /** Stable key: `${sourceId}:${caseId}`. */
+  key: string
+  /** Source the case came from. */
+  sourceId: string
+  /** ISO time the favorite was saved. */
+  savedAt: string
+  /** Full case snapshot, so favorites survive upstream list churn. */
+  case: TemplateCase
 }
 
 /** Generation modes. */

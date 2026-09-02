@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { CONVERSATION_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, TASK_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateListResult, type TemplateRefreshResult, type UpdateInfo } from '../protocol.ts'
+import { CONVERSATION_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -181,11 +181,12 @@ export class ImageGenApi {
     return (await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)).entries
   }
 
-  /** Fetch the prompt-template library (bundled snapshot or refreshed copy). */
-  async templatesList(): Promise<TemplateListResult> {
-    const response = await fetch(TEMPLATES_API.list, { method: 'POST' })
+  /** Fetch one template source's list (bundled snapshot or refreshed copy). */
+  async templatesList(sourceId: string): Promise<TemplateListResult> {
+    const response = await fetch(TEMPLATES_API.list, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: sourceId }) })
     const body = await readEnvelope<TemplateListResult & { ok: true }>(response)
     return {
+      sourceId: body.sourceId,
       cases: body.cases,
       total: body.total,
       origin: body.origin,
@@ -194,10 +195,42 @@ export class ImageGenApi {
     }
   }
 
-  /** Re-download the template library from the upstream mirror (host-side). */
-  async templatesRefresh(): Promise<TemplateRefreshResult> {
-    const response = await fetch(TEMPLATES_API.refresh, { method: 'POST' })
+  /** Re-download one template source's list from its upstream mirror (host-side). */
+  async templatesRefresh(sourceId: string): Promise<TemplateRefreshResult> {
+    const response = await fetch(TEMPLATES_API.refresh, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: sourceId }) })
     const body = await readEnvelope<TemplateRefreshResult & { ok: true }>(response)
-    return { total: body.total, fetchedAt: body.fetchedAt }
+    return { sourceId: body.sourceId, total: body.total, fetchedAt: body.fetchedAt }
+  }
+
+  /** Draw random cases across every source (studio inspiration wall). */
+  async templatesSample(count: number): Promise<TemplateSample[]> {
+    const response = await fetch(TEMPLATES_API.sample, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ count }) })
+    return (await readEnvelope<{ ok: true; samples: TemplateSample[] }>(response)).samples
+  }
+
+  /** List the host-persisted template favorites. */
+  async favoritesList(): Promise<TemplateFavorite[]> {
+    const response = await fetch(TEMPLATE_FAVORITES_API.list, { method: 'POST' })
+    return (await readEnvelope<{ ok: true; favorites: TemplateFavorite[] }>(response)).favorites
+  }
+
+  /** Star one template (the host keeps a full case snapshot). */
+  async favoritesAdd(sourceId: string, item: TemplateCase): Promise<TemplateFavorite[]> {
+    const response = await fetch(TEMPLATE_FAVORITES_API.add, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: sourceId, case: item }),
+    })
+    return (await readEnvelope<{ ok: true; favorites: TemplateFavorite[] }>(response)).favorites
+  }
+
+  /** Unstar one template by its favorites key. */
+  async favoritesRemove(key: string): Promise<TemplateFavorite[]> {
+    const response = await fetch(TEMPLATE_FAVORITES_API.remove, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key }),
+    })
+    return (await readEnvelope<{ ok: true; favorites: TemplateFavorite[] }>(response)).favorites
   }
 }

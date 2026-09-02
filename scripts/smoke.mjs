@@ -377,6 +377,7 @@ const seam = {
   },
 }
 const persistedHistory = []
+let persistedFavorites = []
 const history = {
   async list() { return persistedHistory },
   async append(entry) {
@@ -404,9 +405,11 @@ const history = {
 }
 const templateImage = Buffer.from('template-image')
 let templateRefreshes = 0
+const templateSamples = []
 const templates = {
-  async list() {
+  async list(sourceId) {
     return {
+      sourceId,
       cases: [{
         id: 1,
         title: 'Poster template',
@@ -427,12 +430,29 @@ const templates = {
       fetchedAt: '2026-08-19T00:00:00.000Z',
     }
   },
-  async refresh() {
+  async refresh(sourceId) {
     templateRefreshes += 1
-    return { total: 1, fetchedAt: '2026-08-19T00:00:01.000Z' }
+    return { sourceId, total: 1, fetchedAt: '2026-08-19T00:00:01.000Z' }
   },
-  async readImage(file) {
-    return file === 'case1.png' ? { data: templateImage, mime: 'image/png' } : undefined
+  async sample(count) {
+    templateSamples.push(count)
+    return [{ sourceId: 'vibeui', case: { id: 1, title: 'Poster template', prompt: 'Create a bright product poster', category: 'Posters & Typography', categoryZh: '海报与排版', styles: [], scenes: [], sourceLabel: '@author', sourceUrl: '', githubUrl: '', image: '', featured: false } }]
+  },
+  async readImage(sourceId, file) {
+    return sourceId === 'vibeui' && file === 'case1.png' ? { data: templateImage, mime: 'image/png' } : undefined
+  },
+}
+const favorites = {
+  async list() { return [...persistedFavorites] },
+  async add(sourceId, item) {
+    const key = `${sourceId}:${item.id}`
+    const entry = { key, sourceId, savedAt: '2026-08-19T00:00:02.000Z', case: item }
+    persistedFavorites = [entry, ...persistedFavorites.filter(favorite => favorite.key !== key)]
+    return [...persistedFavorites]
+  },
+  async remove(key) {
+    persistedFavorites = persistedFavorites.filter(favorite => favorite.key !== key)
+    return [...persistedFavorites]
   },
 }
 const agentPreviewImage = Buffer.from('agent-preview-image')
@@ -467,6 +487,7 @@ const routes = host.makeRoutes({
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   history,
   templates,
+  favorites,
   attachments,
   pendingConversationImages,
 })
@@ -589,23 +610,81 @@ await check('C5 image model discovery and configured-model allow-list work', asy
   assert.equal(rejected.body.code, 'image-model-not-configured')
 })
 
-await check('C6 template routes serve the bundled gallery, refresh it, and proxy only known images', async () => {
-  const { body: list } = await post('/api/dsh-imagegen/templates/list', {})
+await check('C6 template routes are source-scoped, refresh per source, and proxy only known images', async () => {
+  const { body: list } = await post('/api/dsh-imagegen/templates/list', { source: 'vibeui' })
   assert.equal(list.ok, true)
+  assert.equal(list.sourceId, 'vibeui')
   assert.equal(list.total, 1)
   assert.equal(list.cases[0].prompt, 'Create a bright product poster')
 
-  const { body: refreshed } = await post('/api/dsh-imagegen/templates/refresh', {})
+  const { body: refreshed } = await post('/api/dsh-imagegen/templates/refresh', { source: 'vibeui' })
   assert.equal(refreshed.ok, true)
+  assert.equal(refreshed.sourceId, 'vibeui')
   assert.equal(refreshed.total, 1)
   assert.equal(templateRefreshes, 1)
 
-  const image = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/case1.png`)
+  // Unknown sources are rejected before the backend is touched.
+  const badSource = await post('/api/dsh-imagegen/templates/list', { source: 'nope' })
+  assert.equal(badSource.body.ok, false)
+  assert.equal(badSource.body.code, 'templates-source-unknown')
+  assert.equal(templateRefreshes, 1)
+
+  const image = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/vibeui/case1.png`)
   assert.equal(image.status, 200)
   assert.equal(image.headers.get('content-type'), 'image/png')
   assert.deepEqual(Buffer.from(await image.arrayBuffer()), templateImage)
-  const unknown = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/not-allowed.png`)
+  const unknown = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/vibeui/not-allowed.png`)
   assert.equal(unknown.status, 404)
+  // Legacy single-segment image paths are gone: the source id is required.
+  const legacy = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/case1.png`)
+  assert.equal(legacy.status, 404)
+  const badPool = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/templates/image/canghe/case1.png`)
+  assert.equal(badPool.status, 404)
+})
+
+await check('C6b template favorites persist host-side and round-trip', async () => {
+  const empty = await post('/api/dsh-imagegen/templates/favorites/list', {})
+  assert.equal(empty.body.ok, true)
+  assert.deepEqual(empty.body.favorites, [])
+
+  const item = {
+    id: 1,
+    title: 'Poster template',
+    prompt: 'Create a bright product poster',
+    category: 'Posters & Typography',
+    categoryZh: '海报与排版',
+    styles: [],
+    scenes: [],
+    sourceLabel: '@author',
+    sourceUrl: 'https://example.test/author',
+    githubUrl: 'https://example.test/repo#1',
+    image: 'case1.png',
+    featured: true,
+  }
+  const added = await post('/api/dsh-imagegen/templates/favorites/add', { source: 'vibeui', case: item })
+  assert.equal(added.body.ok, true)
+  assert.equal(added.body.favorites.length, 1)
+  assert.equal(added.body.favorites[0].key, 'vibeui:1')
+  assert.equal(added.body.favorites[0].case.prompt, item.prompt)
+
+  const invalid = await post('/api/dsh-imagegen/templates/favorites/add', { source: 'nope', case: item })
+  assert.equal(invalid.body.ok, false)
+
+  const relisted = await post('/api/dsh-imagegen/templates/favorites/list', {})
+  assert.equal(relisted.body.favorites.length, 1)
+
+  const removed = await post('/api/dsh-imagegen/templates/favorites/remove', { key: 'vibeui:1' })
+  assert.equal(removed.body.ok, true)
+  assert.deepEqual(removed.body.favorites, [])
+})
+
+await check('C6c template sample route draws random inspiration picks', async () => {
+  const { body } = await post('/api/dsh-imagegen/templates/sample', { count: 9 })
+  assert.equal(body.ok, true)
+  assert.equal(body.samples.length, 1)
+  assert.equal(body.samples[0].sourceId, 'vibeui')
+  assert.equal(body.samples[0].case.prompt, 'Create a bright product poster')
+  assert.deepEqual(templateSamples, [9])
 })
 
 await check('C7 Agent tool-result image route serves durable attachments without a session-log image reference', async () => {
@@ -991,6 +1070,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
         ok: true,
         json: async () => ({
           ok: true,
+          sourceId: 'vibeui',
           cases: [{
             id: 1,
             title: 'Template poster',
@@ -1009,6 +1089,21 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
           origin: 'bundled',
           repository: 'example/templates',
           fetchedAt: '2026-08-19T00:00:00.000Z',
+        }),
+      }
+    }
+    if (path.endsWith('/templates/favorites/list')) {
+      return { ok: true, json: async () => ({ ok: true, favorites: [] }) }
+    }
+    if (path.endsWith('/templates/sample')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          samples: [{
+            sourceId: 'vibeui',
+            case: { id: 1, title: 'Template poster', prompt: 'A reusable template prompt', category: 'Posters & Typography', categoryZh: '海报与排版', styles: [], scenes: [], sourceLabel: '@author', sourceUrl: '', githubUrl: '', image: '', featured: false },
+          }],
         }),
       }
     }
@@ -1241,6 +1336,20 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(registered[0].key, 'dsh-imagegen')
     assert.equal(registered[0].name, 'settings.plugin.item')
 
+    // Inspiration wall: the empty canvas deals random template cards with a
+    // shuffle action, and clicking a card hands its prompt to the form.
+    const inspirationWall = jsdomDocument.querySelector('[aria-label="灵感案例"]')
+    assert.ok(inspirationWall !== null, 'inspiration wall rendered on the empty canvas')
+    const shuffleButton = [...inspirationWall.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('随机'))
+    assert.ok(shuffleButton !== undefined, 'inspiration shuffle action rendered')
+    const inspirationTile = [...inspirationWall.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('Template poster'))
+    assert.ok(inspirationTile !== undefined, 'inspiration tile rendered')
+    inspirationTile.click()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(jsdomDocument.querySelector('textarea')?.value, 'A reusable template prompt', 'inspiration tile filled the prompt')
+
     // Template-library regression: choose a card, use its prompt, and verify
     // the text editor receives it while the modal closes.
     const templateTrigger = [...jsdomDocument.querySelectorAll('button')]
@@ -1248,12 +1357,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(templateTrigger !== undefined, 'template library trigger rendered')
     templateTrigger.click()
     await new Promise(resolve => setTimeout(resolve, 100))
-    const templateCard = [...jsdomDocument.querySelectorAll('button')]
+    const libraryModal = jsdomDocument.querySelector('[role="dialog"][aria-label="提示词模板库"]')
+    assert.ok(libraryModal !== null, 'template modal rendered')
+    const templateCard = [...libraryModal.querySelectorAll('button')]
       .find(button => button.textContent?.includes('Template poster'))
     assert.ok(templateCard !== undefined, 'template card rendered')
     templateCard.click()
     await new Promise(resolve => setTimeout(resolve, 50))
-    const useTemplate = [...jsdomDocument.querySelectorAll('button')]
+    const useTemplate = [...libraryModal.querySelectorAll('button')]
       .find(button => button.textContent?.includes('使用此提示词'))
     assert.ok(useTemplate !== undefined, 'use-template action rendered')
     useTemplate.click()

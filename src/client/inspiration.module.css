@@ -1,0 +1,148 @@
+/**
+ * Inspiration-wall styles for the studio's empty canvas. Same conventions as
+ * panel.module.css: dsh --dsw-* tokens, scoped to this component's subtree.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: min(880px, 100%);
+  margin: auto;
+  padding: 24px;
+  font-family: var(--dsw-font-family);
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Fallback (sample failed / libraries empty): mirrors the panel's plain
+   canvas empty state so the swap is invisible. */
+.emptyIcon {
+  display: inline-flex;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.emptyTitle {
+  margin-top: -6px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--dsw-alias-label-primary);
+}
+
+.emptyHint {
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  width: 100%;
+}
+
+/* Narrow canvases: fold the wall down instead of shrinking tiles into slivers. */
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tile:hover {
+  border-color: var(--dsw-alias-brand-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.thumbWrap {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumbFallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 6px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.thumbTitle {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 14px 8px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
+  color: #ffffff;
+  font-size: 10.5px;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.tile:hover .thumbTitle {
+  opacity: 1;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--dsw-alias-border-l2);
+  border-top-color: var(--dsw-alias-brand-primary);
+  border-radius: 50%;
+  animation: dsh-imagegen-inspiration-spin 0.9s linear infinite;
+}
+
+@keyframes dsh-imagegen-inspiration-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Touch shells have no hover: keep titles visible. */
+@media (hover: none) {
+  .thumbTitle {
+    opacity: 1;
+  }
+}
