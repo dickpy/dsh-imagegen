@@ -55,6 +55,21 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     ],
   },
   {
+    id: 'aliyun-dashscope-qwen',
+    name: '阿里云百炼（Qwen-Image）',
+    apiUrl: 'https://dashscope.aliyuncs.com/api/v1',
+    hint: '阿里云百炼 DashScope 原生接口：通义千问 Qwen-Image 系列（该渠道不可复用于提示词增强）',
+    models: [
+      { alias: 'qwen-image-3.0-pro', id: 'qwen-image-3.0-pro' },
+      { alias: 'qwen-image-3.0', id: 'qwen-image-3.0' },
+      { alias: 'qwen-image-2.0-pro', id: 'qwen-image-2.0-pro' },
+      { alias: 'qwen-image-2.0', id: 'qwen-image-2.0' },
+      { alias: 'qwen-image-max', id: 'qwen-image-max' },
+      { alias: 'qwen-image-plus', id: 'qwen-image-plus' },
+      { alias: 'qwen-image', id: 'qwen-image' },
+    ],
+  },
+  {
     id: 'xai-grok',
     name: 'xAI（Grok）',
     apiUrl: 'https://api.x.ai/v1',

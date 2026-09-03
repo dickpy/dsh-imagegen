@@ -18,6 +18,7 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
+import { useImageGenLanguageTick } from './use-language.ts'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
@@ -440,6 +441,10 @@ export function ImageGenPanel(props: {
 }) {
   const { api, scope, sessions, conversation } = props
   const config = useConfig(scope)
+  // The plugin language follows the DSH interface (bridged from ctx.locale);
+  // this tick re-renders the tree so every tt() switches live — the template
+  // library and the inspiration wall render inside this tree.
+  useImageGenLanguageTick()
   const enabled = config?.enabled ?? true
   // Channel-aware model options: the panel lists every configured alias
   // (default channel first); legacy flat fields remain the upgrade fallback.

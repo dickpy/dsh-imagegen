@@ -21,6 +21,8 @@ import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
 import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
+import { tt, type TranslateValues } from './helpers.ts'
+import { useImageGenLanguageTick } from './use-language.ts'
 import css from './settings-card.module.css'
 
 /** The global (non-channel) fields this card's staged form edits. */
@@ -127,7 +129,11 @@ interface UsageCounters {
  * @returns the card, or nothing while the namespace is still loading.
  */
 export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
-  const { t } = props
+  // The card renders through the plugin's own dictionary so the uiLanguage
+  // override applies here too — the host-locale props.t would only follow the
+  // DSH interface language.
+  const t = tt
+  useImageGenLanguageTick()
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
   const [open, setOpen] = useState(false)
   // Global-section local states (prompt enhancement etc.).
@@ -445,8 +451,8 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               offLabel={t('settings.off')}
               {...fieldProps}
               {...state.allowAgentImageGeneration}
-              onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
-              onReset={() => { props.resetField('allowAgentImageGeneration') }}
+              onEdit={(text) => { props.edit('enabled', text) }}
+              onReset={() => { props.resetField('enabled') }}
             />
             </div> : null}
             <div className={css.footer}>

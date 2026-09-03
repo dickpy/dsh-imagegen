@@ -21,8 +21,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { ImageGenApi } from './api.ts'
 import { ImageGenController } from './controller.ts'
-import { tt } from './helpers.ts'
-import { en, zh, type ImageGenKey } from './locales.ts'
+import { tt, applyHostLocale } from './helpers.ts'
+import { en, ru, zh, type ImageGenKey } from './locales.ts'
 import { mountPanel } from './mount.tsx'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { ImageGenSettingsCard, ImageGenSettingsCardController } from './SettingsCard.tsx'
@@ -68,7 +68,39 @@ export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversatio
  * @param ctx - client root context (services: slots, locale, connection).
  */
 export function apply(ctx: ClientContext): void {
+  // The host locale service only knows zh/en dictionaries (its type is
+  // fixed); ru rides the untyped single-locale registration instead.
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-imagegen: dictionaries')
+  // Russian ships as a language pack: the dictionary lands in this plugin's
+  // namespace, and Русский joins the shared DSH language catalog (Settings →
+  // General → Language) with per-key fallback to English for host copy.
+  // Registration order/aggregation between register(NS, 'ru', …) and
+  // addLanguage differs across host builds and a duplicate throws — these
+  // surfaces must degrade silently, never fail the GUI boot.
+  ctx.effect(() => {
+    try {
+      return ctx.locale.register(NS, 'ru', ru)
+    } catch (error) {
+      console.warn('[dsh-imagegen] ru dictionary not registered:', error)
+      return () => {}
+    }
+  }, 'dsh-imagegen: ru dictionary')
+  ctx.effect(() => {
+    try {
+      if (ctx.locale.getLocale().locales.some(locale => locale.id === 'ru')) return () => {}
+      return ctx.locale.addLanguage({ id: 'ru', label: 'Русский', fallback: 'en' })
+    } catch (error) {
+      console.warn('[dsh-imagegen] ru language not added to the catalog:', error)
+      return () => {}
+    }
+  }, 'dsh-imagegen: ru language pack')
+  // Every plugin surface renders through tt(); bridge DSH locale switches
+  // into it so the whole plugin follows the interface language.
+  ctx.effect(() => {
+    const applyLocale = (): void => { applyHostLocale(ctx.locale.getLocale().active) }
+    applyLocale()
+    return ctx.locale.subscribe(applyLocale)
+  }, 'dsh-imagegen: follow host locale')
   registerImageToolviews(ctx)
 
   const connection = ctx.get('connection') as ConnectionHandle | undefined
@@ -119,6 +151,26 @@ export function apply(ctx: ClientContext): void {
         tt('entry.tooltip'),
       ))
       disposers.push(mountPanel(controller, api, scope, { sessions, conversation }))
+      // The imperative sidebar tabs render their labels once; relabel them on
+      // every DSH language switch so the entry follows the interface too.
+      disposers.push(ctx.locale.subscribe(() => {
+        const root = document.querySelector('[data-dsh-imagegen-sidebar-root]')
+        if (root === null) return
+        const labels: Array<[string, string, string]> = [
+          ['new-session', tt('entry.newSession'), tt('entry.newSessionTooltip')],
+          ['image', tt('entry.image'), tt('entry.tooltip')],
+        ]
+        for (const [tab, label, tooltip] of labels) {
+          const button = root.querySelector<HTMLButtonElement>(`[data-dsh-imagegen-tab="${tab}"]`)
+          if (button === null) continue
+          button.setAttribute('aria-label', label)
+          button.setAttribute('title', tooltip)
+          const labelSpan = button.querySelector('span:nth-child(2)')
+          if (labelSpan !== null) labelSpan.textContent = label
+        }
+        const tablist = root.querySelector<HTMLDivElement>('[role="tablist"][data-dsh-imagegen-session-tabs]')
+        tablist?.setAttribute('aria-label', tt('entry.tooltip'))
+      }))
     } catch (error) {
       // DOM failures degrade the studio, never the GUI.
       console.warn('[dsh-imagegen] mount failed:', error)

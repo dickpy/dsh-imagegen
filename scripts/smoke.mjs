@@ -347,6 +347,71 @@ await check('B8 Zhipu GLM-Image uses the official generation contract', async ()
   }
 })
 
+await check('B9 Qwen-Image speaks the DashScope native contract', async () => {
+  const seen = []
+  const qwen = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    if (url.pathname === '/api/v1/services/aigc/multimodal-generation/generation') {
+      seen.push({
+        auth: req.headers.authorization,
+        path: url.pathname,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        output: { choices: [{ message: { content: [{ image: `http://127.0.0.1:${upstreamPort}/image/result.png` }] } }] },
+        usage: { image_count: 1 },
+      }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => qwen.listen(0, '127.0.0.1', resolve))
+  const port = qwen.address().port
+  const base = `http://127.0.0.1:${port}/api/v1`
+  try {
+    // Versioned series: wide ratio maps to the HD size set and n batches natively.
+    const result = await host.generateImage(
+      { apiUrl: base, apiKey: 'qwen-key' },
+      { mode: 'text', model: 'qwen-image-3.0', prompt: 'a cat', size: '16:9', quality: 'auto', n: 2, detail: '' },
+    )
+    assert.equal(result.images.length, 1)
+    assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+    assert.deepEqual(seen[0], {
+      auth: 'Bearer qwen-key',
+      path: '/api/v1/services/aigc/multimodal-generation/generation',
+      body: {
+        model: 'qwen-image-3.0',
+        input: { messages: [{ role: 'user', content: [{ text: 'a cat' }] }] },
+        parameters: { size: '2688*1536', n: 2 },
+      },
+    })
+    // Classic series: single image per call, fixed size list, no n parameter.
+    seen.length = 0
+    await host.generateImage(
+      { apiUrl: base, apiKey: 'qwen-key' },
+      { mode: 'text', model: 'qwen-image-plus', prompt: 'x', size: '9:16', quality: '2k', n: 4, detail: '' },
+    )
+    assert.deepEqual(seen[0].body.parameters, { size: '928*1664' })
+    // Edit mode rides the reference image as a message content item.
+    seen.length = 0
+    await host.generateImage(
+      { apiUrl: base, apiKey: 'qwen-key' },
+      { mode: 'edit', model: 'qwen-image-3.0', prompt: 'edit this', size: '1:1', quality: 'auto', n: 1, detail: '', image: `data:image/png;base64,${pngBytes.toString('base64')}` },
+    )
+    assert.deepEqual(seen[0].body.input.messages[0].content, [
+      { image: `data:image/png;base64,${pngBytes.toString('base64')}` },
+      { text: 'edit this' },
+    ])
+    assert.deepEqual(seen[0].body.parameters, { size: '2048*2048' })
+  } finally {
+    await new Promise(resolve => qwen.close(resolve))
+  }
+})
+
 // ------------------------------------------------- C. routes over real HTTP
 const stored = new Map() // namespace -> user section
 const seam = {
@@ -1155,11 +1220,19 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   assert.ok(handoff !== undefined)
 
   const registered = []
+  // Locale runtime stub: register/addLanguage/subscribe + a snapshot, mirroring
+  // the dsh-client-locale face the plugin bridges into.
+  const localeListeners = new Set()
   const ctx = {
     effect(fn) { return fn() },
     on() { return () => {} },
     get(name) { return name === 'connection' ? { isLoopback: true } : undefined },
-    locale: { register() {} },
+    locale: {
+      register() {},
+      addLanguage() { return () => {} },
+      getLocale() { return { active: 'zh', locales: [], revision: 0 } },
+      subscribe(fn) { localeListeners.add(fn); return () => localeListeners.delete(fn) },
+    },
     slots: {
       // The Web UI plugin group slot is already declared.
       inject(key, callback) { callback(); return () => {} },

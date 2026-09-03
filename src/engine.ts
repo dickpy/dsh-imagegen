@@ -84,6 +84,13 @@ function isZhipuImage(model: string): boolean {
   return modelFamily(model) === 'zhipu'
 }
 
+/** Whether the model is Alibaba Qwen-Image, which speaks the DashScope native
+ *  multimodal-generation contract (NOT OpenAI-compatible): a chat-style
+ *  messages body, `宽*高` pixel sizes, and image URLs in the reply content. */
+function isQwenImage(model: string): boolean {
+  return modelFamily(model) === 'qwen'
+}
+
 function isGlmImage(model: string): boolean {
   return /^glm-image(?:-|$)/i.test(model.trim())
 }
@@ -99,6 +106,42 @@ function seedreamSize(quality: string): string {
   // degrading them to the highest supported tier instead of sending 4K.
   if (quality === '1k') return '1K'
   return '2K'
+}
+
+/** The panel's aspect ratios mapped to Qwen-Image's `宽*高` pixel sizes.
+ *  The classic series (qwen-image / -plus / -max) documents this fixed list;
+ *  2.0 / 3.0-series models accept any size within their pixel budget and
+ *  recommend the larger set. */
+const QWEN_SIZE_CLASSIC: Readonly<Record<string, string>> = {
+  '16:9': '1664*928',
+  '21:9': '1664*928',
+  '4:3': '1472*1104',
+  '3:2': '1472*1104',
+  '1:1': '1328*1328',
+  '3:4': '1104*1472',
+  '2:3': '1104*1472',
+  '9:16': '928*1664',
+}
+
+const QWEN_SIZE_HD: Readonly<Record<string, string>> = {
+  '16:9': '2688*1536',
+  '21:9': '2688*1536',
+  '4:3': '2368*1728',
+  '3:2': '2368*1728',
+  '1:1': '2048*2048',
+  '3:4': '1728*2368',
+  '2:3': '1728*2368',
+  '9:16': '1536*2688',
+}
+
+/** Versioned ids (qwen-image-2.0 / -3.0-pro / …) take the large size set. */
+function isVersionedQwenImage(model: string): boolean {
+  return /^qwen-image-\d+\.\d/i.test(model.trim())
+}
+
+function qwenSize(model: string, ratio: string): string | undefined {
+  if (ratio === '' || ratio === 'auto') return undefined
+  return (isVersionedQwenImage(model) ? QWEN_SIZE_HD : QWEN_SIZE_CLASSIC)[ratio]
 }
 
 /** The panel's aspect ratios mapped to the closest OpenAI pixel size
@@ -473,6 +516,110 @@ async function requestOneImage(
 }
 
 /**
+ * Qwen-Image (DashScope native multimodal-generation): one chat-style request
+ * carries the prompt (plus the reference image for edit mode) and answers
+ * synchronously with image URLs in the reply content. The versioned series
+ * batches natively (n ≤ 6; the panel caps at 4), the classic series is
+ * single-image per call.
+ */
+async function generateQwenImage(
+  baseUrl: string,
+  upstream: UpstreamConfig,
+  request: GenerateRequest,
+  options: { signal?: AbortSignal },
+): Promise<GenerateResult> {
+  const model = wireModel(request)
+  const content: Array<Record<string, unknown>> = []
+  if (request.mode === 'edit') {
+    if (typeof request.image !== 'string' || request.image === '') {
+      throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
+    }
+    // DashScope multimodal messages take the reference image as a content
+    // item; a base64 data URI rides in the same field as a remote URL.
+    const parsed = parseDataUrl(request.image)
+    if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
+    const bytes = Buffer.from(parsed.base64, 'base64')
+    if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
+      throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
+    }
+    content.push({ image: request.image })
+  }
+  content.push({ text: request.prompt })
+
+  const batchable = isVersionedQwenImage(model)
+  const count = batchable ? clampCount(request.n) : 1
+  const size = qwenSize(model, request.size)
+  const body = {
+    model,
+    input: { messages: [{ role: 'user', content }] },
+    parameters: {
+      ...size !== undefined ? { size } : {},
+      ...count > 1 ? { n: count } : {},
+    },
+  }
+
+  const budget = requestSignal(options.signal, UPSTREAM_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}/services/aigc/multimodal-generation/generation`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${upstream.apiKey.trim()}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: budget.signal,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/aborter/i.test(message) || /timeout/i.test(message)) {
+      throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+    }
+    throw new ImageGenError(`无法连接上游接口：${message}`, 'upstream-unreachable')
+  } finally {
+    budget.dispose()
+  }
+
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+  }
+  if (!response.ok || payload === null || typeof payload !== 'object') {
+    throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+  }
+
+  // output.choices[].message.content[] mixes text and { image: url } items.
+  const record = payload as Record<string, unknown>
+  const output = record.output as Record<string, unknown> | undefined
+  const choices = output !== undefined && Array.isArray(output.choices) ? output.choices : []
+  const urls: string[] = []
+  for (const choice of choices) {
+    const message = choice !== null && typeof choice === 'object'
+      ? (choice as Record<string, unknown>).message
+      : undefined
+    const items = message !== null && typeof message === 'object' && Array.isArray((message as Record<string, unknown>).content)
+      ? (message as Record<string, unknown>).content as unknown[]
+      : []
+    for (const item of items) {
+      if (item !== null && typeof item === 'object') {
+        const image = (item as Record<string, unknown>).image
+        if (typeof image === 'string' && image !== '') urls.push(image)
+      }
+    }
+  }
+  if (urls.length === 0) {
+    throw new ImageGenError('上游响应缺少图片内容', 'upstream-empty')
+  }
+  const images = await Promise.all(urls.map(async url => {
+    const normalized = await normalizeItem({ url }, upstream)
+    return { b64: normalized.b64, mime: normalized.mime }
+  }))
+  return { images }
+}
+
+/**
  * Forward one generate request to the configured endpoint. The requested image
  * count is satisfied with N parallel single-image requests (the `n` batch
  * parameter is never sent, because Responses-API-based gateways reject it as
@@ -482,6 +629,7 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   const baseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
+  if (isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
   if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
     throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
   }
