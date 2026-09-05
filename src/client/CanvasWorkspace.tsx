@@ -482,16 +482,25 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     setComposerBusy(true)
     try {
       let image: string | undefined
+      let images: string[] | undefined
       let refName: string | undefined
       if (baseAsset !== undefined) {
         image = await assetToDataUrl(baseAsset)
         refName = 'canvas-reference.png'
+        const extras: string[] = []
+        for (const reference of referenceImages.slice(1, 4)) {
+          const asset = usableAsset(reference)
+          if (asset === undefined) continue
+          try { extras.push(await assetToDataUrl(asset)) } catch { /* skip unreadable reference */ }
+        }
+        if (extras.length > 0) images = extras
       }
       const footprint = nodeSizeFromRatio(composerSize, IMAGE_NODE_SIZE)
       const request: GenerateRequest = {
         mode: image === undefined ? 'text' : 'edit', model, prompt, size: composerSize, quality: composerQuality, n: count, detail: '',
         ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
         ...(image === undefined ? {} : { image, refName }),
+        ...(images === undefined ? {} : { images }),
         canvas: {
           canvasId: current.id,
           ...(target === null ? {} : { sourceNodeId: referenceImages[0]?.id ?? target.id, parentNodeId: target.id, placement: 'right' as const }),
@@ -543,15 +552,24 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const baseAsset = references[0] !== undefined ? usableAsset(references[0]!) : undefined
     try {
       let image: string | undefined
+      let images: string[] | undefined
       let refName: string | undefined
       if (baseAsset !== undefined) {
         image = await assetToDataUrl(baseAsset)
         refName = 'canvas-reference.png'
+        const extras: string[] = []
+        for (const reference of references.slice(1, 4)) {
+          const asset = usableAsset(reference)
+          if (asset === undefined) continue
+          try { extras.push(await assetToDataUrl(asset)) } catch { /* skip unreadable reference */ }
+        }
+        if (extras.length > 0) images = extras
       }
       const request: GenerateRequest = {
         mode: image === undefined ? 'text' : 'edit', model, prompt, size: metadata.size ?? 'auto', quality: metadata.quality ?? 'auto', n: 1, detail: '',
         ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
         ...(image === undefined ? {} : { image, refName }),
+        ...(images === undefined ? {} : { images }),
         canvas: { canvasId: current.id, sourceNodeId: references[0]?.id ?? sourceId, parentNodeId: node.id, placement: 'right' as const },
       }
       const task = await api.taskSubmit(request)

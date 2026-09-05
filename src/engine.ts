@@ -559,17 +559,25 @@ async function requestOneImage(
     if (typeof request.image !== 'string' || request.image === '') {
       throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
     }
-    const parsed = parseDataUrl(request.image)
-    if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
-    let bytes: Buffer
-    try {
-      bytes = Buffer.from(parsed.base64, 'base64')
-    } catch {
-      throw new ImageGenError('参考图片数据无法解码', 'edit-image-invalid')
+    const decodeReference = (dataUrl: string): { bytes: Buffer; mime: string; filename: string } => {
+      const parsed = parseDataUrl(dataUrl)
+      if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
+      let bytes: Buffer
+      try {
+        bytes = Buffer.from(parsed.base64, 'base64')
+      } catch {
+        throw new ImageGenError('参考图片数据无法解码', 'edit-image-invalid')
+      }
+      if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
+        throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
+      }
+      return { bytes, mime: parsed.mime, filename: `reference.${extensionOf(parsed.mime)}` }
     }
-    if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
-      throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
-    }
+    const primary = decodeReference(request.image)
+    const extras = (request.images ?? [])
+      .filter(img => typeof img === 'string' && img !== '')
+      .slice(0, 4)
+      .map(decodeReference)
     // Grok Imagine /images/edits takes a JSON image_url object (a base64 data
     // URI is accepted) instead of OpenAI's multipart form-data upload.
     if (isGrokImagine(params.model)) {
@@ -585,7 +593,7 @@ async function requestOneImage(
       // Nano Banana OpenAI-compatible gateways accept the standard multipart
       // edit upload, with the family's own aspect_ratio / image_size knobs.
       const form = new FormData()
-      form.append('image', new Blob([bytes], { type: parsed.mime }), `reference.${extensionOf(parsed.mime)}`)
+      form.append('image', new Blob([primary.bytes], { type: primary.mime }), primary.filename)
       form.append('prompt', request.prompt)
       form.append('model', params.model)
       if (params.aspect_ratio !== undefined) form.append('aspect_ratio', params.aspect_ratio)
@@ -593,19 +601,28 @@ async function requestOneImage(
       body = form
     } else if (isSeedream(params.model)) {
       // Seedream unifies generation and editing on /images/generations; the
-      // reference image is a JSON URL / data-URL array, never multipart.
+      // reference image is a JSON URL / data-URL array, never multipart, and
+      // the protocol natively accepts several references.
       headers['content-type'] = 'application/json'
       body = JSON.stringify({
         model: params.model,
         prompt: request.prompt,
-        image: [request.image],
+        image: [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '').slice(0, 4)],
         ...params.size !== undefined ? { size: params.size } : {},
         ...params.resolution !== undefined ? { resolution: params.resolution } : {},
         response_format: isVolcSeedream(params.model) ? 'url' : 'b64_json',
       })
     } else {
       const form = new FormData()
-      form.append('image', new Blob([bytes], { type: parsed.mime }), `reference.${extensionOf(parsed.mime)}`)
+      if (extras.length > 0) {
+        // OpenAI-style multi-reference upload: repeat the image[] field so
+        // every connected canvas reference reaches the gateway.
+        for (const [index, reference] of [primary, ...extras].entries()) {
+          form.append('image[]', new Blob([reference.bytes], { type: reference.mime }), `reference-${index}.${extensionOf(reference.mime)}`)
+        }
+      } else {
+        form.append('image', new Blob([primary.bytes], { type: primary.mime }), primary.filename)
+      }
       form.append('prompt', request.prompt)
       form.append('model', params.model)
       if (params.size !== undefined) form.append('size', params.size)

@@ -223,6 +223,30 @@ await check('B3 edit mode sends multipart and normalizes', async () => {
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
 })
 
+await check('B3b edit mode forwards every reference image', async () => {
+  const seen = { fields: [] }
+  const server = createServer(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = Buffer.concat(chunks).toString('latin1')
+    seen.fields = [...body.matchAll(/name="([^"]+)"/g)].map(match => match[1])
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  try {
+    const dataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`
+    await host.generateImage(
+      { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test' },
+      { mode: 'edit', model: 'gpt-image-2', prompt: 'combine both references', size: '1:1', quality: 'auto', n: 1, detail: '', image: dataUrl, images: [dataUrl, dataUrl] },
+    )
+    assert.deepEqual(seen.fields.filter(name => name.startsWith('image')), ['image[]', 'image[]', 'image[]'])
+  } finally {
+    server.close()
+  }
+})
+
 await check('B4 config missing errors are user-presentable', async () => {
   await assert.rejects(
     host.generateImage({ apiUrl: '', apiKey: 'k' }, { mode: 'text', model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'auto', n: 1, detail: '' }),

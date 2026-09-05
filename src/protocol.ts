@@ -413,6 +413,10 @@ export interface GenerateRequest extends EcommerceTaskMeta {
   detail: string
   /** Reference image as a data URL (edit mode only). */
   image?: string
+  /** Additional reference images as data URLs (edit mode only). The first
+   *  image stays in `image`; providers that accept several references get them
+   *  all, single-reference providers see `image` alone. */
+  images?: string[]
   /** Original reference-image name, retained in the history entry. */
   refName?: string
   /** Channel this request targets (the host falls back to the default when
