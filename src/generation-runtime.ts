@@ -75,6 +75,7 @@ export class ImageGenerationRuntime {
         ...request.projectName === undefined ? {} : { projectName: request.projectName },
         ...request.slotKey === undefined ? {} : { slotKey: request.slotKey },
         ...request.slotLabel === undefined ? {} : { slotLabel: request.slotLabel },
+        ...request.canvas === undefined ? {} : { canvas: request.canvas },
       })
       return { ...result, history }
     } catch (error) {

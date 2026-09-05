@@ -1190,6 +1190,12 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     confirmationCalls += 1
     return false
   }
+  // jsdom has no ResizeObserver; the canvas measures its viewport with one.
+  jsdomWindow.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
 
   // Stateful bridge stub: describe + mutate (same wire shapes as the routes).
   // The redacted view never returns the key; the secrets sidecar tracks it.
@@ -1209,6 +1215,18 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   const channelSecrets = () => [{ path: ['channelSecrets', 'default'], set: keyState.set }]
   const mutateCalls = []
   const ecommerceSubmissions = []
+  const canvasDocument = {
+    version: 2,
+    id: 'canvas-smoke',
+    title: 'Smoke canvas',
+    revision: 1,
+    viewport: { x: 0, y: 0, k: 1 },
+    background: 'dots',
+    nodes: [],
+    connections: [],
+    createdAt: 1,
+    updatedAt: 1,
+  }
   const fetchStub = async (input, init) => {
     const path = String(input)
     if (path.endsWith('/settings/describe')) {
@@ -1275,6 +1293,12 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
           entries: [{ id: 'gallery-one', createdAt: 3, mode: 'text', model: 'gpt-image-2', prompt: 'gallery prompt', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/api/dsh-imagegen/gallery/image/gallery.png', mime: 'image/png' }] }],
         }),
       }
+    }
+    if (path.endsWith('/canvas/list')) {
+      return { ok: true, json: async () => ({ ok: true, projects: [{ id: canvasDocument.id, title: canvasDocument.title, revision: canvasDocument.revision, nodeCount: 0, createdAt: 1, updatedAt: 1 }] }) }
+    }
+    if (path.endsWith('/canvas/read')) {
+      return { ok: true, json: async () => ({ ok: true, document: canvasDocument }) }
     }
     if (path.startsWith('/history/')) {
       return {
@@ -1364,6 +1388,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     window: jsdomWindow,
     document: jsdomDocument,
     MutationObserver: jsdomWindow.MutationObserver,
+    ResizeObserver: jsdomWindow.ResizeObserver,
     CustomEvent: jsdomWindow.CustomEvent,
     HTMLElement: jsdomWindow.HTMLElement,
     FileReader: jsdomWindow.FileReader,
@@ -1490,15 +1515,17 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Gallery keeps the sidebar history visible, and selecting one history
     // group returns the center workspace to text-to-image.
     const tablistButtons = [...view.querySelectorAll('[role="tablist"] button')]
-    assert.equal(tablistButtons.length, 5, 'top nav has three entries and the normal workspace shows two generation modes')
+    assert.equal(tablistButtons.length, 6, 'top nav has four entries and the normal workspace shows two generation modes')
     const ecommerceSwitch = tablistButtons.find(button => button.textContent?.includes('电商模式'))
     assert.ok(ecommerceSwitch !== undefined, 'ecommerce top-nav entry is present')
     const normalSwitch = tablistButtons.find(button => button.textContent?.includes('普通生图'))
     assert.ok(normalSwitch !== undefined, 'normal top-nav entry is present')
+    const canvasSwitch = tablistButtons.find(button => button.textContent?.includes('无限画布'))
+    assert.ok(canvasSwitch !== undefined, 'infinite canvas top-nav entry is present')
     ecommerceSwitch.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.ok(view.querySelector('[data-ecommerce-workspace]') !== null, 'ecommerce workspace is rendered')
-    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 3, 'generation sub-modes hide in the ecommerce workspace')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 4, 'generation sub-modes hide in the ecommerce workspace')
     assert.equal([...view.querySelectorAll('textarea')].some(textarea => (textarea.getAttribute('placeholder') ?? '').includes('描述你想要的画面')), false, 'normal prompt card is hidden in ecommerce workspace')
     const ecommerceName = view.querySelector('input[placeholder="商品名称（必填）"]')
     assert.ok(ecommerceName !== null, 'ecommerce product form is rendered')
@@ -1547,7 +1574,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Back to the normal workspace via the top nav: gallery works as before.
     normalSwitch.click()
     await new Promise(resolve => setTimeout(resolve, 50))
-    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 5, 'generation sub-modes return in the normal workspace')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 6, 'generation sub-modes return in the normal workspace')
     const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('画廊'))
     galleryPill?.click()
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -1685,6 +1712,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(afterClear.failed, false, 'clearing a secret must not report failure')
     assert.equal(keyState.set, false, 'key clear reached the bridge')
     assert.equal(face.hooks.imageGenSettingsCard.getSnapshot().channels.keySet.default, false, 'key-set flag follows the clear')
+    canvasSwitch.click()
+    await waitForSelector(view, '[data-canvas-workspace]')
+    assert.ok(view.querySelector('[data-canvas-workspace]') !== null, 'infinite canvas workspace is mounted')
   } finally {
     if (previousWindow === undefined) delete globalThis.window
     else globalThis.window = previousWindow

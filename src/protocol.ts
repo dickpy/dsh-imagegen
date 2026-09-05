@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.5.3'
+export const PLUGIN_VERSION = '1.5.4'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -94,6 +94,18 @@ export const GALLERY_API = {
   clear: '/api/dsh-imagegen/gallery/clear',
   tags: '/api/dsh-imagegen/gallery/tags',
   image: '/api/dsh-imagegen/gallery/image',
+} as const
+
+/** Host-persisted infinite canvas projects and their content-addressed assets. */
+export const CANVAS_API = {
+  list: '/api/dsh-imagegen/canvas/list',
+  create: '/api/dsh-imagegen/canvas/create',
+  read: '/api/dsh-imagegen/canvas/read',
+  save: '/api/dsh-imagegen/canvas/save',
+  remove: '/api/dsh-imagegen/canvas/remove',
+  assetUpload: '/api/dsh-imagegen/canvas/asset/upload',
+  assetImport: '/api/dsh-imagegen/canvas/asset/import',
+  asset: '/api/dsh-imagegen/canvas/asset',
 } as const
 
 /** Maximum number of history entries retained host-side (oldest evicted). */
@@ -234,6 +246,100 @@ export interface TemplateFavorite {
 /** Generation modes. */
 export type GenerateMode = 'text' | 'edit'
 
+/** Origin information carried by a generation started from the canvas. */
+export interface CanvasTaskMeta {
+  canvasId: string
+  sourceNodeId?: string
+  /** Legacy v1 annotation workflow; kept so old history entries still parse. */
+  annotationNodeId?: string
+  parentNodeId?: string
+  placement?: 'right' | 'below'
+}
+
+/** One image asset referenced by a canvas node. */
+export interface CanvasAssetRef {
+  assetId: string
+  url: string
+  mime: string
+  bytes: number
+  width: number
+  height: number
+  origin: 'upload' | 'history' | 'gallery' | 'generated'
+  originId?: string
+  entryId?: string
+  imageIndex?: number
+}
+
+export type CanvasNodeType = 'image' | 'text' | 'config'
+
+export interface CanvasViewport {
+  x: number
+  y: number
+  /** Zoom factor. */
+  k: number
+}
+
+/** Free-form per-node state, mirroring the node-graph canvas model. */
+export interface CanvasNodeMetadata {
+  /** Image nodes: the rendered asset. */
+  asset?: CanvasAssetRef
+  status?: 'idle' | 'generating' | 'success' | 'error'
+  error?: string
+  /** Config/image nodes: generation settings. */
+  prompt?: string
+  model?: string
+  size?: string
+  quality?: string
+  /** Config nodes: how many images to generate (1-4). */
+  count?: number
+  /** Config nodes: generation mode (image) or plain writing (text). */
+  mode?: 'image' | 'text'
+  taskId?: string
+  sourceNodeId?: string
+  /** Text nodes. */
+  text?: string
+  fontSize?: number
+}
+
+export interface CanvasNode {
+  id: string
+  type: CanvasNodeType
+  title: string
+  x: number
+  y: number
+  width: number
+  height: number
+  metadata?: CanvasNodeMetadata
+}
+
+export interface CanvasConnection {
+  id: string
+  fromNodeId: string
+  toNodeId: string
+}
+
+export interface CanvasDocument {
+  version: 2
+  id: string
+  title: string
+  revision: number
+  viewport: CanvasViewport
+  background: 'dots' | 'lines' | 'blank'
+  nodes: CanvasNode[]
+  connections: CanvasConnection[]
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CanvasSummary {
+  id: string
+  title: string
+  revision: number
+  nodeCount: number
+  createdAt: number
+  updatedAt: number
+}
+
 /** Metadata shared by the ecommerce product-set workflow. */
 export interface EcommerceTaskMeta {
   workflow?: 'ecommerce'
@@ -321,6 +427,8 @@ export interface GenerateRequest extends EcommerceTaskMeta {
   comparisonId?: string
   /** All model aliases selected for one comparison run. */
   comparisonModels?: string[]
+  /** Optional canvas lineage metadata. */
+  canvas?: CanvasTaskMeta
 }
 
 /** One generated image, normalized host-side to base64 so the browser never
@@ -438,6 +546,7 @@ export interface HistoryEntry extends EcommerceTaskMeta {
   comparisonId?: string
   /** Model aliases included in the comparison run. */
   comparisonModels?: string[]
+  canvas?: CanvasTaskMeta
 }
 
 /** A history entry the client submits for persistence (images still carry base64). */
@@ -461,4 +570,5 @@ export interface HistoryEntryInput extends EcommerceTaskMeta {
   comparisonId?: string
   /** Model aliases included in the comparison run. */
   comparisonModels?: string[]
+  canvas?: CanvasTaskMeta
 }

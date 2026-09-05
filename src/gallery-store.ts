@@ -69,6 +69,7 @@ interface StoredEntry {
   projectName?: string
   slotKey?: string
   slotLabel?: string
+  canvas?: HistoryEntryInput['canvas']
 }
 
 /** The index.json shape. */
@@ -193,6 +194,7 @@ function toWire(entry: StoredEntry): HistoryEntry {
     ...entry.projectName === undefined ? {} : { projectName: entry.projectName },
     ...entry.slotKey === undefined ? {} : { slotKey: entry.slotKey },
     ...entry.slotLabel === undefined ? {} : { slotLabel: entry.slotLabel },
+    ...entry.canvas === undefined ? {} : { canvas: entry.canvas },
   }
 }
 
@@ -253,6 +255,7 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
       ...input.projectName === undefined ? {} : { projectName: input.projectName },
       ...input.slotKey === undefined ? {} : { slotKey: input.slotKey },
       ...input.slotLabel === undefined ? {} : { slotLabel: input.slotLabel },
+      ...input.canvas === undefined ? {} : { canvas: input.canvas },
     }
     const merged = [entry, ...await readIndex()]
     await writeIndex(merged)

@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
+import { CANVAS_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -179,6 +179,41 @@ export class ImageGenApi {
   async gallerySetTags(id: string, tags: string[]): Promise<HistoryEntry[]> {
     const response = await fetch(GALLERY_API.tags, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, tags }) })
     return (await readEnvelope<{ ok: true; entries: HistoryEntry[] }>(response)).entries
+  }
+
+  async canvasList(): Promise<CanvasSummary[]> {
+    const response = await fetch(CANVAS_API.list, { method: 'POST' })
+    return (await readEnvelope<{ ok: true; projects: CanvasSummary[] }>(response)).projects
+  }
+
+  async canvasCreate(title?: string): Promise<CanvasDocument> {
+    const response = await fetch(CANVAS_API.create, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) })
+    return (await readEnvelope<{ ok: true; document: CanvasDocument }>(response)).document
+  }
+
+  async canvasRead(id: string): Promise<CanvasDocument> {
+    const response = await fetch(CANVAS_API.read, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })
+    return (await readEnvelope<{ ok: true; document: CanvasDocument }>(response)).document
+  }
+
+  async canvasSave(document: CanvasDocument, expectedRevision: number): Promise<CanvasDocument> {
+    const response = await fetch(CANVAS_API.save, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document, expectedRevision }) })
+    return (await readEnvelope<{ ok: true; document: CanvasDocument }>(response)).document
+  }
+
+  async canvasRemove(id: string): Promise<CanvasSummary[]> {
+    const response = await fetch(CANVAS_API.remove, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })
+    return (await readEnvelope<{ ok: true; projects: CanvasSummary[] }>(response)).projects
+  }
+
+  async canvasUpload(dataUrl: string, width: number, height: number, meta: { origin?: string; originId?: string; entryId?: string; imageIndex?: number } = {}): Promise<CanvasAssetRef> {
+    const response = await fetch(CANVAS_API.assetUpload, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dataUrl, width, height, ...meta }) })
+    return (await readEnvelope<{ ok: true; asset: CanvasAssetRef }>(response)).asset
+  }
+
+  async canvasImport(source: 'history' | 'gallery', entryId: string, imageIndex: number, width: number, height: number): Promise<CanvasAssetRef> {
+    const response = await fetch(CANVAS_API.assetImport, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source, entryId, imageIndex, width, height }) })
+    return (await readEnvelope<{ ok: true; asset: CanvasAssetRef }>(response)).asset
   }
 
   /** Fetch one template source's list (bundled snapshot or refreshed copy). */

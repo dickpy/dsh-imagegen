@@ -20,12 +20,13 @@ import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
+import { canvasStore, CanvasConflictError, type CanvasImageInput, type CanvasStore } from './canvas-store.ts'
 import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
 import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
 import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CANVAS_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type CanvasDocument, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -78,6 +79,8 @@ export interface ImageGenRoutesDeps {
     updateTags?: (id: string, tags: string[]) => Promise<HistoryEntry[]>
     readImage: (file: string) => Promise<{ data: Buffer; mime: string } | undefined>
   }
+  /** Overrideable canvas backend, primarily for host integration tests. */
+  canvas?: CanvasBackend
   /** Overrideable template-library backend, primarily for host integration tests. */
   templates?: {
     list: (sourceId: string) => Promise<TemplateListResult>
@@ -95,6 +98,17 @@ export interface ImageGenRoutesDeps {
   resolveStorage?: () => StorageSyncConfig
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
+}
+
+/** Minimal canvas store contract so hosts can inject an isolated test backend. */
+export interface CanvasBackend {
+  list: () => Promise<Awaited<ReturnType<CanvasStore['list']>>>
+  create: (title?: string) => Promise<Awaited<ReturnType<CanvasStore['create']>>>
+  read: (id: string) => Promise<Awaited<ReturnType<CanvasStore['read']>>>
+  save: (document: CanvasDocument, expectedRevision?: number) => Promise<Awaited<ReturnType<CanvasStore['save']>>>
+  remove: (id: string) => Promise<Awaited<ReturnType<CanvasStore['remove']>>>
+  putImage: (input: CanvasImageInput) => Promise<Awaited<ReturnType<CanvasStore['putImage']>>>
+  readAsset: (file: string) => Promise<Awaited<ReturnType<CanvasStore['readAsset']>>>
 }
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
@@ -163,6 +177,7 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
   const comparisonModels = Array.isArray(body.comparisonModels)
     ? [...new Set(body.comparisonModels.filter((model): model is string => typeof model === 'string').map(model => model.trim()).filter(Boolean))]
     : []
+  const canvas = parseCanvasMeta(body.canvas)
   return {
     mode: body.mode === 'edit' ? 'edit' : 'text',
     model: typeof body.model === 'string' ? body.model : '',
@@ -176,11 +191,25 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
     ...typeof body.channelId === 'string' && body.channelId !== '' ? { channelId: body.channelId } : {},
     ...typeof body.comparisonId === 'string' && body.comparisonId !== '' ? { comparisonId: body.comparisonId } : {},
     ...comparisonModels.length > 1 ? { comparisonModels } : {},
+    ...canvas === undefined ? {} : { canvas },
     ...body.workflow === 'ecommerce' ? { workflow: 'ecommerce' as const } : {},
     ...typeof body.projectId === 'string' && body.projectId !== '' ? { projectId: body.projectId } : {},
     ...typeof body.projectName === 'string' && body.projectName !== '' ? { projectName: body.projectName } : {},
     ...typeof body.slotKey === 'string' && body.slotKey !== '' ? { slotKey: body.slotKey } : {},
     ...typeof body.slotLabel === 'string' && body.slotLabel !== '' ? { slotLabel: body.slotLabel } : {},
+  }
+}
+
+function parseCanvasMeta(value: unknown): GenerateRequest['canvas'] {
+  if (value === null || typeof value !== 'object') return undefined
+  const raw = value as Record<string, unknown>
+  if (typeof raw.canvasId !== 'string' || raw.canvasId.trim() === '') return undefined
+  return {
+    canvasId: raw.canvasId.trim(),
+    ...typeof raw.sourceNodeId === 'string' && raw.sourceNodeId.trim() !== '' ? { sourceNodeId: raw.sourceNodeId.trim() } : {},
+    ...typeof raw.annotationNodeId === 'string' && raw.annotationNodeId.trim() !== '' ? { annotationNodeId: raw.annotationNodeId.trim() } : {},
+    ...typeof raw.parentNodeId === 'string' && raw.parentNodeId.trim() !== '' ? { parentNodeId: raw.parentNodeId.trim() } : {},
+    ...raw.placement === 'right' || raw.placement === 'below' ? { placement: raw.placement } : {},
   }
 }
 
@@ -209,6 +238,7 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
   const comparisonModels = Array.isArray(entry.comparisonModels)
     ? [...new Set(entry.comparisonModels.filter((model): model is string => typeof model === 'string').map(model => model.trim()).filter(Boolean))]
     : []
+  const canvas = parseCanvasMeta(entry.canvas)
   return {
     id: entry.id,
     createdAt: entry.createdAt,
@@ -225,6 +255,7 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
     ...typeof entry.channel === 'string' ? { channel: entry.channel } : {},
     ...typeof entry.comparisonId === 'string' ? { comparisonId: entry.comparisonId } : {},
     ...comparisonModels.length > 1 ? { comparisonModels } : {},
+    ...canvas === undefined ? {} : { canvas },
     ...entry.workflow === 'ecommerce' ? { workflow: 'ecommerce' as const } : {},
     ...typeof entry.projectId === 'string' ? { projectId: entry.projectId } : {},
     ...typeof entry.projectName === 'string' ? { projectName: entry.projectName } : {},
@@ -330,6 +361,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     updateTags: updateGalleryTags,
     readImage: readGalleryImage,
   }
+  const canvas = deps.canvas ?? canvasStore
   const templates = deps.templates ?? {
     list: listTemplates,
     refresh: refreshTemplates,
@@ -927,6 +959,148 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           'content-length': found.data.length,
           'cache-control': 'private, max-age=3600',
         })
+        res.end(found.data)
+      },
+    },
+    // ------------------------------------------------------ canvas list
+    {
+      kind: 'exact',
+      path: CANVAS_API.list,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        try { writeJson(res, 200, { ok: true, projects: await canvas.list() }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-failed', message: messageOf(error) }) }
+      },
+    },
+    // ---------------------------------------------------- canvas create
+    {
+      kind: 'exact',
+      path: CANVAS_API.create,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const title = typeof body?.title === 'string' ? body.title : '未命名画布'
+        try { writeJson(res, 200, { ok: true, document: await canvas.create(title) }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------------------------ canvas read
+    {
+      kind: 'exact',
+      path: CANVAS_API.read,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const id = typeof body?.id === 'string' ? body.id : ''
+        const document = id === '' ? undefined : await canvas.read(id)
+        if (document === undefined) writeJson(res, 200, { ok: false, code: 'not-found', message: '画布不存在' })
+        else writeJson(res, 200, { ok: true, document })
+      },
+    },
+    // ------------------------------------------------------ canvas save
+    {
+      kind: 'exact',
+      path: CANVAS_API.save,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const document = body?.document as CanvasDocument | undefined
+        const expectedRevision = typeof body?.expectedRevision === 'number' ? body.expectedRevision : undefined
+        if (document === undefined || typeof document !== 'object') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'canvas document is required' })
+          return
+        }
+        try { writeJson(res, 200, { ok: true, document: await canvas.save(document, expectedRevision) }) }
+        catch (error) {
+          const code = error instanceof CanvasConflictError ? error.code : 'canvas-failed'
+          writeJson(res, 200, { ok: false, code, message: messageOf(error) })
+        }
+      },
+    },
+    // ---------------------------------------------------- canvas remove
+    {
+      kind: 'exact',
+      path: CANVAS_API.remove,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const id = typeof body?.id === 'string' ? body.id : ''
+        if (id === '') { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'canvas id is required' }); return }
+        try { writeJson(res, 200, { ok: true, projects: await canvas.remove(id) }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------------------ canvas asset upload
+    {
+      kind: 'exact',
+      path: CANVAS_API.assetUpload,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req, MAX_HISTORY_BODY_BYTES)
+        const parsed = typeof body?.dataUrl === 'string' ? imageDataUrl(body.dataUrl) : undefined
+        const width = Number(body?.width)
+        const height = Number(body?.height)
+        if (parsed === undefined || !Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'image data and dimensions are required' })
+          return
+        }
+        try {
+          const asset = await canvas.putImage({
+            data: parsed.data,
+            mime: parsed.mediaType,
+            width,
+            height,
+            origin: body?.origin === 'history' || body?.origin === 'gallery' || body?.origin === 'generated' ? body.origin : 'upload',
+            ...typeof body?.originId === 'string' ? { originId: body.originId } : {},
+            ...typeof body?.entryId === 'string' ? { entryId: body.entryId } : {},
+            ...Number.isSafeInteger(Number(body?.imageIndex)) ? { imageIndex: Number(body?.imageIndex) } : {},
+          })
+          writeJson(res, 200, { ok: true, asset })
+        } catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-asset-failed', message: messageOf(error) }) }
+      },
+    },
+    // ----------------------------------------------- canvas asset import
+    {
+      kind: 'exact',
+      path: CANVAS_API.assetImport,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const source = body?.source === 'history' || body?.source === 'gallery' ? body.source : undefined
+        const entryId = typeof body?.entryId === 'string' ? body.entryId : ''
+        const imageIndex = Number(body?.imageIndex)
+        const width = Number(body?.width)
+        const height = Number(body?.height)
+        if (source === undefined || entryId === '' || !Number.isSafeInteger(imageIndex) || imageIndex < 0
+          || !Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'source, entryId, imageIndex and dimensions are required' })
+          return
+        }
+        try {
+          const backend = source === 'history' ? history : gallery
+          const entry = (await backend.list()).find(item => item.id === entryId)
+          const image = entry?.images[imageIndex]
+          if (image === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'image not found' }); return }
+          const base = source === 'history' ? HISTORY_API.image : GALLERY_API.image
+          const file = imageFileFrom(image.url, base)
+          const found = file === undefined ? undefined : await backend.readImage(file)
+          if (found === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'image not found' }); return }
+          const asset = await canvas.putImage({ data: found.data, mime: found.mime, width, height, origin: source, originId: entryId, entryId, imageIndex })
+          writeJson(res, 200, { ok: true, asset })
+        } catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-asset-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------------- canvas asset (prefix)
+    {
+      kind: 'prefix',
+      path: CANVAS_API.asset,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) { writeJson(res, 403, { error: 'forbidden: loopback-only' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { error: `method not allowed: ${req.method}` }); return }
+        const file = imageFileFrom(req.url, CANVAS_API.asset)
+        const found = file === undefined ? undefined : await canvas.readAsset(file)
+        if (found === undefined) { writeJson(res, 404, { error: 'not found' }); return }
+        res.writeHead(200, { 'content-type': found.mime, 'content-length': found.data.length, 'cache-control': 'private, max-age=3600' })
         res.end(found.data)
       },
     },

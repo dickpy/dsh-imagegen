@@ -496,6 +496,19 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   min-height: 0;
 }
 
+/* The canvas workspace owns the full generation surface. Keep the classic
+   config/result DOM mounted so switching tabs remains instantaneous, but hide
+   those siblings while the scene graph is active. */
+.generation[data-workspace='canvas'] {
+  display: flex;
+  height: 100%;
+}
+
+.generation[data-workspace='canvas'] > .config,
+.generation[data-workspace='canvas'] > .canvas {
+  display: none !important;
+}
+
 .config {
   display: flex;
   flex-direction: column;

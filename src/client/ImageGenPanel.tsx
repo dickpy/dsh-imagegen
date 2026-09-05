@@ -18,6 +18,7 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
+import { CanvasWorkspace } from './CanvasWorkspace.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
@@ -395,7 +396,7 @@ type PanelTab = GenerateMode | 'gallery'
 
 /** Top-level workspaces inside the panel. 'normal' is the classic studio;
  *  more task-oriented modes (prototype, …) can join alongside 'ecommerce'. */
-type PanelWorkspace = 'normal' | 'ecommerce'
+type PanelWorkspace = 'normal' | 'ecommerce' | 'canvas'
 
 type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
@@ -485,10 +486,15 @@ export function ImageGenPanel(props: {
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
+  const [canvasImportRequest, setCanvasImportRequest] = useState<{ source: 'history' | 'gallery'; entryId: string; imageIndex: number } | undefined>()
   /** Switch to a normal-generation tab, leaving any task workspace. */
   const openTab = (next: PanelTab): void => {
     setWorkspace('normal')
     setTab(next)
+  }
+  const addEntryToCanvas = (source: 'history' | 'gallery', entryId: string, imageIndex = 0): void => {
+    setCanvasImportRequest({ source, entryId, imageIndex })
+    setWorkspace('canvas')
   }
   const [prompt, setPrompt] = useState('')
   const [size, setSize] = useState<string>('auto')
@@ -1646,6 +1652,18 @@ export function ImageGenPanel(props: {
                       <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5" /><circle cx="5.9" cy="6.1" r="1" /><path d="M13.5 10.2l-3.1-3.1L4.6 13" /></svg>
                     </button>
                   ) : null}
+                  {entry.images.length > 0 ? (
+                    <button
+                      type="button"
+                      className={css.historyIconAction}
+                      title={tt('canvas.addToCanvas')}
+                      aria-label={tt('canvas.addToCanvas')}
+                      data-history-add-canvas=""
+                      onClick={() => { addEntryToCanvas('history', entry.id, 0) }}
+                    >
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" /><path d="M5 8h6M8 5v6" /></svg>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className={css.historyIconAction}
@@ -1685,6 +1703,7 @@ export function ImageGenPanel(props: {
           <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab !== 'gallery' ? '' : undefined} onClick={() => { if (workspace !== 'normal' || tab === 'gallery') openTab('text') }}>{tt('workspace.normal')}</button>
           <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab === 'gallery' ? '' : undefined} onClick={() => { openTab('gallery') }}>{tt('gallery.title')}</button>
           <span className={css.topNavDivider} aria-hidden="true" />
+          <button type="button" className={css.topNavItem} data-active={workspace === 'canvas' ? '' : undefined} onClick={() => { setWorkspace('canvas') }}>{tt('workspace.canvas')}</button>
           <button type="button" className={css.topNavItem} data-active={workspace === 'ecommerce' ? '' : undefined} onClick={() => { setWorkspace('ecommerce') }}>{tt('workspace.ecommerce')}<span className={css.previewBadge}>{tt('ecommerce.badge')}</span></button>
         </nav>
         <span className={css.panelHeaderActions}>
@@ -1727,7 +1746,7 @@ export function ImageGenPanel(props: {
 
       <div className={css.studio}>
         {/* ------------------------------- left history + generation workspace */}
-        <div className={css.generation}>
+        <div className={css.generation} data-workspace={workspace}>
           {/* ------------------------------------------------ config sidebar */}
           <aside
             ref={configAsideRef}
@@ -2219,6 +2238,21 @@ export function ImageGenPanel(props: {
             </section>
           </aside>
 
+          {workspace === 'canvas' ? (
+            <CanvasWorkspace
+              api={api}
+              imageModels={imageModels}
+              defaultChannelId={defaultChannelId}
+              connected={connected}
+              history={history}
+              gallery={gallery}
+              tasks={tasks}
+              importRequest={canvasImportRequest}
+              onImportRequestHandled={() => { setCanvasImportRequest(undefined) }}
+              onOpenSettings={() => { openSettingsGuide('generation') }}
+            />
+          ) : null}
+
           {/* ------------------------------------------------------- canvas */}
           <section className={css.canvas} data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}>
           {workspace === 'normal' && tab === 'gallery' ? (
@@ -2286,6 +2320,16 @@ export function ImageGenPanel(props: {
                           >
                             <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
                             {galleryConversationAddingId === entry.id || addingToConversation === `gallery:${entry.id}` ? tt('conversation.adding') : tt('conversation.add')}
+                          </button>
+                          <button
+                            type="button"
+                            className={css.galleryCardAction}
+                            data-gallery-add-canvas=""
+                            title={tt('canvas.addToCanvas')}
+                            onClick={(event) => { event.stopPropagation(); addEntryToCanvas('gallery', entry.id, 0) }}
+                          >
+                            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" /><path d="M5 8h6M8 5v6" /></svg>
+                            {tt('canvas.addToCanvas')}
                           </button>
                         </div>
                         <div className={css.galleryCardFooter}>
