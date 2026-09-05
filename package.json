@@ -1,7 +1,7 @@
 {
   "name": "@dickpy/dsh-imagegen",
   "description": "AI image generation plugin for the dsh web GUI: text-to-image and image-to-image through configurable provider channels (gpt-image-2 / grok-imagine-image / nanobanana series / seedream-5.0-pro / dall-e-3, with native xAI Grok Imagine, Google Nano Banana and ByteDance Seedream request shaping), with per-channel model catalogs and a New Session / Image Generation tab entry opening a three-column studio beside the native conversation.",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

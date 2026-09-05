@@ -184,8 +184,14 @@ function requestSignal(source: AbortSignal | undefined, timeoutMs: number): { si
   }
 }
 
-/** Content-type extension hints for URL-fetched images. */
-function mimeOfExtension(path: string): string | undefined {
+/** Whether an error was produced by a requestSignal budget timeout. These can
+ * surface from the fetch call itself or from reading the response body, so the
+ * budget must stay armed until the body has been consumed. */
+function isBudgetTimeout(error: unknown): boolean {
+  return (error instanceof DOMException || error instanceof Error) && error.name === 'TimeoutError'
+}
+
+/** Content-type extension hints for URL-fetched images. */function mimeOfExtension(path: string): string | undefined {
   const match = /\.([a-z0-9]+)$/i.exec(path)
   if (match === null) return undefined
   switch (match[1]!.toLowerCase()) {
@@ -358,29 +364,32 @@ async function normalizeItem(
     return { b64: parsed.base64, mime: detectImageMime(Buffer.from(parsed.base64, 'base64')) ?? parsed.mime, revisedPrompt }
   }
   const budget = requestSignal(signal, IMAGE_FETCH_TIMEOUT_MS)
-  let response: Response
   try {
-    response = await fetch(url, {
-      ...isPresignedUrl(url) || upstream.apiKey === ''
-        ? {}
-        : { headers: { authorization: `Bearer ${upstream.apiKey}` } },
-      signal: budget.signal,
-    })
-  } catch (error) {
-    throw new ImageGenError(`failed to fetch the generated image url: ${error instanceof Error ? error.message : String(error)}`)
+    let response: Response
+    try {
+      response = await fetch(url, {
+        ...isPresignedUrl(url) || upstream.apiKey === ''
+          ? {}
+          : { headers: { authorization: `Bearer ${upstream.apiKey}` } },
+        signal: budget.signal,
+      })
+    } catch (error) {
+      throw new ImageGenError(`failed to fetch the generated image url: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (!response.ok) {
+      throw new ImageGenError(`failed to fetch the generated image url: HTTP ${response.status}`)
+    }
+    // Budget stays armed through the body read so a stalled download cannot hang the task.
+    const buffer = Buffer.from(await response.arrayBuffer())
+    const contentType = response.headers.get('content-type')
+    const mime = detectImageMime(buffer)
+      ?? (contentType !== null && contentType !== ''
+      ? contentType.split(';')[0]!.trim()
+      : mimeOfExtension(url) ?? 'image/png')
+    return { b64: buffer.toString('base64'), mime, revisedPrompt }
   } finally {
     budget.dispose()
   }
-  if (!response.ok) {
-    throw new ImageGenError(`failed to fetch the generated image url: HTTP ${response.status}`)
-  }
-  const buffer = Buffer.from(await response.arrayBuffer())
-  const contentType = response.headers.get('content-type')
-  const mime = detectImageMime(buffer)
-    ?? (contentType !== null && contentType !== ''
-    ? contentType.split(';')[0]!.trim()
-    : mimeOfExtension(url) ?? 'image/png')
-  return { b64: buffer.toString('base64'), mime, revisedPrompt }
 }
 
 /** Expand a provider image item whose URL may be a string or an array. */
@@ -477,51 +486,53 @@ async function pollAsyncTask(
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now()
     const budget = requestSignal(signal, Math.min(ASYNC_POLL_REQUEST_TIMEOUT_MS, remaining))
-    let response: Response
     try {
-      response = await fetch(`${baseUrl}/tasks/${encodeURIComponent(taskId)}`, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${upstream.apiKey.trim()}` },
-        signal: budget.signal,
-      })
-    } catch (error) {
-      if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
-      const message = error instanceof Error ? error.message : String(error)
-      if (/timeout|abort/i.test(message)) throw new ImageGenError('上游异步任务轮询超时', 'upstream-timeout')
-      throw new ImageGenError(`无法轮询上游异步任务：${message}`, 'upstream-unreachable')
+      let response: Response
+      try {
+        response = await fetch(`${baseUrl}/tasks/${encodeURIComponent(taskId)}`, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${upstream.apiKey.trim()}` },
+          signal: budget.signal,
+        })
+      } catch (error) {
+        if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+        if (isBudgetTimeout(error)) throw new ImageGenError('上游异步任务轮询超时', 'upstream-timeout')
+        throw new ImageGenError(`无法轮询上游异步任务：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
+      }
+      let payload: unknown
+      try {
+        payload = await response.json()
+      } catch (error) {
+        if (isBudgetTimeout(error)) throw new ImageGenError('上游异步任务轮询超时', 'upstream-timeout')
+        throw new ImageGenError(`上游任务接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+      }
+      if (!response.ok || payload === null || typeof payload !== 'object') {
+        throw new ImageGenError(asyncErrorMessage(payload, `上游任务轮询失败（HTTP ${response.status}）`), 'upstream-rejected')
+      }
+      const record = payload as Record<string, unknown>
+      const data = record.data
+      const statusRecord = Array.isArray(data) ? data[0] : data !== null && typeof data === 'object' ? data : record
+      const statusValue = statusRecord !== null && typeof statusRecord === 'object'
+        ? (statusRecord as Record<string, unknown>).status
+        : undefined
+      const status = typeof statusValue === 'string' ? statusValue.toLowerCase() : ''
+      if (ASYNC_FAILED_STATUSES.has(status)) {
+        throw new ImageGenError(asyncErrorMessage(payload, `上游异步任务失败（${status || 'unknown'}）`), 'upstream-rejected')
+      }
+      const nested = statusRecord !== null && typeof statusRecord === 'object' ? statusRecord as Record<string, unknown> : record
+      const result = nested.result ?? (nested.output !== null && typeof nested.output === 'object' ? (nested.output as Record<string, unknown>).result : undefined) ?? record.result
+      const resultRecord = result !== null && typeof result === 'object' ? result as Record<string, unknown> : undefined
+      const images = resultRecord?.images ?? (nested.images ?? record.images)
+      if (ASYNC_COMPLETED_STATUSES.has(status) || images !== undefined) {
+        const items = Array.isArray(images) ? images.flatMap(imageItemsOf) : imageItemsOf(images)
+        if (items.length > 0) return items
+        if (ASYNC_COMPLETED_STATUSES.has(status)) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
+      }
+      if (status !== '' && !ASYNC_PENDING_STATUSES.has(status) && !ASYNC_COMPLETED_STATUSES.has(status)) {
+        throw new ImageGenError(`上游返回了未知异步任务状态：${status}`, 'upstream-invalid')
+      }
     } finally {
       budget.dispose()
-    }
-    let payload: unknown
-    try {
-      payload = await response.json()
-    } catch {
-      throw new ImageGenError(`上游任务接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
-    }
-    if (!response.ok || payload === null || typeof payload !== 'object') {
-      throw new ImageGenError(asyncErrorMessage(payload, `上游任务轮询失败（HTTP ${response.status}）`), 'upstream-rejected')
-    }
-    const record = payload as Record<string, unknown>
-    const data = record.data
-    const statusRecord = Array.isArray(data) ? data[0] : data !== null && typeof data === 'object' ? data : record
-    const statusValue = statusRecord !== null && typeof statusRecord === 'object'
-      ? (statusRecord as Record<string, unknown>).status
-      : undefined
-    const status = typeof statusValue === 'string' ? statusValue.toLowerCase() : ''
-    if (ASYNC_FAILED_STATUSES.has(status)) {
-      throw new ImageGenError(asyncErrorMessage(payload, `上游异步任务失败（${status || 'unknown'}）`), 'upstream-rejected')
-    }
-    const nested = statusRecord !== null && typeof statusRecord === 'object' ? statusRecord as Record<string, unknown> : record
-    const result = nested.result ?? (nested.output !== null && typeof nested.output === 'object' ? (nested.output as Record<string, unknown>).result : undefined) ?? record.result
-    const resultRecord = result !== null && typeof result === 'object' ? result as Record<string, unknown> : undefined
-    const images = resultRecord?.images ?? (nested.images ?? record.images)
-    if (ASYNC_COMPLETED_STATUSES.has(status) || images !== undefined) {
-      const items = Array.isArray(images) ? images.flatMap(imageItemsOf) : imageItemsOf(images)
-      if (items.length > 0) return items
-      if (ASYNC_COMPLETED_STATUSES.has(status)) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
-    }
-    if (status !== '' && !ASYNC_PENDING_STATUSES.has(status) && !ASYNC_COMPLETED_STATUSES.has(status)) {
-      throw new ImageGenError(`上游返回了未知异步任务状态：${status}`, 'upstream-invalid')
     }
     await waitForPoll(Math.min(delay, Math.max(1, deadline - Date.now())), signal)
     delay = Math.min(5000, delay * 2)
@@ -608,53 +619,57 @@ async function requestOneImage(
   }
 
   const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
-  let response: Response
   try {
-    // Seedream has no /images/edits endpoint: both modes hit generations.
-    const endpoint = request.mode === 'edit' && !isSeedream(params.model)
-      ? '/images/edits'
-      : '/images/generations'
-    response = await fetch(`${baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers,
-      body,
-      signal: budget.signal,
-    })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (/aborter/i.test(message) || /timeout/i.test(message)) {
-      throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+    let response: Response
+    try {
+      // Seedream has no /images/edits endpoint: both modes hit generations.
+      const endpoint = request.mode === 'edit' && !isSeedream(params.model)
+        ? '/images/edits'
+        : '/images/generations'
+      response = await fetch(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body,
+        signal: budget.signal,
+      })
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`无法连接上游接口：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
     }
-    throw new ImageGenError(`无法连接上游接口：${message}`, 'upstream-unreachable')
+
+    let payload: unknown
+    try {
+      // The budget stays armed through the body read: a gateway that returns
+      // headers but never completes the body must not hang the task forever.
+      payload = await response.json()
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+    }
+    if (!response.ok || payload === null || typeof payload !== 'object') {
+      throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+    }
+
+    const record = payload as Record<string, unknown>
+    const data = dataRecordsOf(record)
+    if (data === undefined) {
+      throw new ImageGenError('上游响应缺少 data 数组', 'upstream-invalid')
+    }
+    if (data.length === 0) {
+      throw new ImageGenError('上游返回了 0 张图片', 'upstream-empty')
+    }
+    const asyncEntries = data.filter(entry => typeof entry.task_id === 'string' && entry.task_id.trim() !== '')
+    if (asyncEntries.length > 0) {
+      const asyncRecords = (await Promise.all(asyncEntries.map(entry => pollAsyncTask(baseUrl, upstream, entry.task_id as string, signal)))).flat()
+      if (asyncRecords.length === 0) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
+      return Promise.all(asyncRecords.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
+    }
+    return Promise.all(data.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
   } finally {
     budget.dispose()
   }
-
-  let payload: unknown
-  try {
-    payload = await response.json()
-  } catch {
-    throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
-  }
-  if (!response.ok || payload === null || typeof payload !== 'object') {
-    throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
-  }
-
-  const record = payload as Record<string, unknown>
-  const data = dataRecordsOf(record)
-  if (data === undefined) {
-    throw new ImageGenError('上游响应缺少 data 数组', 'upstream-invalid')
-  }
-  if (data.length === 0) {
-    throw new ImageGenError('上游返回了 0 张图片', 'upstream-empty')
-  }
-  const asyncEntries = data.filter(entry => typeof entry.task_id === 'string' && entry.task_id.trim() !== '')
-  if (asyncEntries.length > 0) {
-    const asyncRecords = (await Promise.all(asyncEntries.map(entry => pollAsyncTask(baseUrl, upstream, entry.task_id as string, signal)))).flat()
-    if (asyncRecords.length === 0) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
-    return Promise.all(asyncRecords.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
-  }
-  return Promise.all(data.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
 }
 
 /**
@@ -701,36 +716,36 @@ async function generateQwenImage(
   }
 
   const budget = requestSignal(options.signal, UPSTREAM_TIMEOUT_MS)
-  let response: Response
   try {
-    response = await fetch(`${baseUrl}/services/aigc/multimodal-generation/generation`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${upstream.apiKey.trim()}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: budget.signal,
-    })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (/aborter/i.test(message) || /timeout/i.test(message)) {
-      throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+    let response: Response
+    try {
+      response = await fetch(`${baseUrl}/services/aigc/multimodal-generation/generation`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${upstream.apiKey.trim()}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: budget.signal,
+      })
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (options.signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`无法连接上游接口：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
     }
-    throw new ImageGenError(`无法连接上游接口：${message}`, 'upstream-unreachable')
-  } finally {
-    budget.dispose()
-  }
 
-  let payload: unknown
-  try {
-    payload = await response.json()
-  } catch {
-    throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
-  }
-  if (!response.ok || payload === null || typeof payload !== 'object') {
-    throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
-  }
+    let payload: unknown
+    try {
+      // Budget stays armed through the body read (same rationale as the OpenAI path).
+      payload = await response.json()
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (options.signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+    }
+    if (!response.ok || payload === null || typeof payload !== 'object') {
+      throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+    }
 
   // output.choices[].message.content[] mixes text and { image: url } items.
   const record = payload as Record<string, unknown>
@@ -759,6 +774,9 @@ async function generateQwenImage(
     return { b64: normalized.b64, mime: normalized.mime }
   }))
   return { images }
+  } finally {
+    budget.dispose()
+  }
 }
 
 /**
