@@ -19,8 +19,6 @@ import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
-import { addCanvasItem, CanvasWorkspace, loadCanvasState, persistCanvasState, type CanvasState } from './CanvasWorkspace.tsx'
-import canvasCss from './canvas.module.css'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
@@ -396,8 +394,8 @@ function withAnchorNote(prompt: string): string {
 type PanelTab = GenerateMode | 'gallery'
 
 /** Top-level workspaces inside the panel. 'normal' is the classic studio;
- *  task-oriented modes (ecommerce, canvas) sit beside it. */
-type PanelWorkspace = 'normal' | 'ecommerce' | 'canvas'
+ *  more task-oriented modes (prototype, …) can join alongside 'ecommerce'. */
+type PanelWorkspace = 'normal' | 'ecommerce'
 
 type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
@@ -544,9 +542,6 @@ export function ImageGenPanel(props: {
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
-  // Infinite-canvas workspace state (survives workspace switches; URL-backed
-  // items persist to localStorage, data-URL items are session-only).
-  const [canvas, setCanvas] = useState<CanvasState>(loadCanvasState)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
   const [ecommerce, setEcommerce] = useState<ProductSetDraft>(() => {
@@ -595,12 +590,6 @@ export function ImageGenPanel(props: {
   useEffect(() => {
     try { window.localStorage.setItem(ECOMMERCE_DRAFT_STORAGE_KEY, JSON.stringify(ecommerce)) } catch { /* optional draft persistence */ }
   }, [ecommerce])
-
-  // Canvas persistence: URL-backed items + viewport only (data-URL items are
-  // session-only by design).
-  useEffect(() => {
-    try { persistCanvasState(canvas) } catch { /* optional draft persistence */ }
-  }, [canvas])
 
   useEffect(() => {
     try {
@@ -929,25 +918,8 @@ export function ImageGenPanel(props: {
     }
   }
 
-  /** Submit one canvas edit task (the flattened annotated image is built by
-   *  the canvas workspace; the host queue and history flow stay unchanged). */
-  const handleCanvasSubmit = async (request: GenerateRequest): Promise<GenerationTask> => {
-    if (!enabled || !configured || !apiKeySet) {
-      openSettingsGuide('generation')
-      throw new Error(tt('config.generationHint'))
-    }
-    setError(null)
-    const task = await api.taskSubmit(request)
-    setTasks(previous => [task, ...previous.filter(item => item.id !== task.id)])
-    return task
-  }
-
-  /** Place a generated image onto the canvas (results hover pill / lightbox). */
-  const sendToCanvas = (image: GeneratedImage): void => {
-    setCanvas(previous => addCanvasItem(previous, { src: srcOf(image), origin: 'data', name: 'canvas.png' }))
-  }
-
-  const handleEcommerceGenerate = async (): Promise<void> => {    if (ecommerceGenerateDisabled) return
+  const handleEcommerceGenerate = async (): Promise<void> => {
+    if (ecommerceGenerateDisabled) return
     if (!enabled || !configured || !apiKeySet) { openSettingsGuide('generation'); return }
     const projectId = ecommerce.projectId || newComparisonId()
     const buildRequest = (slot: ProductSetSlot, index: number): GenerateRequest => {
@@ -1713,7 +1685,6 @@ export function ImageGenPanel(props: {
           <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab !== 'gallery' ? '' : undefined} onClick={() => { if (workspace !== 'normal' || tab === 'gallery') openTab('text') }}>{tt('workspace.normal')}</button>
           <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab === 'gallery' ? '' : undefined} onClick={() => { openTab('gallery') }}>{tt('gallery.title')}</button>
           <span className={css.topNavDivider} aria-hidden="true" />
-          <button type="button" className={css.topNavItem} data-active={workspace === 'canvas' ? '' : undefined} onClick={() => { setWorkspace('canvas') }}>{tt('workspace.canvas')}</button>
           <button type="button" className={css.topNavItem} data-active={workspace === 'ecommerce' ? '' : undefined} onClick={() => { setWorkspace('ecommerce') }}>{tt('workspace.ecommerce')}<span className={css.previewBadge}>{tt('ecommerce.badge')}</span></button>
         </nav>
         <span className={css.panelHeaderActions}>
@@ -1764,7 +1735,6 @@ export function ImageGenPanel(props: {
             style={{ '--dsh-imagegen-config-width': `${configWidth}px` } as CSSProperties}
             data-collapsed={configCollapsed ? 'true' : 'false'}
             data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}
-            data-canvas={workspace === 'canvas' ? 'true' : undefined}
           >
             <div className={css.configResizer} title={tt('config.resizeHint')} onPointerDown={onConfigResizeStart} />
           <div className={css.configHeader}>
@@ -1835,19 +1805,6 @@ export function ImageGenPanel(props: {
                   <Pill active={tab === 'text'} onClick={() => { setTab('text') }} className={css.modePill}>{tt('mode.text')}</Pill>
                   <Pill active={tab === 'edit'} onClick={() => { setTab('edit') }} className={css.modePill}>{tt('mode.edit')}</Pill>
                 </div>
-              </section>
-            ) : null}
-
-            {workspace === 'canvas' ? (
-              <section className={css.card} data-canvas-panel="">
-                <h3 className={canvasCss.panelTitle}>{tt('canvas.title')}</h3>
-                <p className={css.ecommercePlanNote}>{tt('canvas.sidebarHint')}</p>
-                <ul className={css.ecommercePlanNote} style={{ margin: '0 0 4px', paddingLeft: 16 }}>
-                  <li>{tt('canvas.hintAdd')}</li>
-                  <li>{tt('canvas.hintAnnotate')}</li>
-                  <li>{tt('canvas.hintSubmit')}</li>
-                </ul>
-                <Button variant="outline" size="sm" onClick={() => { void api.openDataFolder() }}>{tt('gallery.openFolder')}</Button>
               </section>
             ) : null}
 
@@ -2171,9 +2128,7 @@ export function ImageGenPanel(props: {
           </div>
 
           {/* footer: model + generate — a fixed sibling of the scroll area, so
-              it never overlaps the cards scrolling above it. The canvas
-              workspace submits from its own floating prompt card instead. */}
-            {workspace === 'canvas' ? null : (
+              it never overlaps the cards scrolling above it. */}
             <section className={css.footer}>
             {workspace === 'ecommerce' ? (
               <div className={css.ecommerceFooterBody}>
@@ -2262,23 +2217,10 @@ export function ImageGenPanel(props: {
               ) : tt('generate')}
               </Button> : null}
             </section>
-            )}
           </aside>
 
           {/* ------------------------------------------------------- canvas */}
-          <section className={css.canvas} data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined} data-canvas={workspace === 'canvas' ? 'true' : undefined}>
-          {workspace === 'canvas' ? (
-            <CanvasWorkspace
-              canvas={canvas}
-              onCanvasChange={mutate => { setCanvas(previous => mutate(previous)) }}
-              history={history}
-              gallery={gallery}
-              imageModels={imageModels}
-              tasks={tasks}
-              busy={submitting}
-              onSubmitEdit={handleCanvasSubmit}
-            />
-          ) : null}
+          <section className={css.canvas} data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}>
           {workspace === 'normal' && tab === 'gallery' ? (
             <div className={css.galleryWorkspace}>
               <header className={css.galleryToolbar}>
@@ -2440,7 +2382,7 @@ export function ImageGenPanel(props: {
               )}
             </div>
           ) : null}
-          {(workspace === 'ecommerce' || workspace === 'canvas' || tab !== 'gallery') && tasks.length > 0 ? (
+          {(workspace === 'ecommerce' || tab !== 'gallery') && tasks.length > 0 ? (
             <section className={css.taskTray} data-open={taskTrayOpen ? 'true' : 'false'} aria-label={tt('tasks.title')}>
               <header className={css.taskTrayHeader}>
                 <button type="button" className={css.taskTrayToggle} aria-expanded={taskTrayOpen} onClick={() => { setTaskTrayOpen(open => !open) }}>
@@ -2488,7 +2430,7 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {generating && comparison === null && workspace === 'normal' ? (
+          {generating && comparison === null && workspace !== 'ecommerce' ? (
             <div className={css.canvasState} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <span className={css.bigSpinner} />
               <span className={css.canvasStateTitle}>
@@ -2510,7 +2452,7 @@ export function ImageGenPanel(props: {
             <div className={css.canvasError} role="alert">{tt('canvas.error', { error })}</div>
           ) : null}
 
-          {!generating && !error && images.length === 0 && workspace === 'normal' ? (
+          {!generating && !error && images.length === 0 && workspace !== 'ecommerce' ? (
             <InspirationGallery
               api={api}
               onUse={(text) => {
@@ -2520,7 +2462,7 @@ export function ImageGenPanel(props: {
             />
           ) : null}
 
-          {!generating && images.length > 0 && workspace === 'normal' ? (
+          {!generating && images.length > 0 && workspace !== 'ecommerce' ? (
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>
@@ -2581,19 +2523,6 @@ export function ImageGenPanel(props: {
                       >
                         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
                         {addingToConversation === index ? tt('conversation.adding') : tt('conversation.add')}
-                      </button>
-                      <button
-                        type="button"
-                        className={css.canvasAdd}
-                        title={tt('canvas.sendTo')}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          sendToCanvas(image)
-                          setWorkspace('canvas')
-                        }}
-                      >
-                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M2.5 6h11M6 6v7.5"/></svg>
-                        {tt('canvas.sendTo')}
                       </button>
                       <a
                       className={css.download}
@@ -2732,9 +2661,6 @@ export function ImageGenPanel(props: {
                   </button>
                   <button type="button" className={css.lightboxEdit} onClick={addPreviewToEdit}>
                     {tt('preview.addToEdit')}
-                  </button>
-                  <button type="button" className={css.lightboxEdit} onClick={() => { sendToCanvas(previewImage); setWorkspace('canvas'); closePreview() }}>
-                    {tt('canvas.sendTo')}
                   </button>
                   <a
                     className={css.lightboxDownload}
