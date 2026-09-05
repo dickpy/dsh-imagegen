@@ -54,6 +54,14 @@ export const TASK_API = {
   retry: '/api/dsh-imagegen/tasks/retry',
 } as const
 
+/** Reveal the host data directory (saved images) in the OS file manager. */
+export const DATA_FOLDER_API = '/api/dsh-imagegen/data-folder/open' as const
+
+/** Probe the configured S3-compatible object storage. */
+export const STORAGE_API = {
+  test: '/api/dsh-imagegen/storage/test',
+} as const
+
 /** Host-mediated GitHub Release update routes. */
 export const UPDATE_API = {
   check: '/api/dsh-imagegen/update/check',

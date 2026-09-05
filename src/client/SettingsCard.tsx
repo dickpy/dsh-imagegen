@@ -33,6 +33,14 @@ export interface ImageGenSettings {
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
+  storageEnabled?: boolean
+  storageEndpoint?: string
+  storageRegion?: string
+  storagePrefix?: string
+  storageAccessKey?: string
+  storageSecretKey?: string
+  storageSyncGallery?: boolean
+  storageSyncHistory?: boolean
 }
 
 /** What the card renders. */
@@ -47,12 +55,29 @@ export interface ImageGenSettingsCardState extends CardShell {
   promptApiUrl: CardFieldState
   promptApiKey: CardFieldState
   promptModel: CardFieldState
+  storageEnabled: CardFieldState
+  storageEndpoint: CardFieldState
+  storageRegion: CardFieldState
+  storagePrefix: CardFieldState
+  storageAccessKey: CardFieldState
+  storageSecretKey: CardFieldState
+  storageSyncGallery: CardFieldState
+  storageSyncHistory: CardFieldState
+}
+
+/** Result of probing the configured object storage from the card. */
+export interface StorageTestOutcome {
+  ok: boolean
+  ms?: number
+  message?: string
 }
 
 /** The registration-side face the card's slot entry injects. */
 export interface ImageGenSettingsCardFace extends CardActions {
   /** Channel staging actions (committed together with the card's save). */
   channels: ChannelsFormActions
+  /** Save staged edits, then upload a probe object to the configured store. */
+  storageTest: () => Promise<StorageTestOutcome>
   hooks: {
     /** Card snapshot bound by the renderer as useImageGenSettingsCard. */
     imageGenSettingsCard: SnapshotStore<ImageGenSettingsCardState>
@@ -73,8 +98,16 @@ export class ImageGenSettingsCardController {
       textField('promptApiUrl'),
       secretField('promptApiKey'),
       textField('promptModel'),
+      booleanField('storageEnabled'),
+      textField('storageEndpoint'),
+      textField('storageRegion'),
+      textField('storagePrefix'),
+      textField('storageAccessKey'),
+      secretField('storageSecretKey'),
+      booleanField('storageSyncGallery'),
+      booleanField('storageSyncHistory'),
     ], {
-      secretSettled: () => this.scope.getSecretSetSnapshot('promptApiKey'),
+      secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
     this.channelsForm = new ChannelsForm(scope)
   }
@@ -91,6 +124,14 @@ export class ImageGenSettingsCardController {
       promptApiUrl: this.form.field('promptApiUrl'),
       promptApiKey: this.form.field('promptApiKey'),
       promptModel: this.form.field('promptModel'),
+      storageEnabled: this.form.field('storageEnabled'),
+      storageEndpoint: this.form.field('storageEndpoint'),
+      storageRegion: this.form.field('storageRegion'),
+      storagePrefix: this.form.field('storagePrefix'),
+      storageAccessKey: this.form.field('storageAccessKey'),
+      storageSecretKey: this.form.field('storageSecretKey'),
+      storageSyncGallery: this.form.field('storageSyncGallery'),
+      storageSyncHistory: this.form.field('storageSyncHistory'),
     }
   }
 
@@ -106,6 +147,19 @@ export class ImageGenSettingsCardController {
         imageGenSettingsCard: cardStore,
       },
       channels: this.channelsForm.actions(),
+      // The probe needs the values the user is looking at, so staged edits are
+      // committed first; the host route then resolves the saved config itself.
+      storageTest: async (): Promise<StorageTestOutcome> => {
+        await this.form.save()
+        try {
+          const response = await fetch('/api/dsh-imagegen/storage/test', { method: 'POST' })
+          const body = await response.json() as { ok?: unknown; ms?: unknown; message?: unknown }
+          if (body.ok === true) return { ok: true, ms: typeof body.ms === 'number' ? body.ms : undefined }
+          return { ok: false, message: typeof body.message === 'string' ? body.message : `HTTP ${response.status}` }
+        } catch (error) {
+          return { ok: false, message: error instanceof Error ? error.message : String(error) }
+        }
+      },
       ...this.form.actions(),
     }
   }
@@ -144,6 +198,9 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const [manualPromptModel, setManualPromptModel] = useState('')
   const [enhancementOpen, setEnhancementOpen] = useState(false)
   const [promptApiOpen, setPromptApiOpen] = useState(false)
+  const [storageOpen, setStorageOpen] = useState(false)
+  const [storageTesting, setStorageTesting] = useState(false)
+  const [storageTestResult, setStorageTestResult] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   // Channel list local states.
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -412,6 +469,121 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
             />
             </div> : null}
             </section> : null}
+
+            <button type="button" className={css.disclosure} aria-expanded={storageOpen} onClick={() => { setStorageOpen(open => !open) }}>
+              <span>{t('settings.storageTitle')}</span>
+              <span aria-hidden="true">{storageOpen ? '⌃' : '⌄'}</span>
+            </button>
+            {storageOpen ? <div className={css.optionalContent}>
+            <BooleanField
+              id="dsh-imagegen-settings-storage-enabled"
+              label={t('settings.storageEnabled')}
+              hint={t('settings.storageHint')}
+              inheritLabel={t('settings.inherit')}
+              onLabel={t('settings.on')}
+              offLabel={t('settings.off')}
+              {...fieldProps}
+              {...state.storageEnabled}
+              onEdit={(text) => { props.edit('storageEnabled', text) }}
+              onReset={() => { props.resetField('storageEnabled') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-storage-endpoint"
+              label={t('settings.storageEndpoint')}
+              hint={t('settings.storageEndpointHint')}
+              placeholder="https://bucket-appid.cos.ap-guangzhou.myqcloud.com"
+              {...fieldProps}
+              {...state.storageEndpoint}
+              onEdit={(text) => { props.edit('storageEndpoint', text) }}
+              onReset={() => { props.resetField('storageEndpoint') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-storage-region"
+              label={t('settings.storageRegion')}
+              hint={t('settings.storageRegionHint')}
+              placeholder="ap-guangzhou"
+              {...fieldProps}
+              {...state.storageRegion}
+              onEdit={(text) => { props.edit('storageRegion', text) }}
+              onReset={() => { props.resetField('storageRegion') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-storage-prefix"
+              label={t('settings.storagePrefix')}
+              hint={t('settings.storagePrefixHint')}
+              placeholder="dsh-imagegen"
+              {...fieldProps}
+              {...state.storagePrefix}
+              onEdit={(text) => { props.edit('storagePrefix', text) }}
+              onReset={() => { props.resetField('storagePrefix') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-storage-accesskey"
+              label={t('settings.storageAccessKey')}
+              hint={t('settings.storageAccessKeyHint')}
+              placeholder="AKID…"
+              {...fieldProps}
+              {...state.storageAccessKey}
+              onEdit={(text) => { props.edit('storageAccessKey', text) }}
+              onReset={() => { props.resetField('storageAccessKey') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-storage-secretkey"
+              label={t('settings.storageSecretKey')}
+              hint={t('settings.storageSecretKeyHint')}
+              placeholder="…"
+              secret
+              {...fieldProps}
+              {...state.storageSecretKey}
+              overridden={false}
+              onEdit={(text) => { props.edit('storageSecretKey', text) }}
+              onReset={() => { props.resetField('storageSecretKey') }}
+            />
+            <BooleanField
+              id="dsh-imagegen-settings-storage-gallery"
+              label={t('settings.storageSyncGallery')}
+              hint={t('settings.storageSyncGalleryHint')}
+              inheritLabel={t('settings.inherit')}
+              onLabel={t('settings.on')}
+              offLabel={t('settings.off')}
+              {...fieldProps}
+              {...state.storageSyncGallery}
+              onEdit={(text) => { props.edit('storageSyncGallery', text) }}
+              onReset={() => { props.resetField('storageSyncGallery') }}
+            />
+            <BooleanField
+              id="dsh-imagegen-settings-storage-history"
+              label={t('settings.storageSyncHistory')}
+              hint={t('settings.storageSyncHistoryHint')}
+              inheritLabel={t('settings.inherit')}
+              onLabel={t('settings.on')}
+              offLabel={t('settings.off')}
+              {...fieldProps}
+              {...state.storageSyncHistory}
+              onEdit={(text) => { props.edit('storageSyncHistory', text) }}
+              onReset={() => { props.resetField('storageSyncHistory') }}
+            />
+            <div className={css.modelSummary}>
+              <button
+                type="button"
+                className={css.addModel}
+                disabled={disabled || storageTesting}
+                onClick={() => {
+                  setStorageTesting(true)
+                  setStorageTestResult(null)
+                  void props.storageTest().then(outcome => {
+                    setStorageTestResult(outcome.ok
+                      ? t('settings.storageTestOk', { ms: outcome.ms ?? 0 })
+                      : t('settings.storageTestFailed', { error: outcome.message ?? 'error' }))
+                  }).finally(() => { setStorageTesting(false) })
+                }}
+              >
+                {storageTesting ? t('settings.storageTesting') : t('settings.storageTest')}
+              </button>
+              {storageTestResult !== null ? <p className={css.failed} role="status">{storageTestResult}</p> : null}
+            </div>
+            <p className={css.hint}>{t('settings.storageKeyHint')}</p>
+            </div> : null}
 
             <button type="button" className={css.disclosure} aria-expanded={moreOpen} onClick={() => { setMoreOpen(open => !open) }}>
               <span>{t('settings.moreOptions')}</span>

@@ -8,9 +8,10 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { installSettingsSectionCompat, settingsNamespaceCompat } from './settings-compat.ts'
-import z from 'schemastery'
-// Type-only: pulls the webServer Context merge (route registration).
+import z from 'schemastery'// Type-only: pulls the webServer Context merge (route registration).
 import type {} from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the systemPrompt Context merge (announcement section).
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -21,6 +22,18 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { IMAGEGEN_SETTINGS_NAMESPACE, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
 import { syncAllTemplates } from './templates-store.ts'
+import { setStorageSyncHandler, putObject, type StorageSyncConfig } from './storage-sync.ts'
+
+/** Content type for a saved image file name (object uploads). */
+function mimeOfPath(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.webp': return 'image/webp'
+    case '.gif': return 'image/gif'
+    default: return 'image/png'
+  }
+}
 import { ImageGenerationRuntime, type ChannelsView, type RuntimeChannel } from './generation-runtime.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
@@ -42,6 +55,7 @@ export { latestSessionImage, registerEditImageCommand } from './edit-image-comma
 export { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 export { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates, syncAllTemplates, clearTemplateMemo } from './templates-store.ts'
 export { addTemplateFavorite, clearTemplateFavoritesMemo, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
+export { putObject, setStorageSyncHandler, testStorage, type StorageSyncConfig } from './storage-sync.ts'
 export { checkForUpdate, clearUpdateCache, compareVersions, CURRENT_VERSION, installUpdate, profileFromProcess } from './updater.ts'
 
 /** The branded settings namespace of this plugin (the card edits it). */
@@ -75,6 +89,22 @@ export interface Config {
   promptApiKey?: string
   /** Chat model used to expand short image prompts. */
   promptModel?: string
+  /** Sync saved images to an S3-compatible object store (COS / OSS / Qiniu S3 …). */
+  storageEnabled?: boolean
+  /** S3-compatible endpoint URL including the bucket (virtual-hosted or path style). */
+  storageEndpoint?: string
+  /** Provider region for SigV4 scope, e.g. ap-guangzhou / oss-cn-hangzhou. */
+  storageRegion?: string
+  /** Object key prefix, default 'dsh-imagegen'. */
+  storagePrefix?: string
+  /** S3 access key id. */
+  storageAccessKey?: string
+  /** S3 secret access key (stored redacted). */
+  storageSecretKey?: string
+  /** Upload gallery additions (default on when storage is enabled). */
+  storageSyncGallery?: boolean
+  /** Also upload history images. */
+  storageSyncHistory?: boolean
   /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
   /** Legacy base URL; synthesized into the default channel on upgrade. */
   apiUrl?: string
@@ -103,6 +133,14 @@ export const Config: z<Config> = z.object({
   promptApiUrl: z.string().default(''),
   promptApiKey: z.string().role('secret').default(''),
   promptModel: z.string().default(''),
+  storageEnabled: z.boolean().default(false),
+  storageEndpoint: z.string().default(''),
+  storageRegion: z.string().default(''),
+  storagePrefix: z.string().default('dsh-imagegen'),
+  storageAccessKey: z.string().default(''),
+  storageSecretKey: z.string().role('secret').default(''),
+  storageSyncGallery: z.boolean().default(true),
+  storageSyncHistory: z.boolean().default(false),
   apiUrl: z.string().default(''),
   apiKey: z.string().role('secret').default(''),
   imageModels: z.array(z.string()).default([]),
@@ -175,6 +213,7 @@ export interface EffectiveConfig {
   promptApiUrl: string
   promptApiKey: string
   promptModel: string
+  storage: StorageSyncConfig & { enabled: boolean; syncGallery: boolean; syncHistory: boolean }
 }
 
 /**
@@ -182,7 +221,7 @@ export interface EffectiveConfig {
  * @param ctx - host plugin context carrying webServer/systemPrompt.
  * @param config - resolved plugin config (schema defaults applied by the loader).
  */
-export function apply(ctx: Context, config?: Config): void {
+export function apply(ctx: Context, config?: Config): (() => void) | void {
   // The live source the surfaces read: the settings section once the settings
   // service is attached, the composition entry otherwise.
   let current: () => Config = () => config ?? {}
@@ -226,6 +265,16 @@ export function apply(ctx: Context, config?: Config): void {
       promptApiUrl: typeof value.promptApiUrl === 'string' ? value.promptApiUrl.trim() : '',
       promptApiKey: typeof value.promptApiKey === 'string' ? value.promptApiKey.trim() : '',
       promptModel: typeof value.promptModel === 'string' ? value.promptModel.trim() : '',
+      storage: {
+        enabled: value.storageEnabled ?? false,
+        endpoint: typeof value.storageEndpoint === 'string' ? value.storageEndpoint.trim() : '',
+        region: typeof value.storageRegion === 'string' ? value.storageRegion.trim() : '',
+        accessKey: typeof value.storageAccessKey === 'string' ? value.storageAccessKey.trim() : '',
+        secretKey: typeof value.storageSecretKey === 'string' ? value.storageSecretKey.trim() : '',
+        prefix: typeof value.storagePrefix === 'string' && value.storagePrefix.trim() !== '' ? value.storagePrefix.trim() : 'dsh-imagegen',
+        syncGallery: value.storageSyncGallery ?? true,
+        syncHistory: value.storageSyncHistory ?? false,
+      },
     }
   }
 
@@ -235,6 +284,21 @@ export function apply(ctx: Context, config?: Config): void {
     const value = resolve()
     return { channels: value.channels, defaultChannelId: value.defaultChannelId }
   }
+
+  // Object-storage sync: the image stores announce every file they write; the
+  // handler resolves the live settings and uploads when enabled. Fire and
+  // forget — a sync failure never blocks the save path.
+  setStorageSyncHandler((kind, filePath) => {
+    const storage = resolve().storage
+    if (!storage.enabled || !storage.endpoint.trim() || storage.secretKey.trim() === '') return
+    if (kind === 'gallery' && !storage.syncGallery) return
+    if (kind === 'history' && !storage.syncHistory) return
+    const key = `${storage.prefix}/${kind === 'gallery' ? 'gallery' : 'images'}/${path.basename(filePath)}`
+    const data = readFileSync(filePath)
+    void putObject(storage, key, data, mimeOfPath(filePath)).catch(() => {
+      // Best-effort sync: surfaced through the settings test, never fatal here.
+    })
+  })
 
   // Browser endpoints and Agent tools share the exact same serial queue. This
   // keeps image persistence, cancellation, and retries coherent across both
@@ -276,6 +340,7 @@ export function apply(ctx: Context, config?: Config): void {
           attachments: sctx.attachments,
           pendingConversationImages,
           runtime,
+          resolveStorage: () => resolve().storage,
         })
         const disposers = routes.map(route => ctx.webServer.register(route))
         // Background template sync: the upstream sources update on their own
@@ -354,4 +419,6 @@ export function apply(ctx: Context, config?: Config): void {
   // Initial registration from the composition entry (covers deployments with
   // no settings service, whose installSettingsSection never fires its hooks).
   sync()
+
+  return () => { setStorageSyncHandler(undefined) }
 }

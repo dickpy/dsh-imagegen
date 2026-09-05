@@ -2253,6 +2253,7 @@ export function ImageGenPanel(props: {
                     <option value="newest">{tt('gallery.newest')}</option>
                     <option value="oldest">{tt('gallery.oldest')}</option>
                   </select>
+                  <button type="button" className={css.galleryClear} data-gallery-open-folder="" title={tt('gallery.openFolderHint')} onClick={() => { void api.openDataFolder() }}>{tt('gallery.openFolder')}</button>
                   {gallery.length > 0 ? <button type="button" className={css.galleryClear} data-gallery-clear="" onClick={() => { void clearGalleryAll() }}>{tt('gallery.clear')}</button> : null}
                 </div>
               </header>

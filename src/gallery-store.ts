@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { GenerateMode, HistoryEntry, HistoryEntryInput } from './protocol.ts'
+import { notifyImageSaved } from './storage-sync.ts'
 
 const HISTORY_DIR = path.join(homedir(), '.dsh', 'dsh-imagegen')
 const GALLERY_DIR = path.join(HISTORY_DIR, 'gallery')
@@ -221,6 +222,7 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
         const image = input.images[index]!
         const file = `${prefix}-${index}.${extensionOf(image.mime)}`
         await fs.writeFile(path.join(IMAGES_DIR, file), Buffer.from(image.b64, 'base64'))
+        notifyImageSaved('gallery', path.join(IMAGES_DIR, file))
         storedImages.push({
           file,
           mime: image.mime,

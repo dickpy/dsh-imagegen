@@ -6,7 +6,11 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { spawn } from 'node:child_process'
+import { mkdir as fsMkdir } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
@@ -18,9 +22,10 @@ import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHisto
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
 import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
 import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
+import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -86,6 +91,8 @@ export interface ImageGenRoutesDeps {
     add: (sourceId: string, item: TemplateFavorite['case']) => Promise<TemplateFavorite[]>
     remove: (key: string) => Promise<TemplateFavorite[]>
   }
+  /** Resolve the object-storage sync settings (with the real secret). */
+  resolveStorage?: () => StorageSyncConfig
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
 }
@@ -1073,6 +1080,55 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           writeJson(res, 200, { ok: true, favorites: await favorites.remove(key) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'template-favorites-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ------------------------------------------- data folder: reveal in OS
+    {
+      kind: 'exact',
+      path: DATA_FOLDER_API,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const dir = path.join(homedir(), '.dsh', 'dsh-imagegen')
+        try {
+          await fsMkdir(dir, { recursive: true })
+        } catch { /* reveal still works when the directory already exists */ }
+        if (body?.open === false) {
+          // Wiring probe for tests: resolve the path without spawning a shell.
+          writeJson(res, 200, { ok: true, path: dir })
+          return
+        }
+        try {
+          const command = process.platform === 'win32'
+            ? 'explorer.exe'
+            : process.platform === 'darwin'
+              ? 'open'
+              : 'xdg-open'
+          const child = spawn(command, [dir], { detached: true, stdio: 'ignore' })
+          child.unref()
+          writeJson(res, 200, { ok: true, path: dir })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'data-folder-failed', message: messageOf(error) })
+        }
+      },
+    },
+    // ------------------------------------------------- storage: probe upload
+    {
+      kind: 'exact',
+      path: STORAGE_API.test,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const storage = deps.resolveStorage?.()
+        if (storage === undefined) {
+          writeJson(res, 200, { ok: false, code: 'storage-unavailable', message: '存储配置不可用' })
+          return
+        }
+        try {
+          const result = await testStorage(storage)
+          writeJson(res, 200, { ok: true, ms: result.ms, key: result.key })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'storage-test-failed', message: messageOf(error) })
         }
       },
     },

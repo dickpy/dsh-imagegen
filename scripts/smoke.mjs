@@ -413,7 +413,7 @@ await check('B9 Qwen-Image speaks the DashScope native contract', async () => {
 })
 
 
-await check('C0 async two-step providers submit, poll, and flatten URL arrays', async () => {
+await check('B10 async two-step providers submit, poll, and flatten URL arrays', async () => {
   const submissions = []
   const polls = new Map()
   const asyncProvider = createServer(async (req, res) => {
@@ -459,7 +459,7 @@ await check('C0 async two-step providers submit, poll, and flatten URL arrays', 
   }
 })
 
-await check('C1 async provider failures surface the remote error', async () => {
+await check('B11 async provider failures surface the remote error', async () => {
   const asyncProvider = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     if (url.pathname === '/v1/images/generations') {
@@ -490,7 +490,7 @@ await check('C1 async provider failures surface the remote error', async () => {
   }
 })
 
-await check('C2 async provider cancellation aborts polling', async () => {
+await check('B12 async provider cancellation aborts polling', async () => {
   let pollCount = 0
   const asyncProvider = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -660,12 +660,14 @@ const attachments = {
   },
 }
 const pendingConversationImages = new Map()
+let storageProbeEndpoint = ''
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   history,
   templates,
   favorites,
+  resolveStorage: () => ({ endpoint: storageProbeEndpoint, region: 'ap-guangzhou', accessKey: 'AKID-test', secretKey: 'secret-test', prefix: 'dsh-imagegen' }),
   attachments,
   pendingConversationImages,
 })
@@ -863,6 +865,49 @@ await check('C6c template sample route draws random inspiration picks', async ()
   assert.equal(body.samples[0].sourceId, 'vibeui')
   assert.equal(body.samples[0].case.prompt, 'Create a bright product poster')
   assert.deepEqual(templateSamples, [9])
+})
+
+
+await check('C6d data-folder route resolves the host directory (no spawn in tests)', async () => {
+  const { body } = await post('/api/dsh-imagegen/data-folder/open', { open: false })
+  assert.equal(body.ok, true)
+  assert.ok(String(body.path).includes('.dsh'), 'resolved path points at the DSH data dir')
+})
+
+await check('C6e storage test route signs and uploads a probe object', async () => {
+  const uploads = []
+  const probe = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    if (req.method === 'PUT' && url.pathname === '/dsh-imagegen/ping.txt') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      uploads.push({
+        body: Buffer.concat(chunks).toString('utf8'),
+        authorization: req.headers.authorization,
+        amzDate: req.headers['x-amz-date'],
+        payloadHash: req.headers['x-amz-content-sha256'],
+      })
+      res.writeHead(200)
+      res.end()
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
+  storageProbeEndpoint = `http://127.0.0.1:${probe.address().port}`
+  try {
+    const { body } = await post('/api/dsh-imagegen/storage/test', {})
+    assert.equal(body.ok, true, `probe upload must succeed: ${JSON.stringify(body)}`)
+    assert.equal(typeof body.ms, 'number')
+    assert.equal(uploads.length, 1)
+    assert.equal(uploads[0].body, 'dsh-imagegen storage ok')
+    assert.ok(String(uploads[0].authorization).startsWith('AWS4-HMAC-SHA256 Credential=AKID-test/'), 'SigV4 credential scope is present')
+    assert.ok(uploads[0].amzDate !== undefined && uploads[0].payloadHash !== undefined)
+  } finally {
+    storageProbeEndpoint = ''
+    await new Promise(resolve => probe.close(resolve))
+  }
 })
 
 await check('C7 Agent tool-result image route serves durable attachments without a session-log image reference', async () => {

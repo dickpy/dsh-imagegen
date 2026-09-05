@@ -12,6 +12,7 @@ import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { HISTORY_MAX, type GenerateMode, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
+import { notifyImageSaved } from './storage-sync.ts'
 
 const HISTORY_DIR = path.join(homedir(), '.dsh', 'dsh-imagegen')
 const INDEX_PATH = path.join(HISTORY_DIR, 'index.json')
@@ -194,6 +195,7 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
         const image = input.images[index]!
         const file = `${prefix}-${index}.${extensionOf(image.mime)}`
         await fs.writeFile(path.join(IMAGES_DIR, file), Buffer.from(image.b64, 'base64'))
+        notifyImageSaved('history', path.join(IMAGES_DIR, file))
         storedImages.push({
           file,
           mime: image.mime,

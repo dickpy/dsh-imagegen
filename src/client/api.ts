@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { CONVERSATION_IMAGE_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
+import { CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -212,6 +212,18 @@ export class ImageGenApi {
   async favoritesList(): Promise<TemplateFavorite[]> {
     const response = await fetch(TEMPLATE_FAVORITES_API.list, { method: 'POST' })
     return (await readEnvelope<{ ok: true; favorites: TemplateFavorite[] }>(response)).favorites
+  }
+
+  /** Reveal the host data directory (saved images) in the OS file manager. */
+  async openDataFolder(): Promise<{ ok: boolean; path?: string; message?: string }> {
+    const response = await fetch(DATA_FOLDER_API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) })
+    return await readEnvelope<{ ok: true; path: string }>(response)
+  }
+
+  /** Probe the configured S3-compatible object storage with a small upload. */
+  async storageTest(): Promise<{ ok: boolean; ms?: number; key?: string; message?: string }> {
+    const response = await fetch(STORAGE_API.test, { method: 'POST' })
+    return await readEnvelope<{ ok: true; ms: number; key: string }>(response)
   }
 
   /** Star one template (the host keeps a full case snapshot). */
