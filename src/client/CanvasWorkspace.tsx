@@ -254,6 +254,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const syncedRef = useRef('')
   const processedTasks = useRef(new Set<string>())
   const processedImport = useRef('')
+  const localTaskIds = useRef(new Set<string>())
+  const mountedAtRef = useRef(Date.now())
   const internalClipboard = useRef<{ nodes: CanvasNode[]; connections: Array<{ fromNodeId: string; toNodeId: string }> } | null>(null)
   const pastRef = useRef<string[]>([])
   const futureRef = useRef<string[]>([])
@@ -496,6 +498,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         },
       }
       const task = await api.taskSubmit(request)
+      localTaskIds.current.add(task.id)
       mutate(previous => {
         const nodes = [...previous.nodes]
         const connections = [...previous.connections]
@@ -524,6 +527,62 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   }, [api, canvasCenter, composerBusy, composerCount, composerModel, composerPrompt, composerQuality, composerSize, connected, defaultChannelId, imageModels, mutate, onOpenSettings, upstreamNodes])
 
   // ---------------------------------------------------------- task intake
+
+  /** Re-run a failed image node's generation from its recorded prompt/model,
+   * re-deriving the edit base from the connected source config node. */
+  const retryGeneration = useCallback(async (node: CanvasNode): Promise<void> => {
+    const current = documentRef.current
+    if (current === null || !connected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
+    const metadata = nodeMetadata(node)
+    const prompt = (metadata.prompt ?? '').trim()
+    if (prompt === '') { setError(tt('canvas.needPrompt')); return }
+    const model = imageModels.includes(metadata.model ?? '') ? metadata.model! : imageModels[0] ?? ''
+    if (model === '') { setError(tt('canvas.needModel')); return }
+    const sourceId = metadata.sourceNodeId
+    const references = sourceId === undefined ? [] : upstreamNodes(current, sourceId).filter(item => item.type === 'image' && usableAsset(item) !== undefined)
+    const baseAsset = references[0] !== undefined ? usableAsset(references[0]!) : undefined
+    try {
+      let image: string | undefined
+      let refName: string | undefined
+      if (baseAsset !== undefined) {
+        image = await assetToDataUrl(baseAsset)
+        refName = 'canvas-reference.png'
+      }
+      const request: GenerateRequest = {
+        mode: image === undefined ? 'text' : 'edit', model, prompt, size: metadata.size ?? 'auto', quality: metadata.quality ?? 'auto', n: 1, detail: '',
+        ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
+        ...(image === undefined ? {} : { image, refName }),
+        canvas: { canvasId: current.id, sourceNodeId: references[0]?.id ?? sourceId, parentNodeId: node.id, placement: 'right' as const },
+      }
+      const task = await api.taskSubmit(request)
+      localTaskIds.current.add(task.id)
+      patchNode(node.id, { status: 'generating', error: undefined, taskId: task.id })
+      setError(null)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }, [api, connected, defaultChannelId, imageModels, onOpenSettings, patchNode, upstreamNodes])
+
+  // Orphan reconciliation: a generating placeholder whose task no longer exists
+  // in the host feed (e.g. the host restarted) can never complete on its own.
+  useEffect(() => {
+    if (document === null) return
+    const feedFresh = tasks.length > 0 || Date.now() - mountedAtRef.current > 8000
+    if (!feedFresh) return
+    const feedIds = new Set(tasks.map(task => task.id))
+    const orphans = document.nodes.filter(node => {
+      if (node.type !== 'image' || nodeMetadata(node).status !== 'generating') return false
+      const taskId = nodeMetadata(node).taskId
+      return taskId !== undefined && !feedIds.has(taskId) && !localTaskIds.current.has(taskId)
+    })
+    if (orphans.length === 0) return
+    updateNodes(nodes => nodes.map(node => {
+      const taskId = node.type === 'image' ? nodeMetadata(node).taskId : undefined
+      if (node.type !== 'image' || nodeMetadata(node).status !== 'generating' || taskId === undefined
+        || feedIds.has(taskId) || localTaskIds.current.has(taskId)) return node
+      return { ...node, metadata: { ...nodeMetadata(node), status: 'error', error: tt('canvas.taskLost') } }
+    }))
+  }, [document, tasks, updateNodes])
 
   useEffect(() => {
     if (document === null) return
@@ -1171,7 +1230,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             {isGenerating
               ? <div className={css.nodeState}><span className={css.spinner} aria-hidden="true" /><span>{tt('canvas.generatingNode')}</span></div>
               : isError
-                ? <div className={css.nodeStateError}>{metadata.error ?? tt('canvas.generateFailed')}<button type="button" onClick={() => patchNode(node.id, { status: 'idle', error: undefined })}>{tt('canvas.dismiss')}</button></div>
+                ? <div className={css.nodeStateError}>{metadata.error ?? tt('canvas.generateFailed')}<button type="button" onClick={() => { void retryGeneration(node) }}>{tt('canvas.retry')}</button></div>
                 : hasImage
                   ? <img src={asset.url} alt={node.title} draggable={false} onDragStart={event => event.preventDefault()} />
                   : <button type="button" className={css.nodeEmpty} onClick={() => setPickerOpen(true)}><ToolbarIcon name="image" /><span>{tt('canvas.emptyImageNode')}</span></button>}
