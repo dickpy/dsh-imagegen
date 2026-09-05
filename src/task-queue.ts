@@ -10,7 +10,6 @@ export class GenerationTaskQueue {
   private readonly controllers = new Map<string, AbortController>()
   private readonly listeners = new Set<GenerationTaskListener>()
   private running = 0
-  private serialRunning = false
 
   constructor(
     private readonly run: (request: GenerateRequest, signal: AbortSignal) => Promise<GenerateResult>,
@@ -51,16 +50,16 @@ export class GenerationTaskQueue {
     return previous === undefined ? undefined : this.submit(previous.request)
   }
 
+  /** Start queued tasks while capacity remains. Plain submissions and
+   * comparison batches alike run in parallel up to the host-wide limit, so one
+   * slow upstream can no longer hold back unrelated generations. */
   private drain(): void {
     while (this.running < Math.max(1, this.concurrency)) {
-      const task = this.tasks.find(item => item.status === 'queued'
-        && (this.running === 0 || (item.request.comparisonId !== undefined && !this.serialRunning)))
+      const task = this.tasks.find(item => item.status === 'queued')
       if (task === undefined) return
       this.running += 1
-      if (task.request.comparisonId === undefined) this.serialRunning = true
       void this.runTask(task).finally(() => {
         this.running -= 1
-        if (task.request.comparisonId === undefined) this.serialRunning = false
         this.drain()
       })
     }

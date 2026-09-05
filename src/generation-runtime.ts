@@ -38,8 +38,8 @@ export class ImageGenerationRuntime {
     private readonly resolve: () => ChannelsView,
     private readonly history: HistorySink = { append: appendHistory },
   ) {
-    // A comparison can contain up to four models; let those tasks run at the
-    // same time while still applying a small host-wide concurrency limit.
+    // Every task runs in parallel up to this small host-wide limit; a
+    // four-model comparison fits within it in a single wave.
     this.queue = new GenerationTaskQueue((request, signal) => this.run(request, signal), 4)
   }
 
