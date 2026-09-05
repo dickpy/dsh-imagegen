@@ -503,6 +503,7 @@ export function ImageGenPanel(props: {
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [addingToConversation, setAddingToConversation] = useState<number | string | null>(null)
   const [galleryConversationAddingId, setGalleryConversationAddingId] = useState<string | null>(null)
+  const [historyConversationAddingId, setHistoryConversationAddingId] = useState<string | null>(null)
   const [conversationMessage, setConversationMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Submission is brief; actual generation stays visible until the host
@@ -1154,38 +1155,6 @@ export function ImageGenPanel(props: {
     }
   }
 
-  /** Restore one comparison group, including its selected model set. */
-  const restoreHistoryGroup = async (group: HistoryGroup): Promise<void> => {
-    const entry = group.entries[0]
-    if (entry === undefined) return
-    // The product-set form draft cannot be rebuilt from a compiled prompt, so
-    // restoring a product set reopens its grouped results canvas.
-    if (entry.workflow === 'ecommerce' && entry.projectId !== undefined) {
-      await viewEcommerceProject(group)
-      return
-    }
-    try {
-      const restored = await loadHistoryGroup(group)
-      openTab(entry.mode)
-      setPrompt(entry.prompt)
-      setSize(normalizeSize(entry.size))
-      setQuality(normalizeQuality(entry.quality))
-      setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
-      setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
-      setModel(imageModels.includes(entry.model) ? entry.model : imageModels[0])
-      setCompareModels(group.models.filter(candidate => imageModels.includes(candidate)))
-      setCompareEnabled(group.models.filter(candidate => imageModels.includes(candidate)).length > 1)
-      setRefImage(null)
-      setImages(restored)
-      setComparison(null)
-      setError(null)
-      setViewingHistoryId(entry.id)
-      setGalleryViewingId(null)
-    } catch (caught) {
-      setError(errorMessage(caught))
-    }
-  }
-
   /** Remove every persisted row belonging to one comparison group. */
   const deleteHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const ids = new Set(group.entries.map(entry => entry.id))
@@ -1333,6 +1302,21 @@ export function ImageGenPanel(props: {
     }
   }
 
+  /** Add one history entry's first image to the current chat draft. */
+  const addHistoryEntryToConversation = async (entry: HistoryEntry): Promise<void> => {
+    if (historyConversationAddingId !== null || addingToConversation !== null || galleryConversationAddingId !== null || entry.images.length === 0) return
+    setHistoryConversationAddingId(entry.id)
+    try {
+      const [image] = await historyImagesToGenerated(entry.images.slice(0, 1))
+      if (image === undefined) return
+      await addImageToConversation(image, 0, `history:${entry.id}`)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setHistoryConversationAddingId(null)
+    }
+  }
+
   /** Load a persisted gallery image and add it to the current chat draft. */
   const addGalleryEntryToConversation = async (entry: HistoryEntry): Promise<void> => {
     if (galleryConversationAddingId !== null || addingToConversation !== null || entry.images.length === 0) return
@@ -1357,27 +1341,6 @@ export function ImageGenPanel(props: {
       setViewingHistoryId(null)
       setGalleryViewingId(entry.id)
       if (restored.length > 0) openPreview(restored, 0)
-    } catch (caught) {
-      setError(errorMessage(caught))
-    }
-  }
-
-  /** Restore a gallery entry's parameters (and its images) into the form. */
-  const restoreGalleryEntry = async (entry: HistoryEntry): Promise<void> => {
-    try {
-      const restored = await historyImagesToGenerated(entry.images)
-      openTab(entry.mode)
-      setPrompt(entry.prompt)
-      setSize(normalizeSize(entry.size))
-      setQuality(normalizeQuality(entry.quality))
-      setDetail((DETAILS as readonly string[]).includes(entry.detail) ? entry.detail : '')
-      setCount(entry.n >= 1 && entry.n <= 4 ? entry.n : 1)
-      setModel(imageModels.includes(entry.model) ? entry.model : imageModels[0])
-      setRefImage(null)
-      setImages(restored)
-      setError(null)
-      setViewingHistoryId(null)
-      setGalleryViewingId(null)
     } catch (caught) {
       setError(errorMessage(caught))
     }
@@ -1503,7 +1466,7 @@ export function ImageGenPanel(props: {
   const ecommerceResultGroups = [...new Set(ecommerceMergedItems.map(item => item.label))]
     .filter(label => label !== '')
     .map(label => ({ label, items: ecommerceMergedItems.filter(item => item.label === label) }))
-  const conversationBusy = addingToConversation !== null || galleryConversationAddingId !== null
+  const conversationBusy = addingToConversation !== null || galleryConversationAddingId !== null || historyConversationAddingId !== null
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
@@ -1586,6 +1549,16 @@ export function ImageGenPanel(props: {
           >
             <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
           </button>
+          <button
+            type="button"
+            className={css.historyNew}
+            data-history-open-folder=""
+            aria-label={tt('gallery.openFolder')}
+            title={tt('gallery.openFolderHint')}
+            onClick={() => { void api.openDataFolder() }}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.5 4.2A1.2 1.2 0 0 1 2.7 3h2.9l1.6 1.9h6.1A1.2 1.2 0 0 1 14.5 6.1v6.2a1.2 1.2 0 0 1-1.2 1.2H2.7a1.2 1.2 0 0 1-1.2-1.2z" /></svg>
+          </button>
           {history.length > 0 ? (
             <button type="button" className={css.historyClear} data-history-clear="" onClick={() => { void clearHistory() }}>
               {tt('history.clear')}
@@ -1650,19 +1623,38 @@ export function ImageGenPanel(props: {
                   {entry.images.length > 0 ? (
                     <button
                       type="button"
-                      className={css.historyAction}
-                      disabled={galleryAdding}
-                      title={tt('gallery.add')}
-                      onClick={() => { void addHistoryEntryToGallery(entry) }}
+                      className={css.historyIconAction}
+                      disabled={conversationBusy}
+                      title={`${tt('conversation.add')}：${tt('conversation.addHint')}`}
+                      aria-label={tt('conversation.add')}
+                      data-history-add-conversation=""
+                      onClick={() => { void addHistoryEntryToConversation(entry) }}
                     >
-                      {tt('gallery.add')}
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 2.5h8A1.5 1.5 0 0 1 13.5 4v5a1.5 1.5 0 0 1-1.5 1.5H8.5L5.5 13v-2.5H4A1.5 1.5 0 0 1 2.5 9V4A1.5 1.5 0 0 1 4 2.5z" /></svg>
                     </button>
                   ) : null}
-                  <button type="button" className={css.historyAction} onClick={() => { void restoreHistoryGroup(group) }}>
-                    {tt('history.restore')}
-                  </button>
-                  <button type="button" className={css.historyAction} data-danger onClick={() => { void deleteHistoryGroup(group) }}>
-                    {tt('history.delete')}
+                  {entry.images.length > 0 ? (
+                    <button
+                      type="button"
+                      className={css.historyIconAction}
+                      disabled={galleryAdding}
+                      title={tt('gallery.add')}
+                      aria-label={tt('gallery.add')}
+                      data-history-add-gallery=""
+                      onClick={() => { void addHistoryEntryToGallery(entry) }}
+                    >
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5" /><circle cx="5.9" cy="6.1" r="1" /><path d="M13.5 10.2l-3.1-3.1L4.6 13" /></svg>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={css.historyIconAction}
+                    data-danger
+                    title={tt('history.delete')}
+                    aria-label={tt('history.delete')}
+                    onClick={() => { void deleteHistoryGroup(group) }}
+                  >
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 4.5h11" /><path d="M6 4.5V3.2a.7.7 0 0 1 .7-.7h2.6a.7.7 0 0 1 .7.7v1.3" /><path d="M4.3 4.5l.6 8.1a1 1 0 0 0 1 .9h4.2a1 1 0 0 0 1-.9l.6-8.1" /><path d="M6.7 7v4M9.3 7v4" /></svg>
                   </button>
                 </span>
               </div>

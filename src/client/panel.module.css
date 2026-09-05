@@ -846,29 +846,43 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 
 .historyActions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   justify-content: flex-end;
 }
 
-.historyAction {
-  padding: 2px 8px;
-  font: inherit;
-  font-size: 11.5px;
-  color: var(--dsw-alias-label-secondary);
+/* Compact icon actions on each history row: chat / gallery / trash. */
+.historyIconAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
   background: transparent;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 999px;
+  color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
 }
 
-.historyAction:hover {
+.historyIconAction:hover {
   color: var(--dsw-alias-label-primary);
-  border-color: var(--dsw-alias-label-dimmed);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.historyAction[data-danger]:hover {
-  color: var(--dsw-alias-label-error);
-  border-color: var(--dsw-alias-label-error);
+.historyIconAction:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.historyIconAction:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.historyIconAction[data-danger]:hover {
+  color: var(--dsw-alias-state-error);
+  background: color-mix(in srgb, var(--dsw-alias-state-error) 10%, transparent);
 }
 
 /* --- cards (system-aligned rounded group chrome) ------------------------------ */
