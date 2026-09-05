@@ -228,6 +228,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 - **锚定生成**：确认后先生成主图，其余图片自动以主图为参考生成，并在提示词中附加商品一致性约束，保证整套是同一个商品。
 - **先预览后生成**：点击「生成套图预览」只输出计划（各用途与数量），确认后才批量提交，不浪费额度。
 - **商品一致性**：每张参考素材按角色标注，主图之外的图片默认跟随主图锚定；可在「参考图设置」中为每种用途单独指定参考。
+- **文案语言**：内置中文、英语、日语、韩语等 9 种常用语言预设，也支持自定义任意语言与地区写法（生成前自动校验），随套图草稿一并保存；任务直接快照商品名，跨会话也能对应上。
 - **结果管理**：结果按用途分组展示，支持单张重新生成、下载、加入画廊或对话；一键导出 JSON 清单，记录每张图的提示词与参数，方便复现。
 - **历史与恢复**：套图在历史记录中按项目折叠，跨会话点击即可恢复整组结果继续编辑。
 
@@ -339,6 +340,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 <summary><b>已适配的接口与模型家族</b></summary>
 
 - **OpenAI 兼容接口**：支持 `/images/generations`、`/images/edits` 和 `{ data: [{ b64_json | url }] }` 格式响应。
+- **异步两步式接口（apimart.ai / apib.ai 等）**：OpenAI 兼容渠道的 `/images/generations` 若返回 `{ data: [{ status, task_id }] }` 提交结果，插件会自动轮询 `GET /v1/tasks/{task_id}`（指数退避，最长 240 秒）直到完成，自动展开 `url` 数组并下载成图；兼容 submitted / pending / processing 与 completed / succeeded 等常见状态词，上游失败原因原样透传，取消任务会同步中断轮询。无需专用预设，任意 OpenAI 兼容渠道自动生效。
 - **Grok Imagine**：原生支持 `grok-imagine-image` 与 `grok-imagine-image-2.0`（地址 `https://api.x.ai/v1`），图生图使用其 JSON `image_url` 协议，比例和清晰度映射为 `aspect_ratio` 与 `resolution`。
 - **Nano Banana（谷歌 Gemini 图像系列）**：内置 `nanobanana2` / `nanobanana2-lite` / `nanobanana-pro`（也识别官方 `gemini-3.x-image*` ID），清晰度映射为 `image_size`（1K/2K/4K）。
 - **Seedream（字节跳动生图系列）**：内置 `seedream-5.0-pro`（也识别 `seedream-4.x`、`doubao-seedream-…`），文生图与图生图统一走 `/images/generations`，参考图以 JSON `image` 数组发送。
