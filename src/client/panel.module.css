@@ -2567,13 +2567,10 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 .config[data-gallery='true'] .configScroll { display: flex; flex: none; overflow: visible; order: 1; }
 .config[data-gallery='true'] .galleryFilters { order: 2; flex: 1; min-height: 0; }
 
-/* Canvas workspace: the surface replaces the default canvas subtree, and the
-   config sidebar shows only the canvas panel (task tray stays visible). */
-.config[data-canvas='true'] .configScroll > *:not([data-canvas-panel]),
-.config[data-canvas='true'] .footer,
-.canvas[data-canvas='true'] > .canvasState,
-.canvas[data-canvas='true'] > .canvasError,
-.canvas[data-canvas='true'] > .canvasBody { display: none; }
+/* Canvas workspace: full-bleed — the surface replaces the sidebar, history,
+   and footer entirely; the floating toolbar/prompt card live on the canvas. */
+.config[data-canvas='true'],
+.studio:has(.config[data-canvas='true']) > .history { display: none; }
 .canvas[data-canvas='true'] { background: var(--dsw-alias-bg-layer-2); }
 .galleryFilters { padding: 18px 14px; overflow-y: auto; overflow-x: hidden; }
 .galleryFilterHeading { margin: 0 4px 10px; color: var(--dsw-alias-label-tertiary); font-size: 12px; font-weight: 600; }

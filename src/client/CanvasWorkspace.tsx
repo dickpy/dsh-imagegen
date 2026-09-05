@@ -1,10 +1,12 @@
 /**
- * Infinite canvas workspace (Cowart-style): place generated images on a
- * pannable/zoomable surface, draw annotations (rect / arrow / brush / text)
- * straight onto an image, then flatten image + annotations into one reference
- * and submit an image-to-image edit — the result is placed back on the canvas
- * beside the source. Self-drawn (DOM transform + SVG overlay + 2D-canvas
- * flatten), deliberately without a canvas-library dependency.
+ * Infinite canvas workspace (Cowart-style): a full-bleed pannable/zoomable
+ * surface. Place generated images, then mark them up — rectangle / arrow /
+ * brush marks each carry their own numbered note ("this area → sunset"),
+ * brush can stay a plain highlight, and text labels are free-floating. One
+ * submit flattens each target image + its numbered marks into a single
+ * reference (2D canvas), composes the numbered instructions, and starts one
+ * image-to-image task per target; finished results are placed back beside
+ * their source.
  *
  * State lives in the parent (ImageGenPanel) so it survives workspace
  * switches; URL-backed items persist to localStorage, data-URL items are
@@ -35,18 +37,22 @@ interface RectAnnotation extends AnnotationBase {
   type: 'rect'
   x: number; y: number; w: number; h: number
   strokeWidth: number
+  /** Per-mark edit instruction (numbered badge + composed instruction). */
+  note?: string
 }
 
 interface ArrowAnnotation extends AnnotationBase {
   type: 'arrow'
   x1: number; y1: number; x2: number; y2: number
   strokeWidth: number
+  note?: string
 }
 
 interface BrushAnnotation extends AnnotationBase {
   type: 'brush'
   points: Array<{ x: number; y: number }>
   strokeWidth: number
+  note?: string
 }
 
 interface TextAnnotation extends AnnotationBase {
@@ -57,6 +63,20 @@ interface TextAnnotation extends AnnotationBase {
 }
 
 type CanvasAnnotation = RectAnnotation | ArrowAnnotation | BrushAnnotation | TextAnnotation
+
+type MarkAnnotation = Extract<CanvasAnnotation, { note?: string }>
+
+function isMark(annotation: CanvasAnnotation): annotation is MarkAnnotation {
+  return annotation.type !== 'text'
+}
+
+/** Screen-stable anchor of a mark (badge / note input attach point). */
+function markAnchorOf(annotation: CanvasAnnotation): { x: number; y: number } {
+  if (annotation.type === 'rect') return { x: annotation.x, y: annotation.y }
+  if (annotation.type === 'arrow') return { x: annotation.x1, y: annotation.y1 }
+  if (annotation.type === 'brush') return annotation.points[0] ?? { x: 0, y: 0 }
+  return { x: annotation.x, y: annotation.y }
+}
 
 export interface CanvasItem {
   id: string
@@ -162,9 +182,9 @@ async function loadImageElement(src: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Flatten one item's base image + annotations into a single reference data
- * URL (downsampled to MAX_FLATTEN_EDGE; falls back to JPEG if the PNG would
- * blow past the edit-reference ceiling).
+ * Flatten one item's base image + marks into a single reference data URL.
+ * Numbered badges (①②…) are drawn at each noted mark's anchor so the model
+ * can map the composed numbered instructions onto the picture.
  */
 async function flattenItem(item: CanvasItem): Promise<string> {
   const image = await loadImageElement(item.src)
@@ -182,6 +202,13 @@ async function flattenItem(item: CanvasItem): Promise<string> {
   ctx.drawImage(image, 0, 0, width, height)
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
+
+  const anchorOf = (annotation: MarkAnnotation): { x: number; y: number } => {
+    if (annotation.type === 'rect') return { x: annotation.x, y: annotation.y }
+    if (annotation.type === 'arrow') return { x: annotation.x1, y: annotation.y1 }
+    return annotation.points[0] ?? { x: 0, y: 0 }
+  }
+  let markNumber = 0
   for (const annotation of item.annotations) {
     ctx.strokeStyle = annotation.color
     ctx.fillStyle = annotation.color
@@ -214,6 +241,23 @@ async function flattenItem(item: CanvasItem): Promise<string> {
       ctx.font = `${Math.round(annotation.fontSize * scale)}px sans-serif`
       ctx.textBaseline = 'top'
       ctx.fillText(annotation.text, annotation.x * scale, annotation.y * scale)
+      continue
+    }
+    // Numbered badge for marks that carry a note.
+    if (isMark(annotation) && annotation.note !== undefined && annotation.note.trim() !== '') {
+      markNumber += 1
+      const anchor = anchorOf(annotation)
+      const radius = 16 * scale
+      ctx.beginPath()
+      ctx.arc(anchor.x * scale, anchor.y * scale, radius, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = `700 ${Math.round(radius * 1.2)}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(String(markNumber), anchor.x * scale, anchor.y * scale)
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'alphabetic'
     }
   }
   let dataUrl = surface.toDataURL('image/png')
@@ -239,6 +283,18 @@ function toolIcon(tool: CanvasTool): JSX.Element {
   }
 }
 
+/** Compose the numbered edit instruction from the global note + mark notes. */
+function composeInstruction(globalNote: string, marks: MarkAnnotation[]): string {
+  const noted = marks
+    .map(mark => mark.note?.trim() ?? '')
+    .filter(note => note !== '')
+  const base = globalNote.trim()
+  if (noted.length === 0) return base
+  const list = noted.map((note, index) => `${index + 1}. ${note}`).join('\n')
+  const head = base !== '' ? `${base}\n` : '请按图中数字标注的位置修改：\n'
+  return `${head}${list}\n未标注的区域保持不变。`
+}
+
 /** The canvas surface + floating toolbar + prompt card. */
 export function CanvasWorkspace(props: {
   canvas: CanvasState
@@ -249,11 +305,12 @@ export function CanvasWorkspace(props: {
   tasks: GenerationTask[]
   busy: boolean
   onSubmitEdit: (request: GenerateRequest) => Promise<GenerationTask>
+  onOpenFolder: () => void
 }) {
-  const { canvas, onCanvasChange, history, gallery, imageModels, tasks, busy, onSubmitEdit } = props
+  const { canvas, onCanvasChange, history, gallery, imageModels, tasks, busy, onSubmitEdit, onOpenFolder } = props
   const surfaceRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef(new Map<string, HTMLDivElement>())
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [tool, setTool] = useState<CanvasTool>('select')
   const [color, setColor] = useState<string>(COLORS[0])
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -262,10 +319,14 @@ export function CanvasWorkspace(props: {
   const [instruction, setInstruction] = useState('')
   const [model, setModel] = useState('')
   const [textDraft, setTextDraft] = useState<{ itemId: string; x: number; y: number; value: string } | null>(null)
+  const [noteDraft, setNoteDraft] = useState<{ itemId: string; index: number; value: string } | null>(null)
+  const [markSelected, setMarkSelected] = useState<{ itemId: string; index: number } | null>(null)
   const [draft, setDraft] = useState<{ itemId: string; annotation: CanvasAnnotation } | null>(null)
+  // Mirror of `draft` for gesture callbacks: state updaters must stay pure, so
+  // the pointerup commit reads the ref instead of nesting setState calls.
+  const draftRef = useRef<{ itemId: string; annotation: CanvasAnnotation } | null>(null)
 
   const viewport = canvas.viewport
-  const selectedItem = canvas.items.find(item => item.id === selectedId) ?? null
 
   const patchItem = (itemId: string, patch: (item: CanvasItem) => CanvasItem): void => {
     onCanvasChange(previous => ({
@@ -312,8 +373,26 @@ export function CanvasWorkspace(props: {
   const removeItem = (itemId: string): void => {
     itemRefs.current.delete(itemId)
     onCanvasChange(previous => ({ ...previous, items: previous.items.filter(item => item.id !== itemId) }))
-    if (selectedId === itemId) { setSelectedId(null); setTool('select') }
+    setSelectedIds(previous => {
+      const next = new Set(previous)
+      next.delete(itemId)
+      return next
+    })
   }
+
+  /** Marks (rect/arrow/brush) that carry a note, per item. */
+  const notedMarksOf = (item: CanvasItem): MarkAnnotation[] => {
+    return item.annotations.filter((annotation): annotation is MarkAnnotation =>
+      isMark(annotation) && annotation.note !== undefined && annotation.note.trim() !== '')
+  }
+
+  /** The images this submit will edit: explicit selection, else marked ones. */
+  const submitTargets = (() => {
+    if (selectedIds.size > 0) return canvas.items.filter(item => selectedIds.has(item.id))
+    return canvas.items.filter(item => notedMarksOf(item).length > 0)
+  })()
+  const totalMarks = submitTargets.reduce((total, item) => total + notedMarksOf(item).length, 0)
+  const hasNotes = totalMarks > 0
 
   // -------------------------------------------------------- pan / zoom ----
 
@@ -392,9 +471,22 @@ export function CanvasWorkspace(props: {
     }
   }
 
+  const selectItem = (itemId: string, additive: boolean): void => {
+    setSelectedIds(previous => {
+      if (additive) {
+        const next = new Set(previous)
+        if (next.has(itemId)) next.delete(itemId)
+        else next.add(itemId)
+        return next
+      }
+      return new Set([itemId])
+    })
+  }
+
   const startAnnotation = (event: React.PointerEvent<HTMLDivElement>, item: CanvasItem): void => {
     if (tool === 'select' || item.nw <= 0) return
     event.stopPropagation()
+    setSelectedIds(new Set([item.id]))
     const start = imagePointOf(item.id, event.clientX, event.clientY)
     if (start === null) return
     if (tool === 'text') {
@@ -408,41 +500,49 @@ export function CanvasWorkspace(props: {
         ? { type: 'arrow', ...base, x1: start.x, y1: start.y, x2: start.x, y2: start.y, strokeWidth: 6 }
         : { type: 'brush', ...base, points: [start], strokeWidth: 6 }
     setDraft({ itemId: item.id, annotation })
+    draftRef.current = { itemId: item.id, annotation }
     const onMove = (move: PointerEvent): void => {
       const point = imagePointOf(item.id, move.clientX, move.clientY)
-      if (point === null) return
-      setDraft(current => {
-        if (current === null || current.itemId !== item.id) return current
-        const previous = current.annotation
-        let next: CanvasAnnotation = previous
-        if (previous.type === 'rect') {
-          next = { ...previous, x: Math.min(start.x, point.x), y: Math.min(start.y, point.y), w: Math.abs(point.x - start.x), h: Math.abs(point.y - start.y) }
-        } else if (previous.type === 'arrow') {
-          next = { ...previous, x2: point.x, y2: point.y }
-        } else if (previous.type === 'brush') {
-          next = { ...previous, points: [...previous.points, point] }
-        }
-        return { ...current, annotation: next }
-      })
+      if (point === null || draftRef.current === null || draftRef.current.itemId !== item.id) return
+      const previous = draftRef.current.annotation
+      let next: CanvasAnnotation = previous
+      if (previous.type === 'rect') {
+        next = { ...previous, x: Math.min(start.x, point.x), y: Math.min(start.y, point.y), w: Math.abs(point.x - start.x), h: Math.abs(point.y - start.y) }
+      } else if (previous.type === 'arrow') {
+        next = { ...previous, x2: point.x, y2: point.y }
+      } else if (previous.type === 'brush') {
+        next = { ...previous, points: [...previous.points, point] }
+      }
+      draftRef.current = { itemId: item.id, annotation: next }
+      setDraft({ itemId: item.id, annotation: next })
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
-      setDraft(current => {
-        if (current === null || current.itemId !== item.id) return current
-        const annotation = current.annotation
-        const meaningful = annotation.type === 'brush'
-          ? annotation.points.length > 1
-          : annotation.type === 'rect'
-            ? Math.abs(annotation.w) > 2 && Math.abs(annotation.h) > 2
-            : annotation.type === 'arrow'
-              ? Math.abs(annotation.x2 - annotation.x1) + Math.abs(annotation.y2 - annotation.y1) > 4
-              : false
-        if (meaningful) {
-          patchItem(item.id, previousItem => ({ ...previousItem, annotations: [...previousItem.annotations, annotation] }))
-        }
-        return null
-      })
+      const current = draftRef.current
+      draftRef.current = null
+      setDraft(null)
+      if (current === null || current.itemId !== item.id) return
+      const annotation = current.annotation
+      const meaningful = annotation.type === 'brush'
+        ? annotation.points.length > 1
+        : annotation.type === 'rect'
+          ? Math.abs(annotation.w) > 2 && Math.abs(annotation.h) > 2
+          : annotation.type === 'arrow'
+            ? Math.abs(annotation.x2 - annotation.x1) + Math.abs(annotation.y2 - annotation.y1) > 4
+            : false
+      if (meaningful) {
+        // A freshly drawn mark asks for its own note immediately: this is
+        // what makes multi-spot edits possible.
+        const index = canvas.items.find(candidate => candidate.id === item.id)?.annotations.length ?? 0
+        onCanvasChange(previous => ({
+          ...previous,
+          items: previous.items.map(candidate => candidate.id === item.id
+            ? { ...candidate, annotations: [...candidate.annotations, annotation] }
+            : candidate),
+        }))
+        setNoteDraft({ itemId: item.id, index, value: '' })
+      }
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -462,6 +562,30 @@ export function CanvasWorkspace(props: {
       }
       return null
     })
+  }
+
+  const commitNoteDraft = (): void => {
+    setNoteDraft(current => {
+      if (current !== null) {
+        patchItem(current.itemId, previousItem => ({
+          ...previousItem,
+          annotations: previousItem.annotations.map((annotation, index) => {
+            if (index !== current.index || !isMark(annotation)) return annotation
+            const note = current.value.trim()
+            return note === '' ? annotation : { ...annotation, note }
+          }),
+        }))
+      }
+      return null
+    })
+  }
+
+  const deleteMark = (itemId: string, index: number): void => {
+    patchItem(itemId, previousItem => ({
+      ...previousItem,
+      annotations: previousItem.annotations.filter((_, annotationIndex) => annotationIndex !== index),
+    }))
+    setMarkSelected(null)
   }
 
   // ---------------------------------------------------- result placement --
@@ -500,59 +624,112 @@ export function CanvasWorkspace(props: {
 
   // ------------------------------------------------------------- submit ----
 
-  const submitEdit = async (): Promise<void> => {
-    const item = selectedItem
-    if (item === null || busy) return
-    if (instruction.trim() === '') { setError(tt('canvas.instructionRequired')); return }
+  const submitEdits = async (): Promise<void> => {
+    if (busy || submitTargets.length === 0) return
     setError(null)
-    try {
-      const dataUrl = await flattenItem(item)
-      const request: GenerateRequest = {
-        mode: 'edit',
-        model: imageModels.includes(model) ? model : imageModels[0] ?? '',
-        prompt: instruction.trim(),
-        size: 'auto',
-        quality: 'auto',
-        n: 1,
-        detail: '',
-        image: dataUrl,
-        refName: 'canvas-annotated.png',
-      }
-      const task = await onSubmitEdit(request)
-      onCanvasChange(previous => ({
-        ...previous,
-        pending: { ...previous.pending, [task.id]: { x: item.x + item.w + 40, y: item.y, w: item.w, h: item.h } },
-      }))
-      setInstruction('')
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
+    if (!hasNotes && instruction.trim() === '') {
+      setError(tt('canvas.instructionRequired'))
+      return
     }
+    for (const item of submitTargets) {
+      try {
+        const dataUrl = await flattenItem(item)
+        const marks = notedMarksOf(item)
+        const request: GenerateRequest = {
+          mode: 'edit',
+          model: imageModels.includes(model) ? model : imageModels[0] ?? '',
+          prompt: composeInstruction(instruction, marks),
+          size: 'auto',
+          quality: 'auto',
+          n: 1,
+          detail: '',
+          image: dataUrl,
+          refName: 'canvas-annotated.png',
+        }
+        const task = await onSubmitEdit(request)
+        onCanvasChange(previous => ({
+          ...previous,
+          pending: { ...previous.pending, [task.id]: { x: item.x + item.w + 40, y: item.y, w: item.w, h: item.h } },
+        }))
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught))
+        return
+      }
+    }
+    setInstruction('')
   }
 
   // ------------------------------------------------------------- render ----
 
-  const renderItemAnnotation = (annotation: CanvasAnnotation, key: number): JSX.Element | null => {
-    if (annotation.type === 'rect') {
-      return <rect key={key} x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill="none" stroke={annotation.color} strokeWidth={annotation.strokeWidth} />
+  /** Numbered badge shown at a noted mark's anchor (1-based across the item). */
+  const markNumberOf = (item: CanvasItem, index: number): number | null => {
+    const annotation = item.annotations[index]
+    if (annotation === undefined || !isMark(annotation)) return null
+    if (annotation.note === undefined || annotation.note.trim() === '') return null
+    let number = 0
+    for (let candidate = 0; candidate <= index; candidate++) {
+      const current = item.annotations[candidate]
+      if (current !== undefined && isMark(current) && current.note !== undefined && current.note.trim() !== '') number += 1
     }
-    if (annotation.type === 'arrow') {
-      const { x1, y1, x2, y2 } = annotation
-      const angle = Math.atan2(y2 - y1, x2 - x1)
-      const head = annotation.strokeWidth * 3
-      return (
-        <g key={key}>
-          <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={annotation.color} strokeWidth={annotation.strokeWidth} strokeLinecap="round" />
-          <polygon
-            points={`${x2},${y2} ${x2 - head * Math.cos(angle - Math.PI / 7)},${y2 - head * Math.sin(angle - Math.PI / 7)} ${x2 - head * Math.cos(angle + Math.PI / 7)},${y2 - head * Math.sin(angle + Math.PI / 7)}`}
-            fill={annotation.color}
-          />
-        </g>
-      )
-    }
-    if (annotation.type === 'brush') {
-      return <polyline key={key} points={annotation.points.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={annotation.color} strokeWidth={annotation.strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    }
-    return <text key={key} x={annotation.x} y={annotation.y + annotation.fontSize} fill={annotation.color} fontSize={annotation.fontSize} fontFamily="sans-serif">{annotation.text}</text>
+    return number
+  }
+
+  const renderItemAnnotation = (item: CanvasItem, annotation: CanvasAnnotation, key: number): JSX.Element | null => {
+    const markSelectedNow = markSelected !== null && markSelected.itemId === item.id && markSelected.index === key
+    const interactive = tool === 'select'
+    const shape = (() => {
+      if (annotation.type === 'rect') {
+        return <rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill="none" stroke={annotation.color} strokeWidth={annotation.strokeWidth} />
+      }
+      if (annotation.type === 'arrow') {
+        const { x1, y1, x2, y2 } = annotation
+        const angle = Math.atan2(y2 - y1, x2 - x1)
+        const head = annotation.strokeWidth * 3
+        return (
+          <g>
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={annotation.color} strokeWidth={annotation.strokeWidth} strokeLinecap="round" />
+            <polygon
+              points={`${x2},${y2} ${x2 - head * Math.cos(angle - Math.PI / 7)},${y2 - head * Math.sin(angle - Math.PI / 7)} ${x2 - head * Math.cos(angle + Math.PI / 7)},${y2 - head * Math.sin(angle + Math.PI / 7)}`}
+              fill={annotation.color}
+            />
+          </g>
+        )
+      }
+      if (annotation.type === 'brush') {
+        return <polyline points={annotation.points.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={annotation.color} strokeWidth={annotation.strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      }
+      return <text x={annotation.x} y={annotation.y + annotation.fontSize} fill={annotation.color} fontSize={annotation.fontSize} fontFamily="sans-serif" style={{ pointerEvents: 'none' }}>{annotation.text}</text>
+    })()
+    const withMarkClick = isMark(annotation)
+      ? {
+        onPointerDown: interactive
+          ? (event: React.PointerEvent) => {
+            event.stopPropagation()
+            setMarkSelected({ itemId: item.id, index: key })
+          }
+          : undefined,
+      }
+      : {}
+    return (
+      <g key={key} style={{ cursor: interactive && isMark(annotation) ? 'pointer' : undefined }} {...withMarkClick}>
+        {markSelectedNow && annotation.type !== 'text' ? (
+          // White underlay echoes the selected mark so it stays legible.
+          <g style={{ pointerEvents: 'none' }}>{shape}</g>
+        ) : null}
+        {shape}
+        {(() => {
+          const number = markNumberOf(item, key)
+          if (number === null) return null
+          const anchor = markAnchorOf(annotation)
+          return (
+            <g style={{ pointerEvents: 'none' }}>
+              <circle cx={anchor.x} cy={anchor.y} r={20} fill={annotation.color} stroke={markSelectedNow ? '#ffffff' : 'none'} strokeWidth={3} />
+              <text x={anchor.x} y={anchor.y + 8} textAnchor="middle" fill="#ffffff" fontSize={26} fontWeight={700} fontFamily="sans-serif">{number}</text>
+            </g>
+          )
+        })()}
+      </g>
+    )
   }
 
   return (
@@ -567,13 +744,23 @@ export function CanvasWorkspace(props: {
         event.preventDefault()
         void addFromFiles(event.dataTransfer.files, event.clientX, event.clientY)
       }}
+      tabIndex={-1}
+      onKeyDown={event => {
+        if (event.key === 'Escape') {
+          if (noteDraft !== null) setNoteDraft(null)
+          else if (textDraft !== null) setTextDraft(null)
+          else if (markSelected !== null) setMarkSelected(null)
+          else setSelectedIds(new Set())
+        }
+        if (event.key === 'Delete' && markSelected !== null) deleteMark(markSelected.itemId, markSelected.index)
+      }}
     >
       <div
         className={css.content}
         style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.z})` }}
       >
         {canvas.items.map(item => {
-          const selected = item.id === selectedId
+          const selected = selectedIds.has(item.id)
           const drawing = draft !== null && draft.itemId === item.id
           return (
             <div
@@ -586,7 +773,7 @@ export function CanvasWorkspace(props: {
               onPointerDown={event => {
                 if (tool !== 'select') { startAnnotation(event, item); return }
                 event.stopPropagation()
-                setSelectedId(item.id)
+                selectItem(item.id, event.ctrlKey || event.metaKey || event.shiftKey)
                 const startX = event.clientX
                 const startY = event.clientY
                 const originX = item.x
@@ -626,8 +813,8 @@ export function CanvasWorkspace(props: {
                 viewBox={item.nw > 0 && item.nh > 0 ? `0 0 ${item.nw} ${item.nh}` : undefined}
                 preserveAspectRatio="none"
               >
-                {item.annotations.map((annotation, index) => renderItemAnnotation(annotation, index))}
-                {drawing && draft?.annotation !== undefined ? renderItemAnnotation(draft.annotation, -1) : null}
+                {item.annotations.map((annotation, index) => renderItemAnnotation(item, annotation, index))}
+                {drawing && draft?.annotation !== undefined ? renderItemAnnotation(item, draft.annotation, -1) : null}
               </svg>
               {textDraft !== null && textDraft.itemId === item.id ? (
                 <input
@@ -642,6 +829,47 @@ export function CanvasWorkspace(props: {
                     if (event.key === 'Escape') setTextDraft(null)
                   }}
                   onBlur={commitTextDraft}
+                />
+              ) : null}
+              {noteDraft !== null && noteDraft.itemId === item.id ? (
+                <input
+                  className={css.noteDraft}
+                  data-canvas-note-draft=""
+                  style={{
+                    left: `${(() => {
+                      const annotation = item.annotations[noteDraft.index]
+                      if (annotation === undefined) return '0%'
+                      const anchor = annotation.type === 'rect'
+                        ? { x: annotation.x, y: annotation.y }
+                        : annotation.type === 'arrow'
+                          ? { x: annotation.x1, y: annotation.y1 }
+                          : annotation.type === 'brush'
+                            ? annotation.points[0] ?? { x: 0, y: 0 }
+                            : { x: 0, y: 0 }
+                      return `${item.nw > 0 ? anchor.x / item.nw * 100 : 0}%`
+                    })()}`,
+                    top: `${(() => {
+                      const annotation = item.annotations[noteDraft.index]
+                      if (annotation === undefined) return '0%'
+                      const anchor = annotation.type === 'rect'
+                        ? { x: annotation.x, y: annotation.y }
+                        : annotation.type === 'arrow'
+                          ? { x: annotation.x1, y: annotation.y1 }
+                          : annotation.type === 'brush'
+                            ? annotation.points[0] ?? { x: 0, y: 0 }
+                            : { x: 0, y: 0 }
+                      return `${item.nh > 0 ? anchor.y / item.nh * 100 : 0}%`
+                    })()}`,
+                  }}
+                  value={noteDraft.value}
+                  autoFocus
+                  placeholder={tt('canvas.markNotePlaceholder')}
+                  onChange={event => { setNoteDraft(current => current === null ? current : { ...current, value: event.target.value }) }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') commitNoteDraft()
+                    if (event.key === 'Escape') setNoteDraft(null)
+                  }}
+                  onBlur={commitNoteDraft}
                 />
               ) : null}
               {selected ? (
@@ -675,9 +903,9 @@ export function CanvasWorkspace(props: {
                   type="button"
                   className={css.itemAction}
                   title={tt('canvas.annotate')}
-                  onClick={event => { event.stopPropagation(); setSelectedId(item.id); setTool('brush') }}
+                  onClick={event => { event.stopPropagation(); setSelectedIds(new Set([item.id])); setTool('rect') }}
                 >
-                  {toolIcon('brush')}
+                  {toolIcon('rect')}
                 </button>
                 <button
                   type="button"
@@ -711,7 +939,7 @@ export function CanvasWorkspace(props: {
             type="button"
             className={css.toolButton}
             data-active={tool === entry.id ? '' : undefined}
-            disabled={entry.id !== 'select' && selectedId === null}
+            disabled={entry.id !== 'select' && canvas.items.length === 0}
             title={tt(entry.labelKey as never)}
             aria-label={tt(entry.labelKey as never)}
             onClick={() => { setTool(entry.id) }}
@@ -726,7 +954,6 @@ export function CanvasWorkspace(props: {
             type="button"
             className={css.colorSwatch}
             data-active={color === entry ? '' : undefined}
-            disabled={selectedId === null}
             title={tt('canvas.color')}
             aria-label={tt('canvas.color')}
             style={{ background: entry }}
@@ -736,20 +963,28 @@ export function CanvasWorkspace(props: {
         <button
           type="button"
           className={css.toolButton}
-          disabled={selectedId === null || selectedItem === null || selectedItem.annotations.length === 0}
+          disabled={selectedIds.size !== 1}
           title={tt('canvas.undo')}
           aria-label={tt('canvas.undo')}
-          onClick={() => { if (selectedItem !== null) patchItem(selectedItem.id, previousItem => ({ ...previousItem, annotations: previousItem.annotations.slice(0, -1) })) }}
+          onClick={() => {
+            const itemId = [...selectedIds][0]
+            if (itemId === undefined) return
+            patchItem(itemId, previousItem => ({ ...previousItem, annotations: previousItem.annotations.slice(0, -1) }))
+          }}
         >
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 3L3 6l3 3" /><path d="M3 6h6.5A3.5 3.5 0 0 1 13 9.5V12" /></svg>
         </button>
         <button
           type="button"
           className={css.toolButton}
-          disabled={selectedId === null || selectedItem === null || selectedItem.annotations.length === 0}
+          disabled={selectedIds.size !== 1}
           title={tt('canvas.clearAnnotations')}
           aria-label={tt('canvas.clearAnnotations')}
-          onClick={() => { if (selectedItem !== null) patchItem(selectedItem.id, previousItem => ({ ...previousItem, annotations: [] })) }}
+          onClick={() => {
+            const itemId = [...selectedIds][0]
+            if (itemId === undefined) return
+            patchItem(itemId, previousItem => ({ ...previousItem, annotations: [] }))
+          }}
         >
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10" /><path d="M6.5 4.5V3h3v1.5" /><path d="M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8" /></svg>
         </button>
@@ -765,6 +1000,9 @@ export function CanvasWorkspace(props: {
         </button>
         <button type="button" className={css.toolButton} title={tt('canvas.fit')} aria-label={tt('canvas.fit')} onClick={fitToContent}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" /></svg>
+        </button>
+        <button type="button" className={css.toolButton} title={tt('gallery.openFolderHint')} aria-label={tt('gallery.openFolder')} onClick={onOpenFolder}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.5 4.2A1.2 1.2 0 0 1 2.7 3h2.9l1.6 1.9h6.1A1.2 1.2 0 0 1 14.5 6.1v6.2a1.2 1.2 0 0 1-1.2 1.2H2.7a1.2 1.2 0 0 1-1.2-1.2z" /></svg>
         </button>
       </div>
 
@@ -807,11 +1045,17 @@ export function CanvasWorkspace(props: {
       ) : null}
 
       <div className={css.promptCard} data-canvas-prompt="" onPointerDown={event => { event.stopPropagation() }}>
+        <div className={css.promptSummary}>
+          {submitTargets.length > 0
+            ? tt('canvas.submitSummary', { count: submitTargets.length, marks: totalMarks })
+            : tt('canvas.noTargets')}
+          {markSelected !== null ? <span className={css.markHint}>{tt('canvas.markHint')}</span> : null}
+        </div>
         <textarea
           className={css.promptInput}
           rows={2}
           value={instruction}
-          placeholder={selectedItem === null ? tt('canvas.selectFirst') : tt('canvas.instructionPlaceholder')}
+          placeholder={submitTargets.length === 0 ? tt('canvas.noTargets') : tt('canvas.globalPlaceholder')}
           onChange={event => { setInstruction(event.target.value) }}
         />
         <div className={css.promptActions}>
@@ -821,10 +1065,10 @@ export function CanvasWorkspace(props: {
           <Button
             variant="primary"
             size="md"
-            disabled={busy || selectedItem === null || instruction.trim() === '' || imageModels.length === 0}
-            onClick={() => { void submitEdit() }}
+            disabled={busy || submitTargets.length === 0 || (!hasNotes && instruction.trim() === '') || imageModels.length === 0}
+            onClick={() => { void submitEdits() }}
           >
-            {busy ? tt('generating') : tt('canvas.submit')}
+            {busy ? tt('generating') : submitTargets.length > 1 ? tt('canvas.submitCount', { count: submitTargets.length }) : tt('canvas.submit')}
           </Button>
         </div>
         {error !== null ? <p className={css.errorLine} role="alert">{error}</p> : null}

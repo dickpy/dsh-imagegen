@@ -20,7 +20,6 @@ import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
 import { addCanvasItem, CanvasWorkspace, loadCanvasState, persistCanvasState, type CanvasState } from './CanvasWorkspace.tsx'
-import canvasCss from './canvas.module.css'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
@@ -1838,19 +1837,6 @@ export function ImageGenPanel(props: {
               </section>
             ) : null}
 
-            {workspace === 'canvas' ? (
-              <section className={css.card} data-canvas-panel="">
-                <h3 className={canvasCss.panelTitle}>{tt('canvas.title')}</h3>
-                <p className={css.ecommercePlanNote}>{tt('canvas.sidebarHint')}</p>
-                <ul className={css.ecommercePlanNote} style={{ margin: '0 0 4px', paddingLeft: 16 }}>
-                  <li>{tt('canvas.hintAdd')}</li>
-                  <li>{tt('canvas.hintAnnotate')}</li>
-                  <li>{tt('canvas.hintSubmit')}</li>
-                </ul>
-                <Button variant="outline" size="sm" onClick={() => { void api.openDataFolder() }}>{tt('gallery.openFolder')}</Button>
-              </section>
-            ) : null}
-
             {workspace === 'ecommerce' ? (
               <section className={css.ecommerceWorkspace} data-ecommerce-workspace="">
                 <div className={css.ecommerceSection}>
@@ -2277,6 +2263,7 @@ export function ImageGenPanel(props: {
               tasks={tasks}
               busy={submitting}
               onSubmitEdit={handleCanvasSubmit}
+              onOpenFolder={() => { void api.openDataFolder() }}
             />
           ) : null}
           {workspace === 'normal' && tab === 'gallery' ? (
