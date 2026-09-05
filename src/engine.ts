@@ -339,6 +339,7 @@ function effectiveCount(request: GenerateRequest): number {
 async function normalizeItem(
   item: Record<string, unknown>,
   upstream: UpstreamConfig,
+  signal?: AbortSignal,
 ): Promise<{ b64: string; mime: string; revisedPrompt?: string }> {
   const revisedPrompt = typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined
   if (typeof item.b64_json === 'string' && item.b64_json.trim() !== '') {
@@ -356,7 +357,7 @@ async function normalizeItem(
     if (parsed === undefined) throw new ImageGenError('upstream returned a malformed data: url')
     return { b64: parsed.base64, mime: detectImageMime(Buffer.from(parsed.base64, 'base64')) ?? parsed.mime, revisedPrompt }
   }
-  const budget = requestSignal(undefined, IMAGE_FETCH_TIMEOUT_MS)
+  const budget = requestSignal(signal, IMAGE_FETCH_TIMEOUT_MS)
   let response: Response
   try {
     response = await fetch(url, {
@@ -380,6 +381,152 @@ async function normalizeItem(
     ? contentType.split(';')[0]!.trim()
     : mimeOfExtension(url) ?? 'image/png')
   return { b64: buffer.toString('base64'), mime, revisedPrompt }
+}
+
+/** Expand a provider image item whose URL may be a string or an array. */
+function imageItemsOf(value: unknown): Array<Record<string, unknown>> {
+  if (value === null || typeof value !== 'object') return []
+  const item = value as Record<string, unknown>
+  if (Array.isArray(item.url)) {
+    return item.url.filter((url): url is string => typeof url === 'string' && url !== '').map(url => ({ ...item, url }))
+  }
+  return [item]
+}
+
+/** Return the data records from the response shapes shared by sync gateways. */
+function dataRecordsOf(payload: Record<string, unknown>): Array<Record<string, unknown>> | undefined {
+  const data = Array.isArray(payload.data)
+    ? payload.data
+    : payload.data !== null && typeof payload.data === 'object'
+      ? [payload.data]
+      : Array.isArray(payload.images)
+        ? payload.images
+        : Array.isArray(payload.output)
+          ? payload.output
+          : undefined
+  if (data === undefined) return undefined
+  return data.filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object')
+}
+
+const ASYNC_PENDING_STATUSES = new Set(['submitted', 'pending', 'processing', 'running', 'in_progress', 'queued'])
+const ASYNC_COMPLETED_STATUSES = new Set(['completed', 'succeeded', 'success', 'done'])
+const ASYNC_FAILED_STATUSES = new Set(['failed', 'failure', 'cancelled', 'canceled', 'error'])
+const ASYNC_POLL_MAX_MS = 240_000
+const ASYNC_POLL_REQUEST_TIMEOUT_MS = 30_000
+
+/** Read a provider error message from the common nested locations. */
+function asyncErrorMessage(payload: unknown, fallback: string): string {
+  if (payload !== null && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>
+    const candidates: unknown[] = [record.message, record.error]
+    const data = record.data
+    const entries = Array.isArray(data) ? data : [data]
+    for (const entry of entries) {
+      if (entry === null || typeof entry !== 'object') continue
+      const item = entry as Record<string, unknown>
+      candidates.push(item.message, item.error)
+      const nested = item.error
+      if (nested !== null && typeof nested === 'object') candidates.push((nested as Record<string, unknown>).message)
+    }
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim() !== '') return candidate
+      if (candidate !== null && typeof candidate === 'object') {
+        const message = (candidate as Record<string, unknown>).message
+        if (typeof message === 'string' && message.trim() !== '') return message
+      }
+    }
+  }
+  return fallback
+}
+
+/** Wait between async-provider polls, but wake immediately when cancelled. */
+function waitForPoll(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(signal?.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+    }
+    const done = () => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    timer.unref()
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Poll one apib/apimart-style provider task until it yields image records.
+ * The total deadline is shared by every poll and the final image downloads;
+ * local task cancellation propagates through every request and sleep.
+ */
+async function pollAsyncTask(
+  baseUrl: string,
+  upstream: UpstreamConfig,
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + ASYNC_POLL_MAX_MS
+  let delay = 1000
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now()
+    const budget = requestSignal(signal, Math.min(ASYNC_POLL_REQUEST_TIMEOUT_MS, remaining))
+    let response: Response
+    try {
+      response = await fetch(`${baseUrl}/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${upstream.apiKey.trim()}` },
+        signal: budget.signal,
+      })
+    } catch (error) {
+      if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      const message = error instanceof Error ? error.message : String(error)
+      if (/timeout|abort/i.test(message)) throw new ImageGenError('上游异步任务轮询超时', 'upstream-timeout')
+      throw new ImageGenError(`无法轮询上游异步任务：${message}`, 'upstream-unreachable')
+    } finally {
+      budget.dispose()
+    }
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      throw new ImageGenError(`上游任务接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+    }
+    if (!response.ok || payload === null || typeof payload !== 'object') {
+      throw new ImageGenError(asyncErrorMessage(payload, `上游任务轮询失败（HTTP ${response.status}）`), 'upstream-rejected')
+    }
+    const record = payload as Record<string, unknown>
+    const data = record.data
+    const statusRecord = Array.isArray(data) ? data[0] : data !== null && typeof data === 'object' ? data : record
+    const statusValue = statusRecord !== null && typeof statusRecord === 'object'
+      ? (statusRecord as Record<string, unknown>).status
+      : undefined
+    const status = typeof statusValue === 'string' ? statusValue.toLowerCase() : ''
+    if (ASYNC_FAILED_STATUSES.has(status)) {
+      throw new ImageGenError(asyncErrorMessage(payload, `上游异步任务失败（${status || 'unknown'}）`), 'upstream-rejected')
+    }
+    const nested = statusRecord !== null && typeof statusRecord === 'object' ? statusRecord as Record<string, unknown> : record
+    const result = nested.result ?? (nested.output !== null && typeof nested.output === 'object' ? (nested.output as Record<string, unknown>).result : undefined) ?? record.result
+    const resultRecord = result !== null && typeof result === 'object' ? result as Record<string, unknown> : undefined
+    const images = resultRecord?.images ?? (nested.images ?? record.images)
+    if (ASYNC_COMPLETED_STATUSES.has(status) || images !== undefined) {
+      const items = Array.isArray(images) ? images.flatMap(imageItemsOf) : imageItemsOf(images)
+      if (items.length > 0) return items
+      if (ASYNC_COMPLETED_STATUSES.has(status)) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
+    }
+    if (status !== '' && !ASYNC_PENDING_STATUSES.has(status) && !ASYNC_COMPLETED_STATUSES.has(status)) {
+      throw new ImageGenError(`上游返回了未知异步任务状态：${status}`, 'upstream-invalid')
+    }
+    await waitForPoll(Math.min(delay, Math.max(1, deadline - Date.now())), signal)
+    delay = Math.min(5000, delay * 2)
+  }
+  throw new ImageGenError('上游异步任务轮询超时（240 秒）', 'upstream-timeout')
 }
 
 /**
@@ -494,25 +641,20 @@ async function requestOneImage(
   }
 
   const record = payload as Record<string, unknown>
-  const data = Array.isArray(record.data)
-    ? record.data
-    : Array.isArray(record.images)
-      ? record.images
-      : Array.isArray(record.output)
-        ? record.output
-        : undefined
+  const data = dataRecordsOf(record)
   if (data === undefined) {
     throw new ImageGenError('上游响应缺少 data 数组', 'upstream-invalid')
   }
   if (data.length === 0) {
     throw new ImageGenError('上游返回了 0 张图片', 'upstream-empty')
   }
-  return Promise.all(data.map(async (entry) => {
-    if (entry === null || typeof entry !== 'object') {
-      throw new ImageGenError('上游响应包含无效的图片条目', 'upstream-invalid')
-    }
-    return normalizeItem(entry as Record<string, unknown>, upstream)
-  }))
+  const asyncEntries = data.filter(entry => typeof entry.task_id === 'string' && entry.task_id.trim() !== '')
+  if (asyncEntries.length > 0) {
+    const asyncRecords = (await Promise.all(asyncEntries.map(entry => pollAsyncTask(baseUrl, upstream, entry.task_id as string, signal)))).flat()
+    if (asyncRecords.length === 0) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
+    return Promise.all(asyncRecords.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
+  }
+  return Promise.all(data.flatMap(imageItemsOf).map(item => normalizeItem(item, upstream, signal)))
 }
 
 /**

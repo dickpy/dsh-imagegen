@@ -257,6 +257,8 @@ export interface ProductSetDraft {
   category: string
   platform: string
   language: string
+  /** Custom copy language when language is 'custom'. */
+  customLanguage?: string
   size: string
   productName: string
   sellingPoints: string

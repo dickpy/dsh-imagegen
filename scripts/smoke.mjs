@@ -412,6 +412,119 @@ await check('B9 Qwen-Image speaks the DashScope native contract', async () => {
   }
 })
 
+
+await check('C0 async two-step providers submit, poll, and flatten URL arrays', async () => {
+  const submissions = []
+  const polls = new Map()
+  const asyncProvider = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    if (url.pathname === '/v1/images/generations') {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const taskId = `task-${submissions.length + 1}`
+      submissions.push({ taskId, body, authorization: req.headers.authorization })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ status: 'submitted', task_id: taskId }] }))
+      return
+    }
+    if (url.pathname.startsWith('/v1/tasks/')) {
+      const taskId = url.pathname.slice('/v1/tasks/'.length)
+      const count = (polls.get(taskId) ?? 0) + 1
+      polls.set(taskId, count)
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (count === 1) {
+        res.end(JSON.stringify({ data: { status: 'processing', task_id: taskId } }))
+      } else {
+        res.end(JSON.stringify({ data: { status: 'completed', task_id: taskId, result: { images: [{ url: [`http://127.0.0.1:${upstreamPort}/image/result.png`, `data:image/png;base64,${pngBytes.toString('base64')}`] }] } } }))
+      }
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => asyncProvider.listen(0, '127.0.0.1', resolve))
+  const port = asyncProvider.address().port
+  try {
+    const result = await host.generateImage(
+      { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'async-key' },
+      { mode: 'text', model: 'gpt-image-2', prompt: 'async image', size: '1:1', quality: 'auto', n: 2, detail: '' },
+    )
+    assert.equal(submissions.length, 2, 'one upstream task is submitted for each requested image')
+    assert.equal(result.images.length, 4, 'each completed task URL array is flattened')
+    assert.ok(submissions.every(item => item.authorization === 'Bearer async-key'))
+    assert.ok([...polls.values()].every(count => count >= 2), 'submitted tasks are polled until completed')
+  } finally {
+    await new Promise(resolve => asyncProvider.close(resolve))
+  }
+})
+
+await check('C1 async provider failures surface the remote error', async () => {
+  const asyncProvider = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    if (url.pathname === '/v1/images/generations') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: { status: 'submitted', task_id: 'failed-task' } }))
+      return
+    }
+    if (url.pathname === '/v1/tasks/failed-task') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: { status: 'failed', error: { message: 'content rejected' } } }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => asyncProvider.listen(0, '127.0.0.1', resolve))
+  const port = asyncProvider.address().port
+  try {
+    await assert.rejects(
+      host.generateImage(
+        { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'async-key' },
+        { mode: 'text', model: 'gpt-image-2', prompt: 'bad', size: '1:1', quality: 'auto', n: 1, detail: '' },
+      ),
+      /content rejected/,
+    )
+  } finally {
+    await new Promise(resolve => asyncProvider.close(resolve))
+  }
+})
+
+await check('C2 async provider cancellation aborts polling', async () => {
+  let pollCount = 0
+  const asyncProvider = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    if (url.pathname === '/v1/images/generations') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ status: 'submitted', task_id: 'cancel-task' }] }))
+      return
+    }
+    if (url.pathname === '/v1/tasks/cancel-task') {
+      pollCount += 1
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: { status: 'processing', task_id: 'cancel-task' } }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise(resolve => asyncProvider.listen(0, '127.0.0.1', resolve))
+  const port = asyncProvider.address().port
+  const controller = new AbortController()
+  try {
+    const pending = host.generateImage(
+      { apiUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'async-key' },
+      { mode: 'text', model: 'gpt-image-2', prompt: 'cancel', size: '1:1', quality: 'auto', n: 1, detail: '' },
+      { signal: controller.signal },
+    )
+    await new Promise(resolve => setTimeout(resolve, 80))
+    controller.abort()
+    await assert.rejects(pending)
+    assert.ok(pollCount >= 1)
+  } finally {
+    await new Promise(resolve => asyncProvider.close(resolve))
+  }
+})
 // ------------------------------------------------- C. routes over real HTTP
 const stored = new Map() // namespace -> user section
 const seam = {
@@ -1349,6 +1462,17 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const nativeInputSetter = Object.getOwnPropertyDescriptor(jsdomWindow.HTMLInputElement.prototype, 'value').set
     nativeInputSetter.call(ecommerceName, '测试保温杯')
     ecommerceName.dispatchEvent(new jsdomWindow.Event('input', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(view.querySelectorAll('input[placeholder="项目名称（可选）"]').length, 0, 'project name input was removed')
+    const ecommerceLanguage = view.querySelector('select[aria-label="文案语言"]')
+    assert.ok(ecommerceLanguage !== null, 'ecommerce copy language selector is rendered')
+    ecommerceLanguage.value = 'custom'
+    ecommerceLanguage.dispatchEvent(new jsdomWindow.Event('change', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const customLanguage = view.querySelector('input[placeholder*="语言名称"]')
+    assert.ok(customLanguage !== null, 'custom language input is rendered')
+    nativeInputSetter.call(customLanguage, 'Русский')
+    customLanguage.dispatchEvent(new jsdomWindow.Event('input', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 20))
     // Upload one product asset through the multi-file input and mark the
     // scene slot as reference-free: the confirm flow must resolve each slot's

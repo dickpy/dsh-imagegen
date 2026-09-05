@@ -351,19 +351,38 @@ function formatTime(timestamp: number): string {
 
 function defaultEcommerceDraft(): ProductSetDraft {
   return {
-    projectId: '', projectName: '', category: '通用商品', platform: '通用', language: '中文', size: '1:1',
+    projectId: '', projectName: '', category: '通用商品', platform: '通用', language: '中文', customLanguage: '', size: '1:1',
     productName: '', sellingPoints: '', protectedFeatures: '', styleHint: '',
     slots: PRODUCT_SET_SLOTS.map(slot => ({ ...slot })),
   }
 }
 
+/** Standard copy-language choices; custom keeps uncommon locales usable. */
+const ECOMMERCE_COPY_LANGUAGES = [
+  ['中文', '中文'],
+  ['English', 'English'],
+  ['Русский', 'Русский'],
+  ['日本語', '日本語'],
+  ['한국어', '한국어'],
+  ['Français', 'Français'],
+  ['Deutsch', 'Deutsch'],
+  ['Español', 'Español'],
+  ['Português', 'Português'],
+  ['custom', '自定义'],
+] as const
+
+function effectiveEcommerceLanguage(draft: ProductSetDraft): string {
+  return draft.language === 'custom' ? draft.customLanguage?.trim() ?? '' : draft.language
+}
+
 function ecommercePrompt(draft: ProductSetDraft, slot: ProductSetSlot): string {
   const points = draft.sellingPoints.trim() || '突出商品真实材质、结构和核心价值'
   const protectedFeatures = draft.protectedFeatures.trim() || '保持商品颜色、形状、Logo、包装文字和结构真实，不添加不存在的配件'
+  const language = effectiveEcommerceLanguage(draft) || '中文'
   const refClause = slot.refRole !== undefined && slot.refRole !== 'none'
     ? `本图以上传的${ECOMMERCE_ROLE_PROMPT_LABELS[slot.refRole]}图片为参考，商品与风格必须与参考图保持一致；`
     : ''
-  return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${draft.language}。商品卖点：${points}。必须遵守：${protectedFeatures}。${refClause}整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布；${draft.styleHint.trim()}`
+  return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${language}。商品卖点：${points}。必须遵守：${protectedFeatures}。${refClause}整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布；${draft.styleHint.trim()}`
 }
 
 /** Consistency prefix for slots generated after the main image exists. */
@@ -919,7 +938,7 @@ export function ImageGenPanel(props: {
         ...(asset !== undefined ? { image: asset.dataUrl, refName: asset.name } : {}),
         workflow: 'ecommerce' as const,
         projectId,
-        projectName: ecommerce.projectName.trim() || ecommerce.productName.trim(),
+        projectName: ecommerce.productName.trim(),
         slotKey: `${slot.key}-${index + 1}`,
         slotLabel: slot.label,
       }
@@ -1454,7 +1473,7 @@ export function ImageGenPanel(props: {
   const generateDisabled = submitting || modeModels.length === 0
   const ecommerceSlots = ecommerce.slots.filter(slot => slot.enabled && slot.count > 0)
   const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0)
-  const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === ''
+  const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === '' || (ecommerce.language === 'custom' && effectiveEcommerceLanguage(ecommerce) === '')
   const ecommerceFileInput = useRef<HTMLInputElement>(null)
   // The results canvas merges live tasks of the active project with restored
   // history entries of the same project; restored slots that were regenerated
@@ -1805,10 +1824,6 @@ export function ImageGenPanel(props: {
                     <span className={css.ecommerceFieldLabel}>{tt('ecommerce.productName')}</span>
                     <input value={ecommerce.productName} placeholder={tt('ecommerce.productName')} onChange={event => setEcommerce(previous => ({ ...previous, productName: event.target.value }))} />
                   </label>
-                  <label className={css.ecommerceField}>
-                    <span className={css.ecommerceFieldLabel}>{tt('ecommerce.projectName')}</span>
-                    <input value={ecommerce.projectName} placeholder={tt('ecommerce.projectName')} onChange={event => setEcommerce(previous => ({ ...previous, projectName: event.target.value }))} />
-                  </label>
                   {ecommerceAssets.length === 0 ? (
                     <button
                       type="button"
@@ -1872,7 +1887,18 @@ export function ImageGenPanel(props: {
                     </label>
                     <label className={css.ecommerceField}>
                       <span className={css.ecommerceFieldLabel}>{tt('ecommerce.languageLabel')}</span>
-                      <select value={ecommerce.language} onChange={event => setEcommerce(previous => ({ ...previous, language: event.target.value }))}><option>中文</option><option>English</option></select>
+                      <select aria-label={tt('ecommerce.languageLabel')} value={ecommerce.language} onChange={event => setEcommerce(previous => ({ ...previous, language: event.target.value }))}>
+                        {ECOMMERCE_COPY_LANGUAGES.map(([value, label]) => <option key={value} value={value}>{value === 'custom' ? tt('ecommerce.customLanguageOption') : label}</option>)}
+                      </select>
+                      {ecommerce.language === 'custom' ? (
+                        <input
+                          value={ecommerce.customLanguage ?? ''}
+                          maxLength={40}
+                          placeholder={tt('ecommerce.customLanguagePlaceholder')}
+                          aria-label={tt('ecommerce.customLanguageLabel')}
+                          onChange={event => setEcommerce(previous => ({ ...previous, customLanguage: event.target.value }))}
+                        />
+                      ) : null}
                     </label>
                     <label className={css.ecommerceField}>
                       <span className={css.ecommerceFieldLabel}>{tt('ecommerce.ratioLabel')}</span>
@@ -1918,12 +1944,12 @@ export function ImageGenPanel(props: {
                   </div>
                   {ecommerceSlots.length > 0 ? (
                     <>
-                      <button type="button" className={css.ecommerceAdvancedToggle} aria-expanded={ecommerceRefOpen} onClick={() => { setEcommerceRefOpen(open => !open) }}>
-                        {tt('ecommerce.refSettings')}
+                      <button type="button" className={css.ecommerceAdvancedToggle} aria-expanded={ecommerceRefOpen} aria-controls="dsh-ecommerce-reference-settings" onClick={() => { setEcommerceRefOpen(open => !open) }}>
+                        <span>{tt('ecommerce.refSettings')}</span>
                         <span className={css.ecommerceAdvancedChevron} aria-hidden="true">{ecommerceRefOpen ? '⌃' : '⌄'}</span>
                       </button>
                       {ecommerceRefOpen ? (
-                        <div className={css.ecommerceAdvancedBody}>
+                        <div id="dsh-ecommerce-reference-settings" className={css.ecommerceAdvancedBody}>
                           {ecommerceSlots.map(slot => (
                             <label key={slot.key} className={css.ecommerceRefRow}>
                               <span>{slot.label}</span>
