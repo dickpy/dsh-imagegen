@@ -1725,6 +1725,9 @@ export function ImageGenPanel(props: {
     </aside>
   )
 
+  const isGallery = workspace === 'normal' && tab === 'gallery'
+  const isGeneration = workspace === 'normal' && tab !== 'gallery'
+
   return (
     <div className={css.panel}>
       <header className={css.panelHeader}>
@@ -1812,7 +1815,7 @@ export function ImageGenPanel(props: {
               </svg>
             </button>
           </div>
-          {workspace === 'normal' && tab === 'gallery' ? (
+          {isGallery ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
               {[
@@ -2042,7 +2045,7 @@ export function ImageGenPanel(props: {
               </section>
             ) : null}
 
-            {tab === 'edit' ? (
+            {isGeneration && tab === 'edit' ? (
               <section className={css.card}>
                 {refImage === null
                   ? (
@@ -2090,7 +2093,7 @@ export function ImageGenPanel(props: {
             ) : null}
 
                 {/* prompt (normal workspace only — ecommerce has its own form) */}
-                {workspace === 'normal' ? (<>
+                {isGeneration ? (<>
                 <section className={css.card}>
               <textarea
                 className={css.prompt}
@@ -2214,7 +2217,7 @@ export function ImageGenPanel(props: {
                 )}
               </div>
             ) : null}
-            {workspace === 'ecommerce' ? null : <label className={css.modelWrap}>
+            {isGeneration ? <label className={css.modelWrap}>
               <span className={css.modelLabel}>{tt('model.label')}</span>
               <span ref={modelMenuRef} className={css.modelMenu} data-open={modelOpen ? 'true' : 'false'}>
                 <button
@@ -2246,8 +2249,8 @@ export function ImageGenPanel(props: {
                   </div>
                 ) : null}
               </span>
-            </label>}
-            {workspace !== 'ecommerce' ? <div className={css.compareControl}>
+            </label> : null}
+            {isGeneration ? <div className={css.compareControl}>
               <label className={css.compareToggle}>
                 <input type="checkbox" checked={compareEnabled} onChange={event => { setCompareEnabled(event.target.checked) }} />
                 <span>{tt('compare.enable')}</span>
@@ -2263,7 +2266,7 @@ export function ImageGenPanel(props: {
                 </div>
               ) : null}
             </div> : null}
-            {workspace !== 'ecommerce' ? <Button
+            {isGeneration ? <Button
               variant="primary"
               size="md"
               className={css.generateButton}
@@ -2296,8 +2299,8 @@ export function ImageGenPanel(props: {
           ) : null}
 
           {/* ------------------------------------------------------- canvas */}
-          <section className={css.canvas} data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}>
-          {workspace === 'normal' && tab === 'gallery' ? (
+          <section className={css.canvas} data-gallery={isGallery ? 'true' : undefined}>
+          {isGallery ? (
             <div className={css.galleryWorkspace}>
               <header className={css.galleryToolbar}>
                 <div>
@@ -2481,7 +2484,7 @@ export function ImageGenPanel(props: {
               )}
             </div>
           ) : null}
-          {(workspace === 'ecommerce' || tab !== 'gallery') && tasks.length > 0 ? (
+          {!isGallery && tasks.length > 0 ? (
             <section className={css.taskTray} data-open={taskTrayOpen ? 'true' : 'false'} aria-label={tt('tasks.title')}>
               <header className={css.taskTrayHeader}>
                 <button type="button" className={css.taskTrayToggle} aria-expanded={taskTrayOpen} onClick={() => { setTaskTrayOpen(open => !open) }}>
@@ -2529,7 +2532,7 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {generating && comparison === null && workspace !== 'ecommerce' ? (
+          {generating && comparison === null && isGeneration ? (
             <div className={css.canvasState} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <span className={css.bigSpinner} />
               <span className={css.canvasStateTitle}>
@@ -2551,7 +2554,7 @@ export function ImageGenPanel(props: {
             <div className={css.canvasError} role="alert">{tt('canvas.error', { error })}</div>
           ) : null}
 
-          {!generating && !error && images.length === 0 && workspace !== 'ecommerce' ? (
+          {isGeneration && !generating && !error && images.length === 0 ? (
             <InspirationGallery
               api={api}
               onUse={(text) => {
@@ -2561,7 +2564,7 @@ export function ImageGenPanel(props: {
             />
           ) : null}
 
-          {!generating && images.length > 0 && workspace !== 'ecommerce' ? (
+          {isGeneration && !generating && images.length > 0 ? (
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>

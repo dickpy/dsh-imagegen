@@ -1600,9 +1600,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.equal(view.querySelectorAll('[role="tablist"] button').length, 6, 'generation sub-modes return in the normal workspace')
     const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('素材库'))
-    galleryPill?.click()
+    assert.ok(galleryPill !== undefined, '素材库入口存在')
+    galleryPill.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     await waitForSelector(view, '[data-gallery-add-conversation]')
+    assert.equal(view.querySelector('textarea[placeholder*="描述你想要的画面"]'), null, 'gallery hides normal generation prompt')
+    assert.equal(view.querySelector('button[class*="generateButton"]'), null, 'gallery hides normal generation button')
+    assert.equal(view.textContent?.includes('灵感案例'), false, 'gallery hides inspiration examples')
+    assert.ok(view.querySelector('[data-gallery="true"]') !== null, 'gallery workspace is isolated')
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history remains visible in gallery mode')
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 2, 'gallery mode is active')
     assert.ok(view.querySelector('[data-gallery="true"] [data-gallery-add-conversation]') !== null, 'gallery entries expose add-to-conversation action')
@@ -1611,6 +1616,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     galleryHistoryMain.click()
     await waitForSelector(view, '[data-count]')
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 0, 'history click returns to text-to-image')
+    assert.ok(view.querySelector('textarea[placeholder*="描述你想要的画面"]') !== null, 'normal prompt returns after gallery')
+    assert.ok(view.querySelector('[class*="generateButton"]') !== null, 'normal generate button returns after gallery')
     assert.ok(view.querySelectorAll('[data-count]').length > 0, 'history result is visible before starting a new creation')
     jsdomDocument.querySelector('[data-history-new]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 20))
@@ -1618,7 +1625,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 0, 'new creation returns to text-to-image')
 
     const galleryTab = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('素材库'))
-    galleryTab?.click()
+    assert.ok(galleryTab !== undefined, '素材库入口仍存在')
+    galleryTab.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.ok(view.querySelector('[data-gallery-clear]') !== null, 'gallery clear button rendered')
     view.querySelector('[data-gallery-clear]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
@@ -1629,8 +1637,11 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(registered[0].key, 'dsh-imagegen')
     assert.equal(registered[0].name, 'settings.plugin.item')
 
-    // Inspiration wall: the empty canvas deals random template cards with a
-    // shuffle action, and clicking a card hands its prompt to the form.
+    // The asset library must not inherit the normal generation inspiration wall.
+    assert.equal(jsdomDocument.querySelector('[aria-label="灵感案例"]'), null, 'asset library hides inspiration wall')
+    normalSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    // Inspiration wall belongs to the empty normal-generation canvas only.
     const inspirationWall = jsdomDocument.querySelector('[aria-label="灵感案例"]')
     assert.ok(inspirationWall !== null, 'inspiration wall rendered on the empty canvas')
     const shuffleButton = [...inspirationWall.querySelectorAll('button')]

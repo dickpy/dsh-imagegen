@@ -2534,12 +2534,6 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 }
 
 /* --- gallery workspace -------------------------------------------------------- */
-.config[data-gallery='true'] .configScroll > *:not(:first-child),
-.config[data-gallery='true'] .footer,
-.canvas[data-gallery='true'] > .canvasState,
-.canvas[data-gallery='true'] > .canvasError,
-.canvas[data-gallery='true'] > .canvasBody,
-.studio:has(.config[data-gallery='true']) > .history { display: none; }
 .config[data-gallery='true'] .configScroll { display: flex; flex: none; overflow: visible; order: 1; }
 .config[data-gallery='true'] .galleryFilters { order: 2; flex: 1; min-height: 0; }
 .galleryFilters { padding: 18px 14px; overflow-y: auto; overflow-x: hidden; }
