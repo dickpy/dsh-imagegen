@@ -1360,7 +1360,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
                 ? <div className={css.nodeStateError}>{metadata.error ?? tt('canvas.generateFailed')}<button type="button" onClick={() => { void retryGeneration(node) }}>{tt('canvas.retry')}</button></div>
                 : hasImage
                   ? <img src={asset.url} alt={node.title} draggable={false} onDragStart={event => event.preventDefault()} />
-                  : <button type="button" className={css.nodeEmpty} onClick={() => setPickerOpen(true)}><ToolbarIcon name="image" /><span>{tt('canvas.emptyImageNode')}</span></button>}
+                  : <button type="button" className={css.nodeEmpty} onClick={() => imageFileRef.current?.click()}><ToolbarIcon name="image" /><span>{tt('canvas.emptyImageNode')}</span></button>}
           </div>}
       {isSelected
         ? <div className={css.resizeHandle} onPointerDown={event => handleResizeStart(event, node, 'bottom-right')} title={tt('canvas.resizeHint')} />
@@ -1639,7 +1639,22 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       {emptyState}
     </div>
 
-    <div className={`${css.dock} ${cursorClass}`} data-canvas-no-zoom="">
+    <div
+      className={`${css.dock} ${cursorClass}`}
+      data-canvas-no-zoom=""
+      onPointerMove={event => {
+        const dock = event.currentTarget
+        const buttons = [...dock.querySelectorAll<HTMLButtonElement>('.iconButton')]
+        for (const button of buttons) {
+          const rect = button.getBoundingClientRect()
+          const distance = Math.abs(event.clientX - (rect.left + rect.width / 2)) / 40
+          button.style.setProperty('--dock-lift', `${Math.max(0, 4 - distance * 1.5)}px`)
+        }
+      }}
+      onPointerLeave={event => {
+        for (const button of event.currentTarget.querySelectorAll<HTMLButtonElement>('.iconButton')) button.style.removeProperty('--dock-lift')
+      }}
+    >
       <IconButton name="select" size={18} label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
       <IconButton name="pan" size={18} label={tt('canvas.toolPan')} active={tool === 'pan'} onClick={() => setTool('pan')} />
       <span className={css.dockDivider} />
@@ -1679,30 +1694,37 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onMouseEnter={clearMenuCloseTimer}
       onMouseLeave={scheduleMenuClose}
     >
-      <button type="button" role="menuitem" onClick={() => { imageFileRef.current?.click(); setImageMenu(null) }}>{tt('canvas.imageMenuUpload')}</button>
-      <button type="button" role="menuitem" onClick={() => { setPickerTab('gallery'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuAssets')}</button>
-      <button type="button" role="menuitem" onClick={() => { setPickerTab('history'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuHistory')}</button>
-      <button type="button" role="menuitem" onClick={() => { setPickerTab('generate'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuGenerate')}</button>
-      <button type="button" role="menuitem" onClick={() => { placeNewNode(createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' })); setImageMenu(null) }}>{tt('canvas.imageMenuBlank')}</button>
-      <input
-        ref={imageFileRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
-        multiple
-        hidden
-        onChange={event => {
-          const files = [...(event.target.files ?? [])].filter(file => file.type.startsWith('image/'))
-          event.target.value = ''
-          if (files.length === 0) return
-          const world = canvasCenter()
-          void Promise.all(files.map(async file => {
-            const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('读取图片失败')); reader.readAsDataURL(file) })
-            const dimensions = await readImageSize(dataUrl)
-            return api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'upload', originId: file.name })
-          })).then(assets => addAssets(assets, world)).catch(caught => setError(caught instanceof Error ? caught.message : String(caught)))
-        }}
-      />
+      <button type="button" role="menuitem" onClick={() => { imageFileRef.current?.click(); setImageMenu(null) }}><ToolbarIcon name="image" size={16} />{tt('canvas.imageMenuUpload')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('gallery'); setPickerOpen(true); setImageMenu(null) }}><ToolbarIcon name="template" size={16} />{tt('canvas.imageMenuAssets')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('history'); setPickerOpen(true); setImageMenu(null) }}><ToolbarIcon name="undo" size={16} />{tt('canvas.imageMenuHistory')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('generate'); setPickerOpen(true); setImageMenu(null) }}><ToolbarIcon name="sparkle" size={16} />{tt('canvas.imageMenuGenerate')}</button>
     </div> : null}
+    <input
+      ref={imageFileRef}
+      type="file"
+      accept="image/png,image/jpeg,image/webp,image/gif"
+      multiple
+      hidden
+      onChange={event => {
+        const files = [...(event.target.files ?? [])].filter(file => file.type.startsWith('image/'))
+        event.target.value = ''
+        if (files.length === 0) return
+        const world = canvasCenter()
+        void Promise.all(files.map(async file => {
+          const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('读取图片失败')); reader.readAsDataURL(file) })
+          const dimensions = await readImageSize(dataUrl)
+          return api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'upload', originId: file.name })
+        })).then(assets => {
+          const current = documentRef.current
+          const selectedId = selectedIdsRef.current.size === 1 ? [...selectedIdsRef.current][0] : undefined
+          const selectedNode = current?.nodes.find(node => node.id === selectedId)
+          if (selectedNode?.type === 'image' && usableAsset(selectedNode) === undefined && assets[0] !== undefined) {
+            mutate(previous => ({ ...previous, nodes: previous.nodes.map(node => node.id === selectedNode.id ? { ...node, width: sizeForAsset(assets[0]!).width, height: sizeForAsset(assets[0]!).height, metadata: { ...nodeMetadata(node), asset: assets[0], status: 'success' as const, error: undefined } } : node) }))
+            if (assets.length > 1) addAssets(assets.slice(1), world)
+          } else addAssets(assets, world)
+        }).catch(caught => setError(caught instanceof Error ? caught.message : String(caught)))
+      }}
+    />
     {backgroundMenu !== null ? <div
       className={css.backgroundMenu}
       style={{ left: backgroundMenu.x, top: backgroundMenu.y - 10 }}

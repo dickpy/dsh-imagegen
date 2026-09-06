@@ -456,7 +456,7 @@
 }
 
 .dock .iconButton:not(:disabled):hover {
-  transform: translateY(-3px);
+  transform: translateY(calc(-3px - var(--dock-lift, 0px)));
   box-shadow: 0 6px 14px color-mix(in srgb, var(--dsw-alias-label-primary) 20%, transparent);
 }
 
