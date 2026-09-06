@@ -433,9 +433,44 @@
 }
 
 .dock .iconButton {
+  position: relative;
+  overflow: hidden;
   width: 40px;
   height: 40px;
-  border-radius: 10px;
+  border-radius: 11px;
+  transition: transform 0.18s cubic-bezier(0.34, 1.9, 0.64, 1), background 0.15s ease, color 0.15s ease, box-shadow 0.18s ease;
+}
+
+/* water-wave sheen sweeping across + gentle lift on hover */
+.dock .iconButton::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: -150%;
+  width: 65%;
+  background: linear-gradient(105deg, transparent, color-mix(in srgb, currentColor 26%, transparent), transparent);
+  transform: skewX(-18deg);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dock .iconButton:not(:disabled):hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--dsw-alias-label-primary) 20%, transparent);
+}
+
+.dock .iconButton:not(:disabled):hover::before {
+  animation: dockShine 0.55s ease forwards;
+}
+
+.dock .iconButton:not(:disabled):active {
+  transform: translateY(-1px) scale(0.96);
+}
+
+@keyframes dockShine {
+  0% { left: -150%; opacity: 1; }
+  100% { left: 170%; opacity: 1; }
 }
 
 .dock .iconButton[data-active] {

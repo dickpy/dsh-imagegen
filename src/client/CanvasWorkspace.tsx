@@ -222,8 +222,27 @@ function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number
   return <svg {...common}><path d="M8 2l1.2 4.2L13.5 8l-4.3 1.8L8 14l-1.2-4.2L2.5 8l4.3-1.8L8 2z" /></svg>
 }
 
-function IconButton(props: { name: ToolbarIconName; label: string; active?: boolean; disabled?: boolean; size?: number; onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void }): React.JSX.Element {
-  return <button type="button" className={css.iconButton} data-active={props.active ? '' : undefined} aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}><ToolbarIcon name={props.name} size={props.size} /></button>
+function IconButton(props: {
+  name: ToolbarIconName
+  label: string
+  active?: boolean
+  disabled?: boolean
+  size?: number
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void
+  onMouseEnter?: (event: React.MouseEvent<HTMLButtonElement>) => void
+  onMouseLeave?: () => void
+}): React.JSX.Element {
+  return <button
+    type="button"
+    className={css.iconButton}
+    data-active={props.active ? '' : undefined}
+    aria-label={props.label}
+    title={props.label}
+    disabled={props.disabled}
+    onClick={props.onClick}
+    onMouseEnter={props.onMouseEnter}
+    onMouseLeave={props.onMouseLeave}
+  ><ToolbarIcon name={props.name} size={props.size} /></button>
 }
 
 export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element {
@@ -242,8 +261,26 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [createMenu, setCreateMenu] = useState<{ screen: Point; world: Point } | null>(null)
   const [minimapOpen, setMinimapOpen] = useState(true)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [backgroundMenu, setBackgroundMenu] = useState<{ screen: Point } | null>(null)
-  const [imageMenu, setImageMenu] = useState<{ screen: Point } | null>(null)
+  const [backgroundMenu, setBackgroundMenu] = useState<Point | null>(null)
+  const [imageMenu, setImageMenu] = useState<Point | null>(null)
+  const menuCloseTimer = useRef<number | null>(null)
+  const clearMenuCloseTimer = (): void => {
+    if (menuCloseTimer.current !== null) { window.clearTimeout(menuCloseTimer.current); menuCloseTimer.current = null }
+  }
+  const scheduleMenuClose = useCallback((): void => {
+    clearMenuCloseTimer()
+    menuCloseTimer.current = window.setTimeout(() => { setBackgroundMenu(null); setImageMenu(null) }, 280)
+  }, [])
+  /** Open one dock menu anchored to its button (root-relative) and close the
+   *  other: the two menus are mutually exclusive. */
+  const openDockMenu = useCallback((kind: 'image' | 'background', button: HTMLElement): void => {
+    clearMenuCloseTimer()
+    const bounds = button.getBoundingClientRect()
+    const rootRect = rootRef.current?.getBoundingClientRect()
+    const screen: Point = { x: bounds.left + bounds.width / 2 - (rootRect?.left ?? 0), y: bounds.top - (rootRect?.top ?? 0) }
+    if (kind === 'image') { setImageMenu(screen); setBackgroundMenu(null) }
+    else { setBackgroundMenu(screen); setImageMenu(null) }
+  }, [])
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pickerTab, setPickerTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>('upload')
   const backgroundFileRef = useRef<HTMLInputElement>(null)
@@ -262,6 +299,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [composerCount, setComposerCount] = useState(1)
   const [composerBusy, setComposerBusy] = useState(false)
 
+  const rootRef = useRef<HTMLElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef<CanvasDocument | null>(null)
   const selectedIdsRef = useRef<Set<string>>(selectedIds)
@@ -1389,11 +1427,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!composerVisible || document === null || composerTarget === null) return null
     const linkedCount = composerReferenceCount + composerTextCount
     const k = document.viewport.k
-    const centerX = document.viewport.x + (composerTarget.x + composerTarget.width / 2) * k
+    const topOffset = viewportRef.current?.offsetTop ?? 0
+    const centerX = topOffset * 0 + document.viewport.x + (composerTarget.x + composerTarget.width / 2) * k
     const clampedX = Math.min(Math.max(centerX, 292), Math.max(292, viewportSize.width - 292))
-    const belowY = document.viewport.y + (composerTarget.y + composerTarget.height) * k + 14
-    const top = belowY > viewportSize.height - 170
-      ? Math.max(64, document.viewport.y + composerTarget.y * k - 158)
+    const belowY = topOffset + document.viewport.y + (composerTarget.y + composerTarget.height) * k + 14
+    const top = belowY > viewportSize.height + topOffset - 170
+      ? Math.max(64, topOffset + document.viewport.y + composerTarget.y * k - 158)
       : belowY
     return <div className={css.composer} data-canvas-no-zoom="" style={{ left: clampedX - 280, top }}>
       <textarea
@@ -1538,7 +1577,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     return { left: x1, top: y1, width: x2 - x1, height: y2 - y1 }
   })()
 
-  return <section className={css.root} data-canvas-workspace="">
+  return <section ref={rootRef} className={css.root} data-canvas-workspace="">
     <header className={css.topBar} data-canvas-no-zoom="">
       <select className={css.projectSelect} value={document?.id ?? ''} onChange={event => { void selectProject(event.target.value) }} aria-label={tt('canvas.project')}>
         {projects.map(project => <option key={project.id} value={project.id}>{project.title}</option>)}
@@ -1604,25 +1643,42 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       <IconButton name="select" size={18} label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
       <IconButton name="pan" size={18} label={tt('canvas.toolPan')} active={tool === 'pan'} onClick={() => setTool('pan')} />
       <span className={css.dockDivider} />
-      <IconButton name="image" size={18} label={tt('canvas.addImage')} active={imageMenu !== null} onClick={event => {
-        const bounds = event.currentTarget.getBoundingClientRect()
-        setImageMenu(previous => previous === null ? { screen: { x: bounds.left + bounds.width / 2, y: bounds.top } } : null)
-      }} />
+      <IconButton
+        name="image"
+        size={18}
+        label={tt('canvas.addImage')}
+        active={imageMenu !== null}
+        onClick={event => openDockMenu('image', event.currentTarget)}
+        onMouseEnter={event => openDockMenu('image', event.currentTarget)}
+        onMouseLeave={scheduleMenuClose}
+      />
       <IconButton name="text" size={18} label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
       <IconButton name="sparkle" size={18} label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
       <IconButton name="template" size={18} label={tt('canvas.templateLibrary')} active={libraryOpen} onClick={() => setLibraryOpen(previous => !previous)} />
       <span className={css.dockDivider} />
-      <IconButton name="background" size={18} label={tt('canvas.background')} active={backgroundMenu !== null} onClick={event => {
-        const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect()
-        setBackgroundMenu(previous => previous === null ? { screen: { x: bounds.left + bounds.width / 2, y: bounds.top } } : null)
-      }} />
+      <IconButton
+        name="background"
+        size={18}
+        label={tt('canvas.background')}
+        active={backgroundMenu !== null}
+        onClick={event => openDockMenu('background', event.currentTarget)}
+        onMouseEnter={event => openDockMenu('background', event.currentTarget)}
+        onMouseLeave={scheduleMenuClose}
+      />
       <IconButton name="undo" size={18} label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
       <IconButton name="redo" size={18} label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
       <span className={css.dockDivider} />
       <IconButton name="trash" size={18} label={tt('canvas.delete')} disabled={selectedIds.size === 0 && selectedConnectionId === null} onClick={deleteSelection} />
     </div>
 
-    {imageMenu !== null ? <div className={css.backgroundMenu} style={{ left: imageMenu.screen.x, top: imageMenu.screen.y - 12 }} data-canvas-no-zoom="" role="menu">
+    {imageMenu !== null ? <div
+      className={css.backgroundMenu}
+      style={{ left: imageMenu.x, top: imageMenu.y - 10 }}
+      data-canvas-no-zoom=""
+      role="menu"
+      onMouseEnter={clearMenuCloseTimer}
+      onMouseLeave={scheduleMenuClose}
+    >
       <button type="button" role="menuitem" onClick={() => { imageFileRef.current?.click(); setImageMenu(null) }}>{tt('canvas.imageMenuUpload')}</button>
       <button type="button" role="menuitem" onClick={() => { setPickerTab('gallery'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuAssets')}</button>
       <button type="button" role="menuitem" onClick={() => { setPickerTab('history'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuHistory')}</button>
@@ -1647,7 +1703,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         }}
       />
     </div> : null}
-    {backgroundMenu !== null ? <div className={css.backgroundMenu} style={{ left: backgroundMenu.screen.x, top: backgroundMenu.screen.y - 12 }} data-canvas-no-zoom="" role="menu">
+    {backgroundMenu !== null ? <div
+      className={css.backgroundMenu}
+      style={{ left: backgroundMenu.x, top: backgroundMenu.y - 10 }}
+      data-canvas-no-zoom=""
+      role="menu"
+      onMouseEnter={clearMenuCloseTimer}
+      onMouseLeave={scheduleMenuClose}
+    >
       {([
         ['dots', tt('canvas.backgroundDots')],
         ['lines', tt('canvas.backgroundLines')],
