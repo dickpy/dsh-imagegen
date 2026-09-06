@@ -1599,7 +1599,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     normalSwitch.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.equal(view.querySelectorAll('[role="tablist"] button').length, 6, 'generation sub-modes return in the normal workspace')
-    const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('画廊'))
+    const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('素材库'))
     galleryPill?.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     await waitForSelector(view, '[data-gallery-add-conversation]')
@@ -1617,7 +1617,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(view.querySelectorAll('[data-count]').length, 0, 'new creation clears the image preview')
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 0, 'new creation returns to text-to-image')
 
-    const galleryTab = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('画廊'))
+    const galleryTab = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('素材库'))
     galleryTab?.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.ok(view.querySelector('[data-gallery-clear]') !== null, 'gallery clear button rendered')

@@ -524,6 +524,7 @@ export function ImageGenPanel(props: {
   const [galleryAdding, setGalleryAdding] = useState(false)
   const [galleryMessage, setGalleryMessage] = useState<string | null>(null)
   const [galleryFilter, setGalleryFilter] = useState<GalleryFilter>('all')
+  const galleryUploadRef = useRef<HTMLInputElement>(null)
   const [galleryRatio, setGalleryRatio] = useState('all')
   const [galleryTagFilter, setGalleryTagFilter] = useState<string | null>(null)
   const [galleryView, setGalleryView] = useState<'masonry' | 'grid'>('masonry')
@@ -1246,6 +1247,47 @@ export function ImageGenPanel(props: {
       setGallery(result.entries)
       setGalleryMessage(result.added ? tt('gallery.added') : tt('gallery.already'))
       window.setTimeout(() => { setGalleryMessage(null) }, 2200)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setGalleryAdding(false)
+    }
+  }
+
+  /** Save local image files into the asset library so the canvas and studio
+   *  can reuse them later; entries dedupe by content host-side. */
+  const uploadGalleryFiles = async (files: File[]): Promise<void> => {
+    if (files.length === 0 || galleryAdding) return
+    setGalleryAdding(true)
+    try {
+      let entries: HistoryEntry[] | undefined
+      for (const file of files) {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result))
+          reader.onerror = () => reject(new Error(tt('canvas.dropSub')))
+          reader.readAsDataURL(file)
+        })
+        const separator = dataUrl.indexOf(',')
+        const result = await api.galleryAppend({
+          id: '',
+          createdAt: Date.now(),
+          mode: 'text',
+          model: tt('gallery.uploadModel'),
+          prompt: file.name.replace(/\.[a-z0-9]+$/i, ''),
+          size: 'auto',
+          quality: 'auto',
+          detail: '',
+          n: 1,
+          images: [{ b64: separator >= 0 ? dataUrl.slice(separator + 1) : dataUrl, mime: file.type || 'image/png' }],
+        })
+        entries = result.entries
+      }
+      if (entries !== undefined) {
+        setGallery(entries)
+        setGalleryMessage(tt('gallery.uploaded'))
+        window.setTimeout(() => { setGalleryMessage(null) }, 2200)
+      }
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -2264,6 +2306,19 @@ export function ImageGenPanel(props: {
                 </div>
                 <div className={css.galleryToolbarActions}>
                   <input className={css.gallerySearch} value={galleryQuery} onChange={event => { setGalleryQuery(event.target.value) }} placeholder={tt('gallery.search')} aria-label={tt('gallery.search')} />
+                  <button type="button" className={css.gallerySelectMode} disabled={galleryAdding} title={tt('gallery.uploadHint')} onClick={() => galleryUploadRef.current?.click()}>{galleryAdding ? '…' : tt('gallery.upload')}</button>
+                  <input
+                    ref={galleryUploadRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    hidden
+                    onChange={event => {
+                      const files = [...(event.target.files ?? [])]
+                      event.target.value = ''
+                      if (files.length > 0) void uploadGalleryFiles(files)
+                    }}
+                  />
                   <button type="button" className={css.gallerySelectMode} data-active={gallerySelecting ? '' : undefined} aria-pressed={gallerySelecting} onClick={() => { setGallerySelecting(previous => !previous) }}>
                     {gallerySelecting ? tt('gallery.selectionDone') : tt('gallery.select')}
                   </button>

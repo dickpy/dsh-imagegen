@@ -200,8 +200,8 @@ function nodeAnchor(node: CanvasNode, side: 'left' | 'right'): Point {
 
 type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
 
-function ToolbarIcon({ name }: { name: ToolbarIconName }): React.JSX.Element {
-  const common = { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.35, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
+function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number }): React.JSX.Element {
+  const common = { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.35, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
   if (name === 'new') return <svg {...common}><path d="M8 3v10M3 8h10" /></svg>
   if (name === 'select') return <svg {...common}><path d="M3 2.5l9.3 6.2-4 1.1-1.5 3.7L3 2.5z" /></svg>
   if (name === 'pan') return <svg {...common}><path d="M8 2v12M2 8h12M5 5l3-3 3 3M5 11l3 3 3-3" /></svg>
@@ -213,7 +213,7 @@ function ToolbarIcon({ name }: { name: ToolbarIconName }): React.JSX.Element {
   if (name === 'fit') return <svg {...common}><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" /></svg>
   if (name === 'minimap') return <svg {...common}><rect x="2" y="3" width="12" height="10" rx="1.5" /><path d="M5 6h3v4H5zM10 8h2v3h-2" /></svg>
   if (name === 'background') return <svg {...common}><rect x="2" y="4.5" width="10.5" height="9" rx="1.5" /><path d="M4.5 2h10a1.5 1.5 0 0 1 1.5 1.5V11M4.5 10.5l2.6-2.8 2.1 2.2 2.3-2.4 1.5 1.5" /></svg>
-  if (name === 'template') return <svg {...common}><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M2 6h12M6.5 6v7.5" /></svg>
+  if (name === 'template') return <svg {...common}><path d="M8 3.6C6.9 2.5 5 2 2.5 2v10.6c2.5 0 4.4.5 5.5 1.6 1.1-1.1 3-1.6 5.5-1.6V2C11 2 9.1 2.5 8 3.6zM8 3.6V14" /></svg>
   if (name === 'download') return <svg {...common}><path d="M8 2.5v8M5 7.5l3 3 3-3M3 13.5h10" /></svg>
   if (name === 'duplicate') return <svg {...common}><rect x="5.5" y="5.5" width="8" height="8" rx="1.2" /><path d="M10.5 3h-7a.5.5 0 0 0-.5.5v7" /></svg>
   if (name === 'send') return <svg {...common}><path d="M14 2L7 9M14 2L9.5 14l-2.5-5L2 6.5 14 2z" /></svg>
@@ -222,8 +222,8 @@ function ToolbarIcon({ name }: { name: ToolbarIconName }): React.JSX.Element {
   return <svg {...common}><path d="M8 2l1.2 4.2L13.5 8l-4.3 1.8L8 14l-1.2-4.2L2.5 8l4.3-1.8L8 2z" /></svg>
 }
 
-function IconButton(props: { name: ToolbarIconName; label: string; active?: boolean; disabled?: boolean; onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void }): React.JSX.Element {
-  return <button type="button" className={css.iconButton} data-active={props.active ? '' : undefined} aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}><ToolbarIcon name={props.name} /></button>
+function IconButton(props: { name: ToolbarIconName; label: string; active?: boolean; disabled?: boolean; size?: number; onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void }): React.JSX.Element {
+  return <button type="button" className={css.iconButton} data-active={props.active ? '' : undefined} aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}><ToolbarIcon name={props.name} size={props.size} /></button>
 }
 
 export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element {
@@ -243,8 +243,11 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [minimapOpen, setMinimapOpen] = useState(true)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [backgroundMenu, setBackgroundMenu] = useState<{ screen: Point } | null>(null)
+  const [imageMenu, setImageMenu] = useState<{ screen: Point } | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [pickerTab, setPickerTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>('upload')
   const backgroundFileRef = useRef<HTMLInputElement>(null)
+  const imageFileRef = useRef<HTMLInputElement>(null)
   const [renamingTitle, setRenamingTitle] = useState(false)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false)
   const [saveState, setSaveState] = useState<'loading' | 'saved' | 'saving' | 'error'>('loading')
@@ -805,7 +808,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       if (documentRef.current === null) return
       const mod = event.ctrlKey || event.metaKey
       if (event.key === 'Escape') {
-        setContextMenu(null); setCreateMenu(null); setBackgroundMenu(null)
+        setContextMenu(null); setCreateMenu(null); setBackgroundMenu(null); setImageMenu(null)
         if (!isEditingTarget(event.target)) { setSelectedIds(new Set()); setSelectedConnectionId(null) }
         return
       }
@@ -882,7 +885,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const onViewportPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const target = event.target instanceof Element ? event.target : null
     setContextMenu(null); setCreateMenu(null)
-    if (!target?.closest('[data-canvas-no-zoom]')) setBackgroundMenu(null)
+    if (!target?.closest('[data-canvas-no-zoom]')) { setBackgroundMenu(null); setImageMenu(null) }
     const isBackground = target?.closest('[data-node-id],[data-connection-hit]') === null
     const shouldPan = event.button === 1 || (event.button === 0 && (tool === 'pan' || temporaryPanTool) && isBackground)
     if (shouldPan) {
@@ -1598,24 +1601,52 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     </div>
 
     <div className={`${css.dock} ${cursorClass}`} data-canvas-no-zoom="">
-      <IconButton name="select" label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
-      <IconButton name="pan" label={tt('canvas.toolPan')} active={tool === 'pan'} onClick={() => setTool('pan')} />
+      <IconButton name="select" size={18} label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
+      <IconButton name="pan" size={18} label={tt('canvas.toolPan')} active={tool === 'pan'} onClick={() => setTool('pan')} />
       <span className={css.dockDivider} />
-      <IconButton name="image" label={tt('canvas.addImage')} onClick={() => setPickerOpen(true)} />
-      <IconButton name="text" label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
-      <IconButton name="sparkle" label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
-      <IconButton name="template" label={tt('canvas.templateLibrary')} active={libraryOpen} onClick={() => setLibraryOpen(previous => !previous)} />
+      <IconButton name="image" size={18} label={tt('canvas.addImage')} active={imageMenu !== null} onClick={event => {
+        const bounds = event.currentTarget.getBoundingClientRect()
+        setImageMenu(previous => previous === null ? { screen: { x: bounds.left + bounds.width / 2, y: bounds.top } } : null)
+      }} />
+      <IconButton name="text" size={18} label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
+      <IconButton name="sparkle" size={18} label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
+      <IconButton name="template" size={18} label={tt('canvas.templateLibrary')} active={libraryOpen} onClick={() => setLibraryOpen(previous => !previous)} />
       <span className={css.dockDivider} />
-      <IconButton name="background" label={tt('canvas.background')} active={backgroundMenu !== null} onClick={event => {
+      <IconButton name="background" size={18} label={tt('canvas.background')} active={backgroundMenu !== null} onClick={event => {
         const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect()
         setBackgroundMenu(previous => previous === null ? { screen: { x: bounds.left + bounds.width / 2, y: bounds.top } } : null)
       }} />
-      <IconButton name="undo" label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
-      <IconButton name="redo" label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
+      <IconButton name="undo" size={18} label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
+      <IconButton name="redo" size={18} label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
       <span className={css.dockDivider} />
-      <IconButton name="trash" label={tt('canvas.delete')} disabled={selectedIds.size === 0 && selectedConnectionId === null} onClick={deleteSelection} />
+      <IconButton name="trash" size={18} label={tt('canvas.delete')} disabled={selectedIds.size === 0 && selectedConnectionId === null} onClick={deleteSelection} />
     </div>
 
+    {imageMenu !== null ? <div className={css.backgroundMenu} style={{ left: imageMenu.screen.x, top: imageMenu.screen.y - 12 }} data-canvas-no-zoom="" role="menu">
+      <button type="button" role="menuitem" onClick={() => { imageFileRef.current?.click(); setImageMenu(null) }}>{tt('canvas.imageMenuUpload')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('gallery'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuAssets')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('history'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuHistory')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('generate'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuGenerate')}</button>
+      <button type="button" role="menuitem" onClick={() => { placeNewNode(createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' })); setImageMenu(null) }}>{tt('canvas.imageMenuBlank')}</button>
+      <input
+        ref={imageFileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        multiple
+        hidden
+        onChange={event => {
+          const files = [...(event.target.files ?? [])].filter(file => file.type.startsWith('image/'))
+          event.target.value = ''
+          if (files.length === 0) return
+          const world = canvasCenter()
+          void Promise.all(files.map(async file => {
+            const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('读取图片失败')); reader.readAsDataURL(file) })
+            const dimensions = await readImageSize(dataUrl)
+            return api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'upload', originId: file.name })
+          })).then(assets => addAssets(assets, world)).catch(caught => setError(caught instanceof Error ? caught.message : String(caught)))
+        }}
+      />
+    </div> : null}
     {backgroundMenu !== null ? <div className={css.backgroundMenu} style={{ left: backgroundMenu.screen.x, top: backgroundMenu.screen.y - 12 }} data-canvas-no-zoom="" role="menu">
       {([
         ['dots', tt('canvas.backgroundDots')],
@@ -1670,6 +1701,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       defaultChannelId={defaultChannelId}
       canvasId={document?.id ?? ''}
       connected={connected}
+      initialTab={pickerTab}
       onClose={() => setPickerOpen(false)}
       onAssets={assets => { addAssets(assets); setPickerOpen(false) }}
       onTask={task => {
@@ -1697,12 +1729,13 @@ function ImagePicker(props: {
   defaultChannelId?: string
   canvasId: string
   connected: boolean
+  initialTab?: 'upload' | 'history' | 'gallery' | 'generate'
   onClose: () => void
   onAssets: (assets: CanvasAssetRef[]) => void
   onTask: (task: GenerationTask) => void
 }): React.JSX.Element {
   const { api, history, gallery, imageModels, defaultChannelId, canvasId, connected, onClose, onAssets } = props
-  const [tab, setTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>('upload')
+  const [tab, setTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>(props.initialTab ?? 'upload')
   const [selected, setSelected] = useState<string[]>([])
   const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>({})
   const [prompt, setPrompt] = useState('')

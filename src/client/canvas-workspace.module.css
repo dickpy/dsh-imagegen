@@ -432,7 +432,18 @@
   backdrop-filter: blur(10px);
 }
 
-.dock .iconButton { width: 34px; height: 34px; }
+.dock .iconButton {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.dock .iconButton[data-active] {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-1);
+}
+
+.dock .iconButton[data-active]:hover { background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-layer-1); }
 
 .dockDivider {
   width: 1px;
