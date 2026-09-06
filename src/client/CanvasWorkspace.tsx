@@ -9,9 +9,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import type { CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasNode, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { tt } from './helpers.ts'
+import { TemplateLibrary } from './TemplateLibrary.tsx'
 import css from './canvas-workspace.module.css'
 
 type CanvasTool = 'select' | 'pan'
+type BackgroundMode = CanvasDocument['background']
 
 const MIN_SCALE = 0.05
 const MAX_SCALE = 5
@@ -196,7 +198,7 @@ function nodeAnchor(node: CanvasNode, side: 'left' | 'right'): Point {
   return { x: side === 'right' ? node.x + node.width : node.x, y: node.y + node.height / 2 }
 }
 
-type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
+type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
 
 function ToolbarIcon({ name }: { name: ToolbarIconName }): React.JSX.Element {
   const common = { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.35, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
@@ -210,7 +212,8 @@ function ToolbarIcon({ name }: { name: ToolbarIconName }): React.JSX.Element {
   if (name === 'redo') return <svg {...common}><path d="M13 7a5 5 0 1 0-1.5 4M13 3v4h-4" /></svg>
   if (name === 'fit') return <svg {...common}><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" /></svg>
   if (name === 'minimap') return <svg {...common}><rect x="2" y="3" width="12" height="10" rx="1.5" /><path d="M5 6h3v4H5zM10 8h2v3h-2" /></svg>
-  if (name === 'background') return <svg {...common}><circle cx="8" cy="8" r="5.5" /><path d="M8 2.5v11M2.5 8h11M4 4.3c2.4 1.9 5.6 1.9 8 0M4 11.7c2.4-1.9 5.6-1.9 8 0" /></svg>
+  if (name === 'background') return <svg {...common}><rect x="2" y="4.5" width="10.5" height="9" rx="1.5" /><path d="M4.5 2h10a1.5 1.5 0 0 1 1.5 1.5V11M4.5 10.5l2.6-2.8 2.1 2.2 2.3-2.4 1.5 1.5" /></svg>
+  if (name === 'template') return <svg {...common}><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M2 6h12M6.5 6v7.5" /></svg>
   if (name === 'download') return <svg {...common}><path d="M8 2.5v8M5 7.5l3 3 3-3M3 13.5h10" /></svg>
   if (name === 'duplicate') return <svg {...common}><rect x="5.5" y="5.5" width="8" height="8" rx="1.2" /><path d="M10.5 3h-7a.5.5 0 0 0-.5.5v7" /></svg>
   if (name === 'send') return <svg {...common}><path d="M14 2L7 9M14 2L9.5 14l-2.5-5L2 6.5 14 2z" /></svg>
@@ -219,7 +222,7 @@ function ToolbarIcon({ name }: { name: ToolbarIconName }): React.JSX.Element {
   return <svg {...common}><path d="M8 2l1.2 4.2L13.5 8l-4.3 1.8L8 14l-1.2-4.2L2.5 8l4.3-1.8L8 2z" /></svg>
 }
 
-function IconButton(props: { name: ToolbarIconName; label: string; active?: boolean; disabled?: boolean; onClick?: () => void }): React.JSX.Element {
+function IconButton(props: { name: ToolbarIconName; label: string; active?: boolean; disabled?: boolean; onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void }): React.JSX.Element {
   return <button type="button" className={css.iconButton} data-active={props.active ? '' : undefined} aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}><ToolbarIcon name={props.name} /></button>
 }
 
@@ -239,6 +242,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [createMenu, setCreateMenu] = useState<{ screen: Point; world: Point } | null>(null)
   const [minimapOpen, setMinimapOpen] = useState(true)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [backgroundMenu, setBackgroundMenu] = useState<{ screen: Point } | null>(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const backgroundFileRef = useRef<HTMLInputElement>(null)
   const [renamingTitle, setRenamingTitle] = useState(false)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false)
   const [saveState, setSaveState] = useState<'loading' | 'saved' | 'saving' | 'error'>('loading')
@@ -799,7 +805,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       if (documentRef.current === null) return
       const mod = event.ctrlKey || event.metaKey
       if (event.key === 'Escape') {
-        setContextMenu(null); setCreateMenu(null)
+        setContextMenu(null); setCreateMenu(null); setBackgroundMenu(null)
         if (!isEditingTarget(event.target)) { setSelectedIds(new Set()); setSelectedConnectionId(null) }
         return
       }
@@ -876,6 +882,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const onViewportPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const target = event.target instanceof Element ? event.target : null
     setContextMenu(null); setCreateMenu(null)
+    if (!target?.closest('[data-canvas-no-zoom]')) setBackgroundMenu(null)
     const isBackground = target?.closest('[data-node-id],[data-connection-hit]') === null
     const shouldPan = event.button === 1 || (event.button === 0 && (tool === 'pan' || temporaryPanTool) && isBackground)
     if (shouldPan) {
@@ -1204,9 +1211,51 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const cursorClass = tool === 'pan' || isSpaceOrCtrl ? css.panCursor : css.selectCursor
 
   const backgroundMode = document?.background ?? 'dots'
-  const cycleBackground = useCallback((): void => {
-    mutate(previous => ({ ...previous, background: previous.background === 'dots' ? 'lines' : previous.background === 'lines' ? 'blank' : 'dots' }))
+  const setBackgroundMode = useCallback((mode: BackgroundMode): void => {
+    mutate(previous => ({
+      ...previous,
+      background: mode,
+      ...(mode === 'image' ? {} : { backgroundImage: undefined }),
+    }))
+    setBackgroundMenu(null)
   }, [mutate])
+
+  const uploadBackgroundImage = useCallback(async (file: File): Promise<void> => {
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('读取图片失败')); reader.readAsDataURL(file) })
+      const dimensions = await readImageSize(dataUrl)
+      const asset = await api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'upload', originId: 'canvas-background' })
+      mutate(previous => ({ ...previous, background: 'image', backgroundImage: asset.url }))
+      setBackgroundMenu(null)
+      setError(null)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }, [api, mutate])
+
+  const removeBackgroundImage = useCallback((): void => {
+    mutate(previous => ({ ...previous, background: 'dots', backgroundImage: undefined }))
+    setBackgroundMenu(null)
+  }, [mutate])
+
+  const applyTemplate = useCallback((prompt: string): void => {
+    const center = canvasCenter()
+    const config = createConfigNode(center)
+    const text = createTextNode()
+    const placed: CanvasNode = {
+      ...text,
+      x: Math.round(config.x - TEXT_NODE_SIZE.width - 80),
+      y: Math.round(config.y + (config.height - TEXT_NODE_SIZE.height) / 2),
+      metadata: { text: prompt, fontSize: 14 },
+    }
+    mutate(previous => ({
+      ...previous,
+      nodes: [...previous.nodes, placed, config],
+      connections: [...previous.connections, { id: newId('edge'), fromNodeId: placed.id, toNodeId: config.id }],
+    }))
+    setSelectedIds(new Set([config.id])); setSelectedConnectionId(null)
+    setLibraryOpen(false)
+  }, [canvasCenter, createConfigNode, createTextNode, mutate])
 
   const gridSize = GRID_SIZE * (document?.viewport.k ?? 1)
   const gridOffsetX = (document?.viewport.x ?? 0) % gridSize
@@ -1256,9 +1305,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             onChange={event => patchNode(node.id, { text: event.target.value })}
           />
         : <div className={css.nodeBody}>
-            {hasImage ? <div className={css.imageInfo} aria-hidden="true">
-              <span className={css.imageInfoModel}>{metadata.model ?? (asset.origin === 'gallery' ? tt('canvas.fromGallery') : asset.origin === 'history' ? tt('canvas.fromHistory') : '')}</span>
-              {asset !== undefined && asset.width > 1 ? <span className={css.imageInfoSize}>{asset.width}×{asset.height}</span> : null}
+            {hasImage ? <div aria-hidden="true">
+              {metadata.model !== undefined && metadata.model !== ''
+                ? <span className={`${css.imageInfo} ${css.imageInfoLeft}`}>{metadata.model}</span>
+                : asset.origin === 'gallery' || asset.origin === 'history'
+                  ? <span className={`${css.imageInfo} ${css.imageInfoLeft}`}>{asset.origin === 'gallery' ? tt('canvas.fromGallery') : tt('canvas.fromHistory')}</span>
+                  : null}
+              {asset !== undefined && asset.width > 1 ? <span className={`${css.imageInfo} ${css.imageInfoRight}`}>{asset.width}×{asset.height}</span> : null}
             </div> : null}
             {isGenerating
               ? <div className={css.nodeState}><span className={css.spinner} aria-hidden="true" /><span>{tt('canvas.generatingNode')}</span></div>
@@ -1503,9 +1556,6 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           />
         : <button type="button" className={css.titleButton} onDoubleClick={() => setRenamingTitle(true)} title={tt('canvas.renameHint')}>{document?.title ?? ''}</button>}
       <span className={css.topBarSpacer} />
-      <IconButton name="background" label={tt('canvas.background')} onClick={cycleBackground} />
-      <IconButton name="undo" label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
-      <IconButton name="redo" label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
       <span className={css.saveState} data-state={saveState}>{saveState === 'saving' ? tt('canvas.saving') : saveState === 'saved' ? tt('canvas.saved') : saveState === 'error' ? tt('canvas.saveFailed') : tt('canvas.loading')}</span>
     </header>
 
@@ -1529,7 +1579,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onDragOver={event => event.preventDefault()}
       onDrop={onDrop}
     >
-      <div className={css.grid} style={{ backgroundSize: `${gridSize}px ${gridSize}px`, backgroundPosition: `${gridOffsetX}px ${gridOffsetY}px` }} data-mode={backgroundMode} aria-hidden="true" />
+      <div
+        className={css.grid}
+        style={backgroundMode === 'image' && document?.backgroundImage
+          ? { backgroundImage: `url(${document.backgroundImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+          : { backgroundSize: `${gridSize}px ${gridSize}px`, backgroundPosition: `${gridOffsetX}px ${gridOffsetY}px` }}
+        data-mode={backgroundMode}
+        aria-hidden="true"
+      >
+        {backgroundMode === 'image' ? <div className={css.gridScrim} /> : null}
+      </div>
       <div className={css.world} style={{ transform: `translate(${document?.viewport.x ?? 0}px, ${document?.viewport.y ?? 0}px) scale(${document?.viewport.k ?? 1})` }}>
         {renderConnections()}
         {document?.nodes.map(renderNode)}
@@ -1545,9 +1604,41 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       <IconButton name="image" label={tt('canvas.addImage')} onClick={() => setPickerOpen(true)} />
       <IconButton name="text" label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
       <IconButton name="sparkle" label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
+      <IconButton name="template" label={tt('canvas.templateLibrary')} active={libraryOpen} onClick={() => setLibraryOpen(previous => !previous)} />
+      <span className={css.dockDivider} />
+      <IconButton name="background" label={tt('canvas.background')} active={backgroundMenu !== null} onClick={event => {
+        const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect()
+        setBackgroundMenu(previous => previous === null ? { screen: { x: bounds.left + bounds.width / 2, y: bounds.top } } : null)
+      }} />
+      <IconButton name="undo" label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
+      <IconButton name="redo" label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
       <span className={css.dockDivider} />
       <IconButton name="trash" label={tt('canvas.delete')} disabled={selectedIds.size === 0 && selectedConnectionId === null} onClick={deleteSelection} />
     </div>
+
+    {backgroundMenu !== null ? <div className={css.backgroundMenu} style={{ left: backgroundMenu.screen.x, top: backgroundMenu.screen.y - 12 }} data-canvas-no-zoom="" role="menu">
+      {([
+        ['dots', tt('canvas.backgroundDots')],
+        ['lines', tt('canvas.backgroundLines')],
+        ['diagonal', tt('canvas.backgroundDiagonal')],
+        ['checker', tt('canvas.backgroundChecker')],
+        ['blank', tt('canvas.backgroundBlank')],
+      ] as const).map(([mode, label]) => <button key={mode} type="button" role="menuitem" data-active={backgroundMode === mode ? '' : undefined} onClick={() => setBackgroundMode(mode)}>{label}</button>)}
+      <span className={css.backgroundMenuDivider} />
+      <button type="button" role="menuitem" data-active={backgroundMode === 'image' ? '' : undefined} onClick={() => backgroundFileRef.current?.click()}>{tt('canvas.backgroundUpload')}</button>
+      {backgroundMode === 'image' && document?.backgroundImage ? <button type="button" role="menuitem" onClick={removeBackgroundImage}>{tt('canvas.backgroundRemove')}</button> : null}
+      <input
+        ref={backgroundFileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        hidden
+        onChange={event => {
+          const file = event.target.files?.[0]
+          if (file !== undefined) void uploadBackgroundImage(file)
+          event.target.value = ''
+        }}
+      />
+    </div> : null}
 
     <div className={css.zoomDock} data-canvas-no-zoom="">
       <IconButton name="minimap" label={minimapOpen ? tt('canvas.minimapClose') : tt('canvas.minimapOpen')} active={minimapOpen} onClick={() => setMinimapOpen(previous => !previous)} />
@@ -1567,6 +1658,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     {minimapOpen ? renderMinimap() : null}
     {renderComposer()}
     {renderContextMenu()}
+    {libraryOpen ? <TemplateLibrary api={api} onClose={() => setLibraryOpen(false)} onUse={applyTemplate} /> : null}
 
     {error !== null ? <div className={css.errorToast} role="status" data-canvas-no-zoom="">{error}<button type="button" aria-label={tt('canvas.dismiss')} onClick={() => setError(null)}><ToolbarIcon name="close" /></button></div> : null}
 

@@ -324,7 +324,9 @@ export interface CanvasDocument {
   title: string
   revision: number
   viewport: CanvasViewport
-  background: 'dots' | 'lines' | 'blank'
+  background: 'dots' | 'lines' | 'diagonal' | 'checker' | 'blank' | 'image'
+  /** Custom background image URL (a canvas asset) when background is 'image'. */
+  backgroundImage?: string
   nodes: CanvasNode[]
   connections: CanvasConnection[]
   createdAt: number

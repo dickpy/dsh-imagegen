@@ -138,7 +138,9 @@ function isDocument(value: unknown): value is CanvasDocument {
     && typeof (document.viewport as { x?: unknown }).x === 'number'
     && typeof (document.viewport as { y?: unknown }).y === 'number'
     && typeof (document.viewport as { k?: unknown }).k === 'number'
-    && (document.background === 'dots' || document.background === 'lines' || document.background === 'blank')
+    && (document.background === 'dots' || document.background === 'lines' || document.background === 'diagonal'
+      || document.background === 'checker' || document.background === 'blank' || document.background === 'image')
+    && (document.backgroundImage === undefined || typeof document.backgroundImage === 'string')
     && Array.isArray(document.nodes) && document.nodes.every(isNode)
     && Array.isArray(document.connections)
 }

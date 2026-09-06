@@ -142,6 +142,68 @@
 
 .grid[data-mode="blank"] { background-image: none; }
 
+.grid[data-mode="diagonal"] {
+  background-image: repeating-linear-gradient(45deg, color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent) 0 1px, transparent 1px 16px);
+}
+
+.grid[data-mode="checker"] {
+  background-image:
+    conic-gradient(color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent) 90deg, transparent 90deg 180deg, color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent) 180deg 270deg, transparent 270deg);
+  background-size: 48px 48px;
+}
+
+.grid[data-mode="image"] { background-image: none; }
+
+.gridScrim {
+  position: absolute;
+  inset: 0;
+  background: var(--dsw-alias-bg-layer-1);
+  opacity: 0.6;
+}
+
+/* ------------------------------------------------ background menu */
+
+.backgroundMenu {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  z-index: 45;
+  min-width: 168px;
+  padding: 5px;
+  border-radius: 11px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 96%, transparent);
+  box-shadow: 0 16px 40px rgb(15 23 42 / 20%);
+  display: flex;
+  flex-direction: column;
+}
+
+.backgroundMenu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  padding: 7px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.backgroundMenu button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+.backgroundMenu button[data-active] {
+  color: var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
+}
+
+.backgroundMenuDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--dsw-alias-border-l1);
+}
+
 .world {
   position: absolute;
   left: 0;
@@ -258,14 +320,8 @@
 
 .imageInfo {
   position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: 6px;
+  top: 6px;
   z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   padding: 3px 8px;
   border-radius: 6px;
   background: color-mix(in srgb, var(--dsw-alias-label-primary) 62%, transparent);
@@ -274,17 +330,17 @@
   line-height: 1.4;
   pointer-events: none;
   backdrop-filter: blur(3px);
-}
-
-.imageInfoModel {
+  max-width: calc(100% - 90px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
 }
 
-.imageInfoSize {
-  flex: none;
+.imageInfoLeft { left: 6px; font-weight: 600; }
+
+.imageInfoRight {
+  right: 6px;
+  left: auto;
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
 }
