@@ -483,6 +483,13 @@ await check('B9b MiniMax image-01 speaks the native /image_generation contract',
     await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'edit', model: 'image-01', prompt: 'same person, beach', size: '3:4', quality: 'auto', n: 1, detail: '', image: ref })
     assert.deepEqual(seen[0].body.subject_reference, [{ type: 'character', image_file: ref }])
     assert.equal(seen[0].body.aspect_ratio, '3:4')
+    // Prompts at MiniMax's 1500-char limit fail fast, before any upstream call.
+    seen.length = 0
+    await assert.rejects(
+      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x'.repeat(1600), size: '1:1', quality: 'auto', n: 1, detail: '' }),
+      error => error.code === 'prompt-too-long' && /1500/.test(error.message),
+    )
+    assert.equal(seen.length, 0)
     // Unsupported panel ratio is rejected locally before any upstream call.
     seen.length = 0
     await assert.rejects(

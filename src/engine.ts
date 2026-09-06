@@ -105,6 +105,9 @@ const MINIMAX_RATIOS = new Set(['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16
 /** MiniMax caps one request at 9 images. */
 const MINIMAX_MAX_N = 9
 
+/** MiniMax image-01 rejects prompts of 1500+ characters. */
+const MINIMAX_MAX_PROMPT_LENGTH = 1500
+
 function isGlmImage(model: string): boolean {
   return /^glm-image(?:-|$)/i.test(model.trim())
 }
@@ -824,6 +827,11 @@ async function generateMiniMaxImage(
   options: { signal?: AbortSignal },
 ): Promise<GenerateResult> {
   const model = wireModel(request)
+  // image-01 rejects long prompts upstream ("prompt length must be less than
+  // 1500"); fail fast with a clear local message instead of a wasted round trip.
+  if (request.prompt.length >= MINIMAX_MAX_PROMPT_LENGTH) {
+    throw new ImageGenError(`MiniMax image-01 要求提示词少于 ${MINIMAX_MAX_PROMPT_LENGTH} 字符（当前 ${request.prompt.length}），请精简后重试`, 'prompt-too-long')
+  }
   const body: Record<string, unknown> = {
     model,
     prompt: request.prompt,
