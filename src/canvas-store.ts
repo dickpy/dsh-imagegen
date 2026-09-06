@@ -2,15 +2,11 @@
 
 import { promises as fs } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
 import path from 'node:path'
 import type { CanvasAssetRef, CanvasDocument, CanvasNode, CanvasSummary } from './protocol.ts'
+import { imageDataRoot } from './image-storage-path.ts'
 
-const DATA_ROOT = (process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh'))
-const CANVAS_ROOT = path.join(DATA_ROOT, 'dsh-imagegen', 'canvas')
-const PAGES_DIR = path.join(CANVAS_ROOT, 'pages')
-const ASSETS_DIR = path.join(CANVAS_ROOT, 'assets')
-const INDEX_PATH = path.join(CANVAS_ROOT, 'index.json')
+
 
 export interface CanvasImageInput {
   data: Uint8Array
@@ -61,20 +57,21 @@ function safeId(value: string): string {
 }
 
 function pagePath(id: string): string {
-  return path.join(PAGES_DIR, `${safeId(id)}.json`)
+  return path.join(path.join(imageDataRoot(), 'canvas', 'pages'), `${safeId(id)}.json`)
 }
 
 function assetFilePath(id: string): string | undefined {
   if (!/^[a-f0-9]{64}\.(png|jpg|jpeg|webp|gif)$/.test(id)) return undefined
-  const file = path.join(ASSETS_DIR, id)
-  const relative = path.relative(ASSETS_DIR, file)
+  const root = path.join(imageDataRoot(), 'canvas', 'assets')
+  const file = path.join(root, id)
+  const relative = path.relative(root, file)
   if (relative.startsWith('..') || path.isAbsolute(relative)) return undefined
   return file
 }
 
 async function ensureDirs(): Promise<void> {
-  await fs.mkdir(PAGES_DIR, { recursive: true })
-  await fs.mkdir(ASSETS_DIR, { recursive: true })
+  await fs.mkdir(path.join(imageDataRoot(), 'canvas', 'pages'), { recursive: true })
+  await fs.mkdir(path.join(imageDataRoot(), 'canvas', 'assets'), { recursive: true })
 }
 
 async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
@@ -247,11 +244,11 @@ function serialize<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export class CanvasStore {
-  constructor(private readonly root = CANVAS_ROOT) {}
+  constructor(private readonly root?: string) {}
 
-  private pagesDir(): string { return path.join(this.root, 'pages') }
-  private assetsDir(): string { return path.join(this.root, 'assets') }
-  private indexPath(): string { return path.join(this.root, 'index.json') }
+  private pagesDir(): string { return path.join(this.root ?? path.join(imageDataRoot(), 'canvas'), 'pages') }
+  private assetsDir(): string { return path.join(this.root ?? path.join(imageDataRoot(), 'canvas'), 'assets') }
+  private indexPath(): string { return path.join(this.root ?? path.join(imageDataRoot(), 'canvas'), 'index.json') }
 
   private async ensure(): Promise<void> {
     await fs.mkdir(this.pagesDir(), { recursive: true })

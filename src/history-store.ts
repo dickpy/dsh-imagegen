@@ -9,14 +9,14 @@
  */
 
 import { promises as fs } from 'node:fs'
-import { homedir } from 'node:os'
 import path from 'node:path'
 import { HISTORY_MAX, type GenerateMode, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
 import { notifyImageSaved } from './storage-sync.ts'
+import { imageDataRoot } from './image-storage-path.ts'
 
-const HISTORY_DIR = path.join(homedir(), '.dsh', 'dsh-imagegen')
-const INDEX_PATH = path.join(HISTORY_DIR, 'index.json')
-const IMAGES_DIR = path.join(HISTORY_DIR, 'images')
+function historyDir(): string { return imageDataRoot() }
+function indexPath(): string { return path.join(historyDir(), 'index.json') }
+function imagesDir(): string { return path.join(historyDir(), 'images') }
 
 // History mutations read and replace one shared index. Serialize them so
 // overlapping requests cannot each read an old index and lose the other's row.
@@ -95,13 +95,13 @@ function safeId(id: string): string {
 
 /** Ensure the storage directories exist. */
 async function ensureDirs(): Promise<void> {
-  await fs.mkdir(IMAGES_DIR, { recursive: true })
+  await fs.mkdir(imagesDir(), { recursive: true })
 }
 
 /** Read the index, tolerating a missing/corrupt file. */
 async function readIndex(): Promise<StoredEntry[]> {
   try {
-    const raw = await fs.readFile(INDEX_PATH, 'utf8')
+    const raw = await fs.readFile(indexPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object') return []
     const entries = (parsed as { entries?: unknown }).entries
@@ -116,9 +116,9 @@ async function readIndex(): Promise<StoredEntry[]> {
 async function writeIndex(entries: StoredEntry[]): Promise<void> {
   await ensureDirs()
   const payload: IndexFile = { entries }
-  const tmp = `${INDEX_PATH}.tmp-${process.pid}`
+  const tmp = `${indexPath()}.tmp-${process.pid}`
   await fs.writeFile(tmp, JSON.stringify(payload), 'utf8')
-  await fs.rename(tmp, INDEX_PATH)
+  await fs.rename(tmp, indexPath())
 }
 
 /** Structural guard for a stored entry. */
@@ -145,7 +145,7 @@ function isStoredEntry(value: unknown): value is StoredEntry {
 /** Remove one entry's image files (best effort). */
 async function removeEntryFiles(entry: StoredEntry): Promise<void> {
   for (const image of entry.images) {
-    try { await fs.rm(path.join(IMAGES_DIR, image.file), { force: true }) } catch { /* ignore */ }
+    try { await fs.rm(path.join(imagesDir(), image.file), { force: true }) } catch { /* ignore */ }
   }
 }
 
@@ -196,8 +196,8 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
       for (let index = 0; index < input.images.length; index++) {
         const image = input.images[index]!
         const file = `${prefix}-${index}.${extensionOf(image.mime)}`
-        await fs.writeFile(path.join(IMAGES_DIR, file), Buffer.from(image.b64, 'base64'))
-        notifyImageSaved('history', path.join(IMAGES_DIR, file))
+        await fs.writeFile(path.join(imagesDir(), file), Buffer.from(image.b64, 'base64'))
+        notifyImageSaved('history', path.join(imagesDir(), file))
         storedImages.push({
           file,
           mime: image.mime,
@@ -267,7 +267,7 @@ export async function readHistoryImage(file: string): Promise<{ data: Buffer; mi
   // store writes — so the route can never escape the images directory.
   if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*-[0-9]+\.(png|jpg|jpeg|webp|gif)$/.test(file)) return undefined
   try {
-    const data = await fs.readFile(path.join(IMAGES_DIR, file))
+    const data = await fs.readFile(path.join(imagesDir(), file))
     return { data, mime: mimeOfFile(file) }
   } catch {
     return undefined

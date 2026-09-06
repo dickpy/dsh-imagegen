@@ -33,6 +33,7 @@ export interface ImageGenSettings {
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
+  localStoragePath?: string
   storageEnabled?: boolean
   storageEndpoint?: string
   storageRegion?: string
@@ -55,6 +56,7 @@ export interface ImageGenSettingsCardState extends CardShell {
   promptApiUrl: CardFieldState
   promptApiKey: CardFieldState
   promptModel: CardFieldState
+  localStoragePath: CardFieldState
   storageEnabled: CardFieldState
   storageEndpoint: CardFieldState
   storageRegion: CardFieldState
@@ -98,6 +100,7 @@ export class ImageGenSettingsCardController {
       textField('promptApiUrl'),
       secretField('promptApiKey'),
       textField('promptModel'),
+      textField('localStoragePath'),
       booleanField('storageEnabled'),
       textField('storageEndpoint'),
       textField('storageRegion'),
@@ -124,6 +127,7 @@ export class ImageGenSettingsCardController {
       promptApiUrl: this.form.field('promptApiUrl'),
       promptApiKey: this.form.field('promptApiKey'),
       promptModel: this.form.field('promptModel'),
+      localStoragePath: this.form.field('localStoragePath'),
       storageEnabled: this.form.field('storageEnabled'),
       storageEndpoint: this.form.field('storageEndpoint'),
       storageRegion: this.form.field('storageRegion'),
@@ -475,6 +479,16 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               <span aria-hidden="true">{storageOpen ? '⌃' : '⌄'}</span>
             </button>
             {storageOpen ? <div className={css.optionalContent}>
+            <ValueField
+              id="dsh-imagegen-settings-local-storage-path"
+              label={t('settings.localStoragePath')}
+              hint={t('settings.localStoragePathHint')}
+              placeholder="E:\\dsh-imagegen-data"
+              {...fieldProps}
+              {...state.localStoragePath}
+              onEdit={(text) => { props.edit('localStoragePath', text) }}
+              onReset={() => { props.resetField('localStoragePath') }}
+            />
             <BooleanField
               id="dsh-imagegen-settings-storage-enabled"
               label={t('settings.storageEnabled')}

@@ -37,6 +37,7 @@ function mimeOfPath(filePath: string): string {
 import { ImageGenerationRuntime, type ChannelsView, type RuntimeChannel } from './generation-runtime.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
+import { setImageDataRoot } from './image-storage-path.ts'
 import { presetById } from './presets.ts'
 
 /** Stable cordis plugin name. */
@@ -89,6 +90,8 @@ export interface Config {
   promptApiKey?: string
   /** Chat model used to expand short image prompts. */
   promptModel?: string
+  /** Local root for generated/history/gallery/canvas images. Empty keeps the default under DSH_HOME. */
+  localStoragePath?: string
   /** Sync saved images to an S3-compatible object store (COS / OSS / Qiniu S3 …). */
   storageEnabled?: boolean
   /** S3-compatible endpoint URL including the bucket (virtual-hosted or path style). */
@@ -133,6 +136,7 @@ export const Config: z<Config> = z.object({
   promptApiUrl: z.string().default(''),
   promptApiKey: z.string().role('secret').default(''),
   promptModel: z.string().default(''),
+  localStoragePath: z.string().default(''),
   storageEnabled: z.boolean().default(false),
   storageEndpoint: z.string().default(''),
   storageRegion: z.string().default(''),
@@ -227,6 +231,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   let current: () => Config = () => config ?? {}
   const resolve = (): EffectiveConfig => {
     const value = current() ?? {}
+    setImageDataRoot(value.localStoragePath)
     let channels = normalizeChannels(value.channels)
     // Settings scopes are deep-frozen by the host. Legacy migration adds the
     // synthesized default-channel secret, so always work on a detached copy.
