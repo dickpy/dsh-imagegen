@@ -237,6 +237,20 @@ function isPresignedUrl(value: string): boolean {
   )
 }
 
+/**
+ * Whether a result URL lives on the same origin as the configured API base.
+ * The upstream Bearer key is only ever forwarded to this origin: a provider
+ * (or a compromised relay) that hands back an image URL on a foreign host
+ * must not be able to harvest the key through that download.
+ */
+function isSameOriginAsApi(value: string, apiUrl: string): boolean {
+  try {
+    return new URL(value).origin === new URL(apiUrl).origin
+  } catch {
+    return false
+  }
+}
+
 /** Clamp the requested image count into the API-accepted range. */
 function clampCount(n: number): number {
   if (!Number.isFinite(n)) return 1
@@ -367,10 +381,15 @@ async function normalizeItem(
   try {
     let response: Response
     try {
+      // Forward the key only to the API's own origin, and never to a
+      // presigned object-storage URL (which carries its own credentials).
+      const forwardKey = upstream.apiKey !== ''
+        && !isPresignedUrl(url)
+        && isSameOriginAsApi(url, upstream.apiUrl)
       response = await fetch(url, {
-        ...isPresignedUrl(url) || upstream.apiKey === ''
-          ? {}
-          : { headers: { authorization: `Bearer ${upstream.apiKey}` } },
+        ...forwardKey
+          ? { headers: { authorization: `Bearer ${upstream.apiKey}` } }
+          : {},
         signal: budget.signal,
       })
     } catch (error) {

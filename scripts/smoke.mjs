@@ -98,6 +98,16 @@ await check('A3 updater parses stable Releases and caches checks', async () => {
 const pngBytes = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex')
 let activeGenerationRequests = 0
 let maxGenerationRequests = 0
+// A second listener = a different origin (port) from the API base. It stands in
+// for a malicious relay pointing image URLs at an attacker-controlled host.
+const foreignAuthHeaders = []
+const resultAuthHeaders = []
+const foreignHost = createServer((req, res) => {
+  foreignAuthHeaders.push(req.headers.authorization)
+  res.writeHead(200, { 'content-type': 'image/png' })
+  res.end(pngBytes)
+})
+await new Promise(resolve => foreignHost.listen(0, '127.0.0.1', resolve))
 const upstream = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   if (url.pathname === '/v1/models') {
@@ -121,7 +131,7 @@ const upstream = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     assert.ok(body.model === 'gpt-image-2' || body.model === 'grok-imagine-image')
-    assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this' || body.prompt === 'signed urls' || body.prompt === 'parallel one' || body.prompt === 'parallel two')
+    assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this' || body.prompt === 'signed urls' || body.prompt === 'foreign url' || body.prompt === 'parallel one' || body.prompt === 'parallel two')
     if (body.model === 'gpt-image-2') {
       assert.equal(body.size, '1024x1024')
       assert.equal(body.quality, 'high')
@@ -132,7 +142,7 @@ const upstream = createServer(async (req, res) => {
     // The engine never sends `n`: Responses-API gateways reject the batch
     // parameter, so the requested count is satisfied by parallel requests.
     assert.equal(body.n, undefined)
-    assert.equal(body.detail, body.model === 'grok-imagine-image' || body.prompt === 'signed urls' ? undefined : 'standard')
+    assert.equal(body.detail, body.model === 'grok-imagine-image' || body.prompt === 'signed urls' || body.prompt === 'foreign url' ? undefined : 'standard')
     if (body.prompt === 'parallel one' || body.prompt === 'parallel two') {
       activeGenerationRequests += 1
       maxGenerationRequests = Math.max(maxGenerationRequests, activeGenerationRequests)
@@ -140,7 +150,9 @@ const upstream = createServer(async (req, res) => {
       activeGenerationRequests -= 1
     }
     res.writeHead(200, { 'content-type': 'application/json' })
-    const data = body.prompt === 'signed urls'
+    const data = body.prompt === 'foreign url'
+      ? [{ url: `http://127.0.0.1:${foreignHost.address().port}/steal.png` }]
+      : body.prompt === 'signed urls'
       ? [
           { b64_json: '', url: `http://127.0.0.1:${upstream.address().port}/image/gcs-signed.png?X-Goog-Credential=test&X-Goog-Signature=test` },
           { b64_json: '   ', url: `http://127.0.0.1:${upstream.address().port}/image/s3-signed.png?X-Amz-Credential=test&X-Amz-Signature=test` },
@@ -168,6 +180,10 @@ const upstream = createServer(async (req, res) => {
     return
   }
   if (url.pathname === '/image/result.png') {
+    // Same-origin downloads (B1: API base is this server) keep the key; other
+    // suites (Qwen / async providers on their own ports) point here from a
+    // foreign origin and must arrive without it.
+    resultAuthHeaders.push(req.headers.authorization)
     res.writeHead(200, { 'content-type': 'image/png' })
     res.end(pngBytes)
     return
@@ -202,6 +218,7 @@ await check('B1 text generation normalizes b64_json + url items', async () => {
   assert.equal(result.images[0].revisedPrompt, 'a refined cat')
   assert.equal(result.images[1].b64, pngBytes.toString('base64'))
   assert.equal(result.images[1].mime, 'image/png')
+  assert.equal(resultAuthHeaders.at(-1), 'Bearer sk-test', 'same-origin result URLs keep the channel API key')
 })
 
 await check('B2 signed URLs bypass API-key auth and empty base64 falls back to URL', async () => {
@@ -212,6 +229,17 @@ await check('B2 signed URLs bypass API-key auth and empty base64 falls back to U
   assert.equal(result.images.length, 2)
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
   assert.equal(result.images[1].b64, pngBytes.toString('base64'))
+})
+
+await check('B2b result URLs on a foreign origin never receive the channel API key', async () => {
+  const result = await host.generateImage(
+    { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' },
+    { mode: 'text', model: 'gpt-image-2', prompt: 'foreign url', size: '1:1', quality: '4k', n: 1, detail: '' },
+  )
+  assert.equal(result.images.length, 1)
+  assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+  assert.equal(foreignAuthHeaders.length, 1)
+  assert.equal(foreignAuthHeaders[0], undefined, 'a foreign-origin image URL must not carry the Bearer key')
 })
 
 await check('B3 edit mode sends multipart and normalizes', async () => {
