@@ -18,7 +18,8 @@ const MAX_SCALE = 5
 const GRID_SIZE = 48
 const IMAGE_NODE_SIZE = { width: 320, height: 320 }
 const TEXT_NODE_SIZE = { width: 280, height: 150 }
-const CONFIG_NODE_SIZE = { width: 240, height: 96 }
+const CONFIG_NODE_SIZE = { width: 320, height: 190 }
+const LEGACY_CONFIG_NODE_SIZE = { width: 240, height: 96 }
 const HISTORY_LIMIT = 60
 const WORLD_PAD = 12000
 
@@ -149,6 +150,16 @@ function nodesBounds(nodes: CanvasNode[]): { minX: number; minY: number; maxX: n
     maxX: Math.max(acc.maxX, node.x + node.width),
     maxY: Math.max(acc.maxY, node.y + node.height),
   }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity })
+}
+
+/** Enlarge config nodes still stored at the pre-expansion default so the
+ * roomier layout applies to existing canvases too. */
+function normalizeConfigNodeSizes(document: CanvasDocument): CanvasDocument {
+  const nodes = document.nodes.map(node => node.type === 'config'
+    && node.width === LEGACY_CONFIG_NODE_SIZE.width && node.height === LEGACY_CONFIG_NODE_SIZE.height
+    ? { ...node, width: CONFIG_NODE_SIZE.width, height: CONFIG_NODE_SIZE.height }
+    : node)
+  return nodes === document.nodes ? document : { ...document, nodes }
 }
 
 function summaryOf(document: CanvasDocument): ProjectSummary {
@@ -711,7 +722,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const first = list[0] === undefined ? await api.canvasCreate(tt('canvas.untitled')) : await api.canvasRead(list[0].id)
       if (disposed) return
       setProjects(list[0] === undefined ? [summaryOf(first)] : list)
-      setDocument(first)
+      setDocument(normalizeConfigNodeSizes(first))
       syncedRef.current = JSON.stringify(first)
       setSaveState('saved')
     }).catch(caught => { if (!disposed) { setError(caught instanceof Error ? caught.message : String(caught)); setSaveState('error') } })
@@ -1151,7 +1162,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const selectProject = useCallback(async (id: string): Promise<void> => {
     try {
       const next = await api.canvasRead(id)
-      setDocument(next); setSelectedIds(new Set()); setSelectedConnectionId(null)
+      setDocument(normalizeConfigNodeSizes(next)); setSelectedIds(new Set()); setSelectedConnectionId(null)
       syncedRef.current = JSON.stringify(next); setSaveState('saved')
       pastRef.current = []; futureRef.current = []; setHistoryVersion(version => version + 1)
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)) }
@@ -1245,6 +1256,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             onChange={event => patchNode(node.id, { text: event.target.value })}
           />
         : <div className={css.nodeBody}>
+            {hasImage ? <div className={css.imageInfo} aria-hidden="true">
+              <span className={css.imageInfoModel}>{metadata.model ?? (asset.origin === 'gallery' ? tt('canvas.fromGallery') : asset.origin === 'history' ? tt('canvas.fromHistory') : '')}</span>
+              {asset !== undefined && asset.width > 1 ? <span className={css.imageInfoSize}>{asset.width}×{asset.height}</span> : null}
+            </div> : null}
             {isGenerating
               ? <div className={css.nodeState}><span className={css.spinner} aria-hidden="true" /><span>{tt('canvas.generatingNode')}</span></div>
               : isError
