@@ -437,6 +437,82 @@ await check('B9 Qwen-Image speaks the DashScope native contract', async () => {
 })
 
 
+await check('B9b MiniMax image-01 speaks the native /image_generation contract', async () => {
+  const seen = []
+  let reply = () => ({ id: 'req-1', data: { image_base64: [pngBytes.toString('base64')] }, metadata: { failed_count: '0', success_count: '1' }, base_resp: { status_code: 0, status_msg: 'success' } })
+  const minimax = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    if (url.pathname === '/v1/image_generation') {
+      seen.push({ auth: req.headers.authorization, path: url.pathname, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) })
+      // MiniMax answers HTTP 200 for failures too; base_resp carries the verdict.
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(reply()))
+      return
+    }
+    res.writeHead(404)
+    res.end('404 page not found')
+  })
+  await new Promise(resolve => minimax.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${minimax.address().port}/v1`
+  try {
+    // Text mode: aspect_ratio passthrough, native n batching, base64 results.
+    const result = await host.generateImage(
+      { apiUrl: base, apiKey: 'mm-key' },
+      { mode: 'text', model: 'image-01', prompt: 'a boat', size: '16:9', quality: 'auto', n: 2, detail: '' },
+    )
+    assert.equal(result.images.length, 1)
+    assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+    assert.equal(result.images[0].mime, 'image/png')
+    assert.deepEqual(seen[0], {
+      auth: 'Bearer mm-key',
+      path: '/v1/image_generation',
+      body: { model: 'image-01', prompt: 'a boat', response_format: 'base64', aspect_ratio: '16:9', n: 2 },
+    })
+    // auto size omits aspect_ratio; n=1 omits n; n is capped at 9.
+    seen.length = 0
+    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: 'auto', quality: '4k', n: 1, detail: '' })
+    assert.deepEqual(seen[0].body, { model: 'image-01', prompt: 'x', response_format: 'base64' })
+    seen.length = 0
+    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '1:1', quality: 'auto', n: 50, detail: '' })
+    assert.ok(seen[0].body.n <= 9, `n must be capped at 9, got ${seen[0].body.n}`)
+    // Edit mode: one character subject_reference with the data URL.
+    seen.length = 0
+    const ref = `data:image/png;base64,${pngBytes.toString('base64')}`
+    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'edit', model: 'image-01', prompt: 'same person, beach', size: '3:4', quality: 'auto', n: 1, detail: '', image: ref })
+    assert.deepEqual(seen[0].body.subject_reference, [{ type: 'character', image_file: ref }])
+    assert.equal(seen[0].body.aspect_ratio, '3:4')
+    // Unsupported panel ratio is rejected locally before any upstream call.
+    seen.length = 0
+    await assert.rejects(
+      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '5:7', quality: 'auto', n: 1, detail: '' }),
+      error => error.code === 'size-unsupported',
+    )
+    assert.equal(seen.length, 0)
+    // HTTP 200 + non-zero base_resp.status_code surfaces as an upstream rejection.
+    reply = () => ({ id: 'req-2', data: null, base_resp: { status_code: 2013, status_msg: 'invalid params, unsupported model: image-99' } })
+    await assert.rejects(
+      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '1:1', quality: 'auto', n: 1, detail: '' }),
+      error => error.code === 'upstream-rejected' && /2013/.test(error.message) && /image-99/.test(error.message),
+    )
+    reply = () => ({ id: 'req-3', data: null, base_resp: { status_code: 2049, status_msg: 'invalid api key' } })
+    await assert.rejects(
+      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x', size: '1:1', quality: 'auto', n: 1, detail: '' }),
+      error => error.code === 'upstream-unauthorized',
+    )
+    // The catalog classifies the family so the UI shows the right badge, and a
+    // wrong-family model on the same base must NOT hit /image_generation.
+    seen.length = 0
+    await assert.rejects(
+      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'gpt-image-2', prompt: 'x', size: '1:1', quality: 'auto', n: 1, detail: '' }),
+    )
+    assert.equal(seen.length, 0, 'non-MiniMax models keep the OpenAI route')
+  } finally {
+    await new Promise(resolve => minimax.close(resolve))
+  }
+})
+
 await check('B10 async two-step providers submit, poll, and flatten URL arrays', async () => {
   const submissions = []
   const polls = new Map()

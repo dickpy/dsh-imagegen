@@ -314,7 +314,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 <a id="configuration"></a>
 ## 配置模型
 
-打开 DSH 的“设置 → 插件”，展开 **AI 生图（dsh-imagegen）**。每个提供方都有独立的 API 地址、密钥和模型目录，可同时配置多个服务；预置了 OpenAI、智谱、xAI、字节火山方舟（Seedream）、阿里云百炼（Qwen-Image）等常用渠道，也可添加任意自定义 OpenAI 兼容渠道。
+打开 DSH 的“设置 → 插件”，展开 **AI 生图（dsh-imagegen）**。每个提供方都有独立的 API 地址、密钥和模型目录，可同时配置多个服务；预置了 OpenAI、智谱、xAI、字节火山方舟（Seedream）、阿里云百炼（Qwen-Image）、MiniMax（image-01）等常用渠道，也可添加任意自定义 OpenAI 兼容渠道。
 
 <div align="center">
   <img src="docs/images/plugin-settings.png" alt="DSH 设置页中的 AI 生图插件配置" width="72%" />
@@ -346,6 +346,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 - **Seedream（字节跳动生图系列）**：内置 `seedream-5.0-pro`（也识别 `seedream-4.x`、`doubao-seedream-…`），文生图与图生图统一走 `/images/generations`，参考图以 JSON `image` 数组发送。
 - **Qwen-Image（通义千问）**：内置阿里云百炼渠道，使用 `https://dashscope.aliyuncs.com/api/v1` 的 DashScope 原生 `multimodal-generation` 接口（不是 OpenAI 兼容接口），支持 Qwen-Image 2.0 / 3.0 系列文生图与图像编辑，比例自动映射为 `宽*高` 尺寸。该渠道不能复用于提示词增强。
 - **智谱 GLM-Image**：内置 `glm-image`，文生图质量参数映射为 `hd`；当前不支持图生图，选择编辑模型时会被自动排除。
+- **MiniMax image-01**：内置 MiniMax 官方渠道，使用 `https://api.minimax.io/v1`（国内站 `https://api.minimaxi.com/v1`）的原生 `/image_generation` 接口（不是 OpenAI 兼容接口）。支持 `1:1 / 16:9 / 4:3 / 3:2 / 2:3 / 3:4 / 9:16 / 21:9` 宽高比，一次最多 9 张，图生图以单张参考图作为 `subject_reference`（人物/主体参考）发送——它是主体一致性参考而非像素级编辑，适合“同一人物换场景”，不适合局部修图。MiniMax 的 `/models` 只列出聊天模型，请直接使用预填的模型目录。
 - **后续模型**：未被识别的 OpenAI 兼容图片模型可手动添加；厂商专属鉴权或请求协议需要单独适配。
 
 </details>

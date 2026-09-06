@@ -8,7 +8,7 @@
  * Framework-free (pure data + regex), safe for the client bundle to inline.
  */
 
-export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'zhipu' | 'qwen' | 'unknown'
+export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'zhipu' | 'qwen' | 'minimax' | 'unknown'
 
 /** Capability/identity annotation for one model id. */
 export interface ModelCatalogEntry {
@@ -85,6 +85,14 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
     supportsAspectRatio: true,
     qualityTiers: ['auto'],
   },
+  minimax: {
+    label: 'MiniMax',
+    labelZh: 'MiniMax 图像',
+    known: true,
+    supportsEdit: true,
+    supportsAspectRatio: true,
+    qualityTiers: ['auto'],
+  },
 }
 
 /** Official Gemini image ids served by Nano Banana gateways. */
@@ -107,6 +115,7 @@ export function describeModel(model: string): ModelCatalogEntry {
   if (/^(?:doubao-)?seedream/i.test(id)) return { family: 'seedream', ...ENTRIES.seedream }
   if (/^(?:glm-image|cogview(?:-|$))/i.test(id)) return { family: 'zhipu', ...ENTRIES.zhipu }
   if (/^qwen-image(?:[-_.]|$)/i.test(id)) return { family: 'qwen', ...ENTRIES.qwen }
+  if (/^(?:minimax[-_/])?image-\d+/i.test(id)) return { family: 'minimax', ...ENTRIES.minimax }
   return { family: 'unknown', label: 'unknown', labelZh: '未知协议', known: false, supportsEdit: true, supportsAspectRatio: false, qualityTiers: [] }
 }
 

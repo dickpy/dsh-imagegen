@@ -91,6 +91,20 @@ function isQwenImage(model: string): boolean {
   return modelFamily(model) === 'qwen'
 }
 
+/** Whether the model is MiniMax image-01, which speaks MiniMax's native
+ *  `/image_generation` contract (NOT OpenAI-compatible): `aspect_ratio`,
+ *  `subject_reference` for image-to-image, `data.image_base64[]` results, and
+ *  errors reported as HTTP 200 + non-zero `base_resp.status_code`. */
+function isMiniMaxImage(model: string): boolean {
+  return modelFamily(model) === 'minimax'
+}
+
+/** Aspect ratios MiniMax image-01 documents (the panel vocabulary is a superset). */
+const MINIMAX_RATIOS = new Set(['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'])
+
+/** MiniMax caps one request at 9 images. */
+const MINIMAX_MAX_N = 9
+
 function isGlmImage(model: string): boolean {
   return /^glm-image(?:-|$)/i.test(model.trim())
 }
@@ -797,6 +811,116 @@ async function generateQwenImage(
 }
 
 /**
+ * MiniMax image-01 (native `/image_generation`): one JSON request that batches
+ * up to 9 images and returns them inline as base64. Image-to-image rides the
+ * `subject_reference` array (a character reference, data URL accepted). The
+ * endpoint answers HTTP 200 even on failure, so `base_resp.status_code` is the
+ * real verdict.
+ */
+async function generateMiniMaxImage(
+  baseUrl: string,
+  upstream: UpstreamConfig,
+  request: GenerateRequest,
+  options: { signal?: AbortSignal },
+): Promise<GenerateResult> {
+  const model = wireModel(request)
+  const body: Record<string, unknown> = {
+    model,
+    prompt: request.prompt,
+    response_format: 'base64',
+  }
+  const ratio = request.size.trim()
+  if (ratio !== '' && ratio !== 'auto') {
+    if (!MINIMAX_RATIOS.has(ratio)) {
+      throw new ImageGenError(`MiniMax image-01 不支持 ${ratio} 宽高比，可选：${Array.from(MINIMAX_RATIOS).join(' / ')}`, 'size-unsupported')
+    }
+    body.aspect_ratio = ratio
+  }
+  const count = Math.min(MINIMAX_MAX_N, clampCount(request.n))
+  if (count > 1) body.n = count
+  if (request.mode === 'edit') {
+    if (typeof request.image !== 'string' || request.image === '') {
+      throw new ImageGenError('图生图需要上传参考图片', 'edit-image-missing')
+    }
+    const parsed = parseDataUrl(request.image)
+    if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
+    const bytes = Buffer.from(parsed.base64, 'base64')
+    if (bytes.byteLength > MAX_EDIT_IMAGE_BYTES) {
+      throw new ImageGenError('参考图片超过 10MB 上限', 'edit-image-too-large')
+    }
+    // image-01 takes exactly one character reference per request.
+    body.subject_reference = [{ type: 'character', image_file: request.image }]
+  }
+
+  const budget = requestSignal(options.signal, UPSTREAM_TIMEOUT_MS)
+  try {
+    let response: Response
+    try {
+      response = await fetch(`${baseUrl}/image_generation`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${upstream.apiKey.trim()}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: budget.signal,
+      })
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (options.signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`无法连接上游接口：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
+    }
+
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (options.signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+    }
+    if (payload === null || typeof payload !== 'object') {
+      throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+    }
+    const record = payload as Record<string, unknown>
+    const baseResp = record.base_resp
+    if (baseResp !== null && typeof baseResp === 'object') {
+      const status = (baseResp as Record<string, unknown>).status_code
+      if (typeof status === 'number' && status !== 0) {
+        const msg = (baseResp as Record<string, unknown>).status_msg
+        throw new ImageGenError(
+          `MiniMax 拒绝请求（${status}）：${typeof msg === 'string' && msg !== '' ? msg : 'unknown error'}`,
+          status === 1004 || status === 2049 ? 'upstream-unauthorized' : 'upstream-rejected',
+        )
+      }
+    }
+    if (!response.ok) throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+
+    const data = record.data
+    const b64s = data !== null && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).image_base64)
+      ? ((data as Record<string, unknown>).image_base64 as unknown[]).filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+      : []
+    const urls = data !== null && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).image_urls)
+      ? ((data as Record<string, unknown>).image_urls as unknown[]).filter((item): item is string => typeof item === 'string' && item !== '')
+      : []
+    if (b64s.length === 0 && urls.length === 0) {
+      throw new ImageGenError('上游响应缺少图片内容', 'upstream-empty')
+    }
+    const images: GeneratedImage[] = b64s.map(raw => {
+      const b64 = bareBase64(raw)
+      return { b64, mime: detectImageMime(Buffer.from(b64, 'base64')) ?? 'image/jpeg' }
+    })
+    for (const url of urls) {
+      const normalized = await normalizeItem({ url }, upstream, options.signal)
+      images.push({ b64: normalized.b64, mime: normalized.mime })
+    }
+    return { images }
+  } finally {
+    budget.dispose()
+  }
+}
+
+/**
  * Forward one generate request to the configured endpoint. The requested image
  * count is satisfied with N parallel single-image requests (the `n` batch
  * parameter is never sent, because Responses-API-based gateways reject it as
@@ -807,6 +931,7 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
   if (isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
+  if (isMiniMaxImage(wireModel(request))) return generateMiniMaxImage(baseUrl, upstream, request, options)
   if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
     throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
   }
