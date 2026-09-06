@@ -167,6 +167,21 @@ const upstream = createServer(async (req, res) => {
     res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
     return
   }
+  if (url.pathname === '/v1/chat/completions') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    assert.equal(req.headers.authorization, 'Bearer sk-test')
+    const asked = body.messages.at(-1).content
+    const reply = asked === 'think leak'
+      ? '<think>\u9996\u5148\u5206\u6790\u7528\u6237\u9700\u6c42\u2026\uff08\u5927\u6bb5\u63a8\u7406\uff09</think>\nA lighthouse at dusk over a stormy sea.'
+      : asked === 'dangling think'
+        ? '<think>reasoning that never closes'
+        : 'A calm meadow under morning light.'
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }))
+    return
+  }
   if (url.pathname === '/image/result.png') {
     res.writeHead(200, { 'content-type': 'image/png' })
     res.end(pngBytes)
@@ -688,6 +703,7 @@ let storageProbeEndpoint = ''
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
+  resolvePrompt: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test', model: 'chat-test' }),
   history,
   templates,
   favorites,
@@ -725,6 +741,22 @@ const post = async (path, body, headers = {}) => {
     throw new Error(`HTTP ${response.status} returned non-JSON body: ${text || '<empty>'}`)
   }
 }
+
+await check('C0b prompt enhance strips reasoning-model <think> blocks', async () => {
+  // Closed think block: only the visible answer may reach the prompt box.
+  const leak = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'think leak' })
+  assert.equal(leak.status, 200)
+  assert.equal(leak.body.ok, true)
+  assert.equal(leak.body.prompt, 'A lighthouse at dusk over a stormy sea.')
+  // Dangling unclosed <think>: everything after it is reasoning, so the
+  // enhancer must fail loudly instead of returning the raw reasoning text.
+  const dangling = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'dangling think' })
+  assert.equal(dangling.body.ok, false)
+  assert.match(dangling.body.message, /only reasoning content/)
+  // Clean content passes through untouched.
+  const clean = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'clean please' })
+  assert.equal(clean.body.prompt, 'A calm meadow under morning light.')
+})
 
 await check('C1 settings describe serves the redacted namespace', async () => {
   const { status, body } = await post('/api/dsh-imagegen/settings/describe', {})
