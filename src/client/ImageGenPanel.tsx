@@ -25,7 +25,7 @@ import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
 import { normalizeImageModels } from '../image-models.ts'
-import { describeModel } from '../model-catalog.ts'
+import { describeModel, promptCharLimit } from '../model-catalog.ts'
 import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService } from './conversation-sync.ts'
 import css from './panel.module.css'
 
@@ -1481,7 +1481,15 @@ export function ImageGenPanel(props: {
     })
   }
 
-  const generateDisabled = submitting || modeModels.length === 0
+  // Prompt hard limit of the model the generate button will actually use
+  // (mirrors handleGenerate's pick). Over the limit the counter turns red and
+  // the button locks — the engine would fast-fail anyway, but the user sees
+  // why before spending a click.
+  const activeModel = modeModels.includes(model) ? model : modeModels[0] ?? ''
+  const promptLimit = promptCharLimit(activeModel)
+  const promptOverLimit = promptLimit !== null && prompt.trim().length >= promptLimit
+
+  const generateDisabled = submitting || modeModels.length === 0 || promptOverLimit
   const ecommerceSlots = ecommerce.slots.filter(slot => slot.enabled && slot.count > 0)
   const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0)
   const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === '' || (ecommerce.language === 'custom' && effectiveEcommerceLanguage(ecommerce) === '')
@@ -2120,7 +2128,15 @@ export function ImageGenPanel(props: {
                 >
                   {enhancing ? tt('prompt.enhancing') : tt('prompt.enhance')}
                 </button>
-                <span className={css.promptCount}>{tt('prompt.count', { count: prompt.length })}</span>
+                <span
+                  className={css.promptCount}
+                  data-over={promptOverLimit ? '' : undefined}
+                  title={promptOverLimit ? tt('prompt.overLimit', { limit: promptLimit ?? 0 }) : undefined}
+                >
+                  {promptLimit === null
+                    ? tt('prompt.count', { count: prompt.length })
+                    : tt('prompt.countLimit', { count: prompt.length, limit: promptLimit })}
+                </span>
               </div>
             </section>
 

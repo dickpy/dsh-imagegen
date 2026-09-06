@@ -95,6 +95,22 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
   },
 }
 
+/** Documented upstream prompt hard limits (UTF-16 code units). The engine
+ *  fast-fails on these before any network call and the panel counter shows
+ *  them live; families absent here have no documented limit. */
+const PROMPT_CHAR_LIMITS: Partial<Record<Exclude<ModelFamily, 'unknown'>, number>> = {
+  // MiniMax image-01 rejects prompts >= 1500 chars upstream (base_resp 2013).
+  minimax: 1500,
+}
+
+/** The documented prompt character limit for a model id, or null when the
+ *  family has no known limit. Single source of truth for engine enforcement
+ *  and the panel's live counter. */
+export function promptCharLimit(model: string): number | null {
+  const { family } = describeModel(model)
+  return (family !== 'unknown' ? PROMPT_CHAR_LIMITS[family] : undefined) ?? null
+}
+
 /** Official Gemini image ids served by Nano Banana gateways. */
 const NANOBANANA_GEMINI_IDS = new Set([
   'gemini-3-pro-image',

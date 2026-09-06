@@ -50,6 +50,7 @@ export const inject = ['webServer', 'systemPrompt', 'commands']
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
 export { generateImage, ImageGenError } from './engine.ts'
+export { promptCharLimit } from './model-catalog.ts'
 export { ImageGenerationRuntime } from './generation-runtime.ts'
 export { registerAgentImageTools } from './agent-image-tools.ts'
 export { latestSessionImage, registerEditImageCommand } from './edit-image-command.ts'

@@ -563,6 +563,37 @@ await check('B9b MiniMax image-01 speaks the native /image_generation contract',
   }
 })
 
+await check('B9c prompt character limits share one source between engine and panel counter', async () => {
+  // Only MiniMax documents a limit today; everything else — including
+  // unrecognized ids — must report null so the panel hides the counter.
+  assert.equal(host.promptCharLimit('image-01'), 1500)
+  assert.equal(host.promptCharLimit('minimax-image-01'), 1500)
+  assert.equal(host.promptCharLimit('gpt-image-2'), null)
+  assert.equal(host.promptCharLimit('doubao-seedream-4.0'), null)
+  assert.equal(host.promptCharLimit('totally-unknown'), null)
+  // The engine enforces exactly that shared number: 1499 chars pass through
+  // to the fake upstream, 1500 fail fast before any network call.
+  const seen = []
+  const minimax = createServer(async (req, res) => {
+    seen.push(req.url)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ id: 'r', data: { image_base64: [pngBytes.toString('base64')] }, base_resp: { status_code: 0, status_msg: 'ok' } }))
+  })
+  await new Promise(resolve => minimax.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${minimax.address().port}/v1`
+  try {
+    await host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x'.repeat(1499), size: '1:1', quality: 'auto', n: 1, detail: '' })
+    assert.equal(seen.length, 1, '1499 chars must reach the upstream')
+    await assert.rejects(
+      host.generateImage({ apiUrl: base, apiKey: 'mm-key' }, { mode: 'text', model: 'image-01', prompt: 'x'.repeat(1500), size: '1:1', quality: 'auto', n: 1, detail: '' }),
+      error => error.code === 'prompt-too-long' && /1500/.test(error.message),
+    )
+    assert.equal(seen.length, 1, '1500 chars must fail fast without an upstream call')
+  } finally {
+    await new Promise(resolve => minimax.close(resolve))
+  }
+})
+
 await check('B10 async two-step providers submit, poll, and flatten URL arrays', async () => {
   const submissions = []
   const polls = new Map()
