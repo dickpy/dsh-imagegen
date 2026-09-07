@@ -130,8 +130,9 @@
   opacity: 0.5;
 }
 
-/* Interactive fluid flowmap dot field lives in a <canvas>; aurora is pure CSS.
- * Both render themselves at full strength (the 0.5 grid dimming stays off). */
+/* Interactive backdrops live in <canvas> elements (the fluid flowmap dot
+ * field, the WebGL fluid sim, and the reactbits-style shader backdrops);
+ * they render themselves at full strength (the 0.5 grid dimming stays off). */
 .flowCanvas {
   position: absolute;
   inset: 0;
@@ -139,28 +140,35 @@
   height: 100%;
 }
 
+/* WebGL "liquid ether" fluid simulation, same placement as the flow canvas. */
+.liquidCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Fullscreen-shader backdrops (floating lines / galaxy / silk) and the 2D
+ * wave lines share one placement; floating lines screen-blends over dark
+ * surfaces (set from JS, the light theme uses its own light backdrop). */
+.sceneCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .grid[data-mode="flow"],
-.grid[data-mode="aurora"] {
+.grid[data-mode="liquid"],
+.grid[data-mode="floatingLines"],
+.grid[data-mode="galaxy"],
+.grid[data-mode="silk"],
+.grid[data-mode="waves"],
+.grid[data-mode="faultyTerminal"],
+.grid[data-mode="dotField"],
+.grid[data-mode="dotGrid"],
+.grid[data-mode="shapeGrid"] {
   opacity: 1;
-}
-
-.grid[data-mode="aurora"] {
-  background-image:
-    radial-gradient(560px 380px at 22% 28%, color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent), transparent 72%),
-    radial-gradient(680px 480px at 78% 62%, rgb(167 139 250 / 20%), transparent 72%),
-    radial-gradient(520px 400px at 48% 88%, rgb(34 211 238 / 17%), transparent 74%);
-  background-size: 220% 220%;
-  background-position: 0% 0%;
-  animation: auroraDrift 20s ease-in-out infinite alternate;
-}
-
-@keyframes auroraDrift {
-  from { background-position: 0% 0%; }
-  to { background-position: 100% 100%; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .grid[data-mode="aurora"] { animation: none; }
 }
 
 .grid[data-mode="dots"] {
@@ -174,16 +182,6 @@
 }
 
 .grid[data-mode="blank"] { background-image: none; }
-
-.grid[data-mode="diagonal"] {
-  background-image: repeating-linear-gradient(45deg, color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent) 0 1px, transparent 1px 16px);
-}
-
-.grid[data-mode="checker"] {
-  background-image:
-    conic-gradient(color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent) 90deg, transparent 90deg 180deg, color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent) 180deg 270deg, transparent 270deg);
-  background-size: 48px 48px;
-}
 
 .grid[data-mode="image"] { background-image: none; }
 
