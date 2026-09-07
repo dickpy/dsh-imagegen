@@ -109,6 +109,18 @@ export async function listPromptModels(config: PromptModelConfig): Promise<strin
   return listOpenAIModels(config)
 }
 
+/** Remove reasoning-model artifacts from a chat model's visible content:
+ *  complete `<think>…</think>` blocks first, then anything from a dangling
+ *  unclosed `<think>` to the end of the text. Reasoning models served through
+ *  OpenAI-compatible endpoints (MiniMax M3, DeepSeek R1, Qwen QVQ, …) inline
+ *  these blocks in `message.content`; leaking them into the prompt box both
+ *  pollutes the prompt and can push it past image models' length limits. */
+function stripReasoning(text: string): string {
+  const withoutClosed = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
+  const dangling = /<think>/i.exec(withoutClosed)
+  return (dangling === null ? withoutClosed : withoutClosed.slice(0, dangling.index)).trim()
+}
+
 /** Expand a concise image request into a production-ready image prompt. */
 export async function enhancePrompt(config: PromptModelConfig, prompt: string): Promise<string> {
   if (config.apiUrl.trim() === '' || config.model.trim() === '') throw new Error('prompt enhancement model is not configured')
@@ -133,5 +145,7 @@ export async function enhancePrompt(config: PromptModelConfig, prompt: string): 
     ? (choices[0] as { message?: { content?: unknown } }).message?.content
     : undefined
   if (typeof content !== 'string' || content.trim() === '') throw new Error('chat model returned an empty prompt')
-  return content.trim()
+  const enhanced = stripReasoning(content)
+  if (enhanced === '') throw new Error('chat model returned only reasoning content (empty <think> payload)')
+  return enhanced
 }
