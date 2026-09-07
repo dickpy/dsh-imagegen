@@ -70,6 +70,15 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     ],
   },
   {
+    id: 'minimax-official',
+    name: 'MiniMax 官方（国际站）',
+    apiUrl: 'https://api.minimax.io/v1',
+    hint: 'MiniMax 原生 /image_generation 接口：image-01（国内站请把地址改为 https://api.minimaxi.com/v1；/models 不列出图片模型，请直接使用预填目录）',
+    models: [
+      { alias: 'image-01', id: 'image-01' },
+    ],
+  },
+  {
     id: 'xai-grok',
     name: 'xAI（Grok）',
     apiUrl: 'https://api.x.ai/v1',
