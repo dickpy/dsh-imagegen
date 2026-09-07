@@ -93,7 +93,7 @@ function defaultDocument(id: string, title: string): CanvasDocument {
     title,
     revision: 1,
     viewport: { x: 0, y: 0, k: 1 },
-    background: 'flow',
+    background: 'liquid',
     nodes: [],
     connections: [],
     createdAt: now,
@@ -135,9 +135,12 @@ function isDocument(value: unknown): value is CanvasDocument {
     && typeof (document.viewport as { x?: unknown }).x === 'number'
     && typeof (document.viewport as { y?: unknown }).y === 'number'
     && typeof (document.viewport as { k?: unknown }).k === 'number'
-    && (document.background === 'dots' || document.background === 'lines' || document.background === 'diagonal'
-      || document.background === 'checker' || document.background === 'blank' || document.background === 'image'
-      || document.background === 'flow' || document.background === 'aurora')
+    && (document.background === 'dots' || document.background === 'lines' || document.background === 'blank'
+      || document.background === 'image' || document.background === 'flow' || document.background === 'liquid'
+      || document.background === 'floatingLines' || document.background === 'galaxy'
+      || document.background === 'silk' || document.background === 'waves'
+      || document.background === 'faultyTerminal' || document.background === 'dotField'
+      || document.background === 'dotGrid' || document.background === 'shapeGrid')
     && (document.backgroundImage === undefined || typeof document.backgroundImage === 'string')
     && Array.isArray(document.nodes) && document.nodes.every(isNode)
     && Array.isArray(document.connections)
@@ -226,6 +229,14 @@ function migrateLegacyDocument(input: Record<string, unknown>): CanvasDocument {
   }
 }
 
+/** Background modes removed from the picker still show up in older saved
+ *  documents; map them to their nearest surviving replacement. */
+const REMOVED_BACKGROUND_FALLBACK: Record<string, CanvasDocument['background']> = {
+  diagonal: 'lines',
+  checker: 'dots',
+  aurora: 'liquid',
+}
+
 /** Accept either the v2 document or a legacy v1 payload and return v2. */
 function coerceDocument(value: unknown): CanvasDocument | undefined {
   if (value === null || typeof value !== 'object') return undefined
@@ -234,6 +245,8 @@ function coerceDocument(value: unknown): CanvasDocument | undefined {
     const migrated = migrateLegacyDocument(document)
     return isDocument(migrated) ? migrated : undefined
   }
+  const fallback = REMOVED_BACKGROUND_FALLBACK[String(document.background)]
+  if (fallback !== undefined) return isDocument({ ...document, background: fallback }) ? { ...document, background: fallback } as CanvasDocument : undefined
   return isDocument(value) ? value : undefined
 }
 

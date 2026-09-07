@@ -14,6 +14,7 @@ import type { CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasNode, Gene
 import type { ImageGenApi } from './api.ts'
 import { tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { DotFieldBackground, DotGridBackground, FaultyTerminalBackground, FloatingLinesBackground, FlowBackground, GalaxyBackground, LiquidEtherBackground, ShapeGridBackground, SilkBackground, WavesBackground } from './CanvasBackgrounds.tsx'
 import css from './canvas-workspace.module.css'
 
 type CanvasTool = 'select' | 'pan'
@@ -1415,7 +1416,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const isSpaceOrCtrl = temporaryPanTool
   const cursorClass = tool === 'pan' || isSpaceOrCtrl ? css.panCursor : css.selectCursor
 
-  const backgroundMode = document?.background ?? 'dots'
+  const backgroundMode = document?.background ?? 'liquid'
   const setBackgroundMode = useCallback((mode: BackgroundMode): void => {
     mutate(previous => ({
       ...previous,
@@ -1842,7 +1843,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         className={css.grid}
         style={backgroundMode === 'image' && document?.backgroundImage
           ? { backgroundImage: `url(${document.backgroundImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-          : backgroundMode === 'aurora'
+          : backgroundMode === 'liquid' || backgroundMode === 'floatingLines' || backgroundMode === 'galaxy' || backgroundMode === 'silk' || backgroundMode === 'waves' || backgroundMode === 'faultyTerminal' || backgroundMode === 'dotField' || backgroundMode === 'dotGrid' || backgroundMode === 'shapeGrid'
             ? undefined
             : { backgroundSize: `${gridSize}px ${gridSize}px`, backgroundPosition: `${gridOffsetX}px ${gridOffsetY}px` }}
         data-mode={backgroundMode}
@@ -1850,6 +1851,15 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       >
         {backgroundMode === 'image' ? <div className={css.gridScrim} /> : null}
         {backgroundMode === 'flow' ? <FlowBackground /> : null}
+        {backgroundMode === 'liquid' ? <LiquidEtherBackground /> : null}
+        {backgroundMode === 'floatingLines' ? <FloatingLinesBackground /> : null}
+        {backgroundMode === 'galaxy' ? <GalaxyBackground /> : null}
+        {backgroundMode === 'silk' ? <SilkBackground /> : null}
+        {backgroundMode === 'waves' ? <WavesBackground /> : null}
+        {backgroundMode === 'faultyTerminal' ? <FaultyTerminalBackground /> : null}
+        {backgroundMode === 'dotField' ? <DotFieldBackground /> : null}
+        {backgroundMode === 'dotGrid' ? <DotGridBackground /> : null}
+        {backgroundMode === 'shapeGrid' ? <ShapeGridBackground /> : null}
       </div>
       <div className={css.world} style={{ transform: `translate(${document?.viewport.x ?? 0}px, ${document?.viewport.y ?? 0}px) scale(${document?.viewport.k ?? 1})` }}>
         {renderConnections()}
@@ -1964,10 +1974,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       {([
         ['dots', tt('canvas.backgroundDots')],
         ['lines', tt('canvas.backgroundLines')],
-        ['diagonal', tt('canvas.backgroundDiagonal')],
-        ['checker', tt('canvas.backgroundChecker')],
+        ['waves', tt('canvas.backgroundWaves')],
+        ['shapeGrid', tt('canvas.backgroundShapeGrid')],
+        ['dotField', tt('canvas.backgroundDotField')],
+        ['dotGrid', tt('canvas.backgroundDotGrid')],
+        ['floatingLines', tt('canvas.backgroundFloatingLines')],
         ['flow', tt('canvas.backgroundFlow')],
-        ['aurora', tt('canvas.backgroundAurora')],
+        ['liquid', tt('canvas.backgroundLiquid')],
+        ['faultyTerminal', tt('canvas.backgroundFaultyTerminal')],
+        ['silk', tt('canvas.backgroundSilk')],
+        ['galaxy', tt('canvas.backgroundGalaxy')],
         ['blank', tt('canvas.backgroundBlank')],
       ] as const).map(([mode, label]) => <button key={mode} type="button" role="menuitem" data-active={backgroundMode === mode ? '' : undefined} onClick={() => setBackgroundMode(mode)}>{label}</button>)}
       <span className={css.backgroundMenuDivider} />
@@ -2047,103 +2063,6 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }}
     /> : null}
   </section>
-}
-
-/** Interactive flowmap-style dot field ("fluid distortion"): the pointer's
- *  velocity pushes dots sideways like a fluid; they spring back home when it
- *  moves on, with a barely-visible idle drift keeping the field alive. */
-function FlowBackground(): React.JSX.Element {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  useEffect(() => {
-    const canvas = canvasRef.current
-    // canvas lives inside the grid layer; events must be observed on the
-    // viewport container itself (the grid never receives pointer events).
-    const layer = canvas?.parentElement
-    const viewport = layer?.parentElement
-    if (canvas === null || canvas === undefined || viewport === null || viewport === undefined) return
-    const ctx = canvas.getContext('2d')
-    if (ctx === null) return
-    let disposed = false
-    const pointer = { x: -1e4, y: -1e4, vx: 0, vy: 0, seen: false }
-    const SPACING = 44
-    const RADIUS = 120
-    let width = 0
-    let height = 0
-    let points: Array<{ hx: number; hy: number; x: number; y: number; vx: number; vy: number }> = []
-    const rebuild = (): void => {
-      const rect = viewport.getBoundingClientRect()
-      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio ?? 1))
-      width = Math.max(1, Math.round(rect.width))
-      height = Math.max(1, Math.round(rect.height))
-      canvas.width = Math.round(width * dpr)
-      canvas.height = Math.round(height * dpr)
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      points = []
-      for (let y = SPACING / 2; y < height; y += SPACING) {
-        for (let x = SPACING / 2; x < width; x += SPACING) points.push({ hx: x, hy: y, x, y, vx: 0, vy: 0 })
-      }
-    }
-    rebuild()
-    const observer = new ResizeObserver(rebuild)
-    observer.observe(viewport)
-    const onMove = (event: PointerEvent): void => {
-      const rect = viewport.getBoundingClientRect()
-      const x = event.clientX - rect.left
-      const y = event.clientY - rect.top
-      if (pointer.seen) {
-        pointer.vx = pointer.vx * 0.6 + (x - pointer.x) * 0.4
-        pointer.vy = pointer.vy * 0.6 + (y - pointer.y) * 0.4
-      }
-      pointer.x = x
-      pointer.y = y
-      pointer.seen = true
-    }
-    const onLeave = (): void => { pointer.x = -1e4; pointer.y = -1e4; pointer.vx = 0; pointer.vy = 0 }
-    viewport.addEventListener('pointermove', onMove, true)
-    viewport.addEventListener('pointerleave', onLeave)
-    let frame = 0
-    let time = 0
-    const tick = (): void => {
-      time += 0.016
-      const r2 = RADIUS * RADIUS
-      for (const p of points) {
-        // A barely-visible idle drift keeps the field alive without the pointer.
-        p.vx += (p.hx + Math.sin(time * 1.3 + p.hy * 0.055) * 0.5 - p.x) * 0.03
-        p.vy += (p.hy + Math.cos(time * 1.1 + p.hx * 0.055) * 0.5 - p.y) * 0.03
-        const dx = p.x - pointer.x
-        const dy = p.y - pointer.y
-        const d2 = dx * dx + dy * dy
-        if (d2 < RADIUS * RADIUS && d2 > 0.01) {
-          const d = Math.sqrt(d2)
-          const force = (1 - d / RADIUS) * 0.9
-          p.vx += pointer.vx * force + (dx / d) * force * 2.2
-          p.vy += pointer.vy * force + (dy / d) * force * 2.2
-        }
-        p.vx *= 0.86
-        p.vy *= 0.86
-        p.x += p.vx
-        p.y += p.vy
-      }
-      ctx.clearRect(0, 0, width, height)
-      for (const p of points) {
-        const speed = Math.min(4, Math.hypot(p.vx, p.vy))
-        ctx.fillStyle = `rgba(96, 125, 255, ${(0.16 + speed * 0.16).toFixed(3)})`
-        ctx.beginPath()
-        ctx.arc(p.x, p.y, 1.4 + Math.min(1.8, speed * 0.5), 0, Math.PI * 2)
-        ctx.fill()
-      }
-      frame = window.requestAnimationFrame(tick)
-    }
-    frame = window.requestAnimationFrame(tick)
-    return () => {
-      disposed = true
-      window.cancelAnimationFrame(frame)
-      observer.disconnect()
-      viewport.removeEventListener('pointermove', onMove)
-      viewport.removeEventListener('pointerleave', onLeave)
-    }
-  }, [])
-  return <canvas ref={canvasRef} className={css.flowCanvas} aria-hidden="true" />
 }
 
 function ImagePicker(props: {
