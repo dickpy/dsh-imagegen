@@ -93,7 +93,7 @@ function defaultDocument(id: string, title: string): CanvasDocument {
     title,
     revision: 1,
     viewport: { x: 0, y: 0, k: 1 },
-    background: 'dots',
+    background: 'flow',
     nodes: [],
     connections: [],
     createdAt: now,
@@ -136,7 +136,8 @@ function isDocument(value: unknown): value is CanvasDocument {
     && typeof (document.viewport as { y?: unknown }).y === 'number'
     && typeof (document.viewport as { k?: unknown }).k === 'number'
     && (document.background === 'dots' || document.background === 'lines' || document.background === 'diagonal'
-      || document.background === 'checker' || document.background === 'blank' || document.background === 'image')
+      || document.background === 'checker' || document.background === 'blank' || document.background === 'image'
+      || document.background === 'flow' || document.background === 'aurora')
     && (document.backgroundImage === undefined || typeof document.backgroundImage === 'string')
     && Array.isArray(document.nodes) && document.nodes.every(isNode)
     && Array.isArray(document.connections)

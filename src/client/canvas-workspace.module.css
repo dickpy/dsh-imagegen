@@ -130,6 +130,39 @@
   opacity: 0.5;
 }
 
+/* Interactive fluid flowmap dot field lives in a <canvas>; aurora is pure CSS.
+ * Both render themselves at full strength (the 0.5 grid dimming stays off). */
+.flowCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.grid[data-mode="flow"],
+.grid[data-mode="aurora"] {
+  opacity: 1;
+}
+
+.grid[data-mode="aurora"] {
+  background-image:
+    radial-gradient(560px 380px at 22% 28%, color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent), transparent 72%),
+    radial-gradient(680px 480px at 78% 62%, rgb(167 139 250 / 20%), transparent 72%),
+    radial-gradient(520px 400px at 48% 88%, rgb(34 211 238 / 17%), transparent 74%);
+  background-size: 220% 220%;
+  background-position: 0% 0%;
+  animation: auroraDrift 20s ease-in-out infinite alternate;
+}
+
+@keyframes auroraDrift {
+  from { background-position: 0% 0%; }
+  to { background-position: 100% 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grid[data-mode="aurora"] { animation: none; }
+}
+
 .grid[data-mode="dots"] {
   background-image: radial-gradient(circle, color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent) 1.1px, transparent 1.4px);
 }
@@ -180,7 +213,7 @@
 .backgroundMenu button {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   border: none;
   border-radius: 7px;
   background: transparent;
@@ -383,6 +416,9 @@
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
   cursor: pointer;
+  /* .nodeBody disables pointer events for node dragging; the upload button
+   * inside must opt back in or its onClick never fires. */
+  pointer-events: auto;
 }
 
 .nodeEmpty:hover {
@@ -432,45 +468,26 @@
   backdrop-filter: blur(10px);
 }
 
+/* macOS-dock magnification: the pointermove handler on .dock feeds a gaussian
+ * falloff into --dock-scale / --dock-lift, so the hovered icon swells and lifts
+ * while neighbours rise and fall like a zipper as the pointer slides across. */
 .dock .iconButton {
   position: relative;
-  overflow: hidden;
   width: 40px;
   height: 40px;
   border-radius: 11px;
-  transition: transform 0.18s cubic-bezier(0.34, 1.9, 0.64, 1), background 0.15s ease, color 0.15s ease, box-shadow 0.18s ease;
-}
-
-/* water-wave sheen sweeping across + gentle lift on hover */
-.dock .iconButton::before {
-  content: '';
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  left: -150%;
-  width: 65%;
-  background: linear-gradient(105deg, transparent, color-mix(in srgb, currentColor 26%, transparent), transparent);
-  transform: skewX(-18deg);
-  opacity: 0;
-  pointer-events: none;
+  transform: translateY(var(--dock-lift, 0px)) scale(var(--dock-scale, 1));
+  transform-origin: 50% 100%;
+  transition: transform 0.16s cubic-bezier(0.33, 1, 0.68, 1), background 0.15s ease, color 0.15s ease, box-shadow 0.18s ease;
 }
 
 .dock .iconButton:not(:disabled):hover {
-  transform: translateY(calc(-3px - var(--dock-lift, 0px)));
+  z-index: 2;
   box-shadow: 0 6px 14px color-mix(in srgb, var(--dsw-alias-label-primary) 20%, transparent);
 }
 
-.dock .iconButton:not(:disabled):hover::before {
-  animation: dockShine 0.55s ease forwards;
-}
-
 .dock .iconButton:not(:disabled):active {
-  transform: translateY(-1px) scale(0.96);
-}
-
-@keyframes dockShine {
-  0% { left: -150%; opacity: 1; }
-  100% { left: 170%; opacity: 1; }
+  transform: translateY(var(--dock-lift, 0px)) scale(0.94);
 }
 
 .dock .iconButton[data-active] {
@@ -553,6 +570,70 @@
   max-width: 128px;
 }
 
+/* custom dropdown button + popup (styled replacement for native <select>) */
+.composerSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 11.5px;
+  min-width: 0;
+  max-width: 138px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.composerSelect:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.composerSelect[data-open] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.composerSelect svg { flex: none; opacity: 0.65; }
+.composerSelect[data-open] svg { opacity: 0.9; }
+
+.composerSelectValue {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.composerSelectMenu {
+  position: fixed;
+  z-index: 95;
+  max-height: 264px;
+  overflow: auto;
+  padding: 5px;
+  border-radius: 11px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 97%, transparent);
+  box-shadow: 0 14px 38px rgb(15 23 42 / 18%);
+  backdrop-filter: blur(10px);
+}
+
+.composerSelectMenu button {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 7px 10px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.composerSelectMenu button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.composerSelectMenu button[data-selected] {
+  color: var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
+}
+
 .composerSend {
   margin-left: auto;
   width: 34px;
@@ -631,6 +712,25 @@
 
 .handle:hover { background: var(--dsw-alias-brand-primary); }
 
+/* The source handle doubles as a quick-add button (hover opens the node
+ * picker, drag connects) so it reads as a Dify-style big ⊕. */
+.handleRight {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  right: -10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--dsw-alias-brand-primary);
+}
+
+.handleRight::after { content: '+'; }
+
+.handleRight:hover { color: var(--dsw-alias-bg-layer-1); transform: translateY(-50%) scale(1.12); }
+
 .resizeHandle {
   position: absolute;
   right: -5px;
@@ -681,15 +781,13 @@
 
 .connectionPath {
   fill: none;
-  stroke: color-mix(in srgb, var(--dsw-alias-label-primary) 38%, transparent);
-  stroke-width: 2;
-  stroke-opacity: 0.85;
+  stroke-width: 1.8;
+  stroke-opacity: 0.9;
   pointer-events: none;
 }
 
 .connectionActive {
-  stroke: var(--dsw-alias-brand-primary);
-  stroke-width: 3;
+  stroke-width: 2.6;
   stroke-opacity: 1;
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent));
 }
@@ -700,6 +798,32 @@
   stroke-width: 2;
   stroke-dasharray: 5 5;
   pointer-events: none;
+}
+
+/* Flow overlay: a soft light band glides from the path start (source) toward
+ * its end (target), echoing the direction of the gradient and arrowhead. */
+.connectionFlow {
+  fill: none;
+  stroke: var(--dsw-alias-brand-primary);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 30 90;
+  opacity: 0.4;
+  pointer-events: none;
+  animation: connectionFlow 1.6s linear infinite;
+}
+
+.connectionFlowActive {
+  stroke: var(--dsw-alias-brand-primary);
+  opacity: 0.85;
+}
+
+@keyframes connectionFlow {
+  to { stroke-dashoffset: -120; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connectionFlow { animation: none; opacity: 0.35; }
 }
 
 /* --------------------------------------------------------- empty hint */

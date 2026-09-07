@@ -1344,9 +1344,20 @@ await check('D1 client bundle registers via __ModuleLoader__', () => {
   assert.equal(handoff.id, '@dickpy/dsh-imagegen')
   assert.equal(typeof handoff.factory, 'function')
   // Evaluate the factory with stubbed platform modules; only the exports
-  // surface is exercised (apply never runs without a real DOM).
+  // surface is exercised (apply never runs without a real DOM). The react
+  // stub needs the top-level APIs the inlined lucide-react icons touch.
   const stubs = {
-    'react': {},
+    'react': {
+      Fragment: 'Fragment',
+      createContext: (value) => ({ Provider: () => null, Consumer: () => null, _currentValue: value }),
+      createElement: () => null,
+      forwardRef: (render) => ({ $$typeof: Symbol.for('react.forward_ref'), render }),
+      memo: (fn) => ({ $$typeof: Symbol.for('react.memo'), type: fn }),
+      useContext: () => ({}),
+      useMemo: (factory) => factory(),
+      useRef: () => ({ current: null }),
+      useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    },
     'react/jsx-runtime': { jsx: () => null, jsxs: () => null },
     'react-dom': {},
     'react-dom/client': { createRoot: () => ({ render: () => {}, unmount: () => {} }) },

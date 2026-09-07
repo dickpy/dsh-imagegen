@@ -6,6 +6,10 @@
  * as a reference, and results land as new image nodes on the right. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import {
+  BookOpen, ChevronDown, Copy, Download, FolderX, Hand, Image as ImageIcon, Map as MapIcon, Maximize,
+  MousePointer2, Plus, Redo2, SendHorizonal, Sparkles, Trash2, Type, Undo2, Wallpaper, X,
+} from 'lucide-react'
 import type { CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasNode, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { tt } from './helpers.ts'
@@ -18,7 +22,7 @@ type BackgroundMode = CanvasDocument['background']
 const MIN_SCALE = 0.05
 const MAX_SCALE = 5
 const GRID_SIZE = 48
-const IMAGE_NODE_SIZE = { width: 320, height: 320 }
+const IMAGE_NODE_SIZE = { width: 240, height: 240 }
 const TEXT_NODE_SIZE = { width: 280, height: 150 }
 const CONFIG_NODE_SIZE = { width: 320, height: 190 }
 const LEGACY_CONFIG_NODE_SIZE = { width: 240, height: 96 }
@@ -70,6 +74,10 @@ interface ConnectState {
   handleType: 'source' | 'target'
   mouse: Point
   targetId: string | null
+  /** False for a plain click on the handle (opens the add-node menu), true
+   *  once the pointer travels far enough that this is a drag-to-connect. */
+  moved: boolean
+  startClient: Point
 }
 
 interface ResizeState {
@@ -200,26 +208,30 @@ function nodeAnchor(node: CanvasNode, side: 'left' | 'right'): Point {
 
 type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
 
+/** Lucide icons (stroke matches the DSH line style); one shared component so
+ *  every dock/toolbar icon comes from the same well-drawn set. */
 function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number }): React.JSX.Element {
-  const common = { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.35, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
-  if (name === 'new') return <svg {...common}><path d="M8 3v10M3 8h10" /></svg>
-  if (name === 'select') return <svg {...common}><path d="M3 2.5l9.3 6.2-4 1.1-1.5 3.7L3 2.5z" /></svg>
-  if (name === 'pan') return <svg {...common}><path d="M8 2v12M2 8h12M5 5l3-3 3 3M5 11l3 3 3-3" /></svg>
-  if (name === 'image') return <svg {...common}><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><circle cx="5.5" cy="5.8" r="1" /><path d="M2.5 12.5l3.3-3.2 2.4 2.2 2.8-2.8 2.5 2.7M12 2v4M10 4h4" /></svg>
-  if (name === 'text') return <svg {...common}><path d="M3 3h10M8 3v10M5.5 13h5" /></svg>
-  if (name === 'trash') return <svg {...common}><path d="M3.5 4.5h9M6 2.5h4M5 4.5l.6 9h4.8l.6-9M6.5 6.5v4.5M9.5 6.5v4.5" /></svg>
-  if (name === 'undo') return <svg {...common}><path d="M3 7a5 5 0 1 1 1.5 4M3 3v4h4" /></svg>
-  if (name === 'redo') return <svg {...common}><path d="M13 7a5 5 0 1 0-1.5 4M13 3v4h-4" /></svg>
-  if (name === 'fit') return <svg {...common}><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" /></svg>
-  if (name === 'minimap') return <svg {...common}><rect x="2" y="3" width="12" height="10" rx="1.5" /><path d="M5 6h3v4H5zM10 8h2v3h-2" /></svg>
-  if (name === 'background') return <svg {...common}><rect x="2" y="4.5" width="10.5" height="9" rx="1.5" /><path d="M4.5 2h10a1.5 1.5 0 0 1 1.5 1.5V11M4.5 10.5l2.6-2.8 2.1 2.2 2.3-2.4 1.5 1.5" /></svg>
-  if (name === 'template') return <svg {...common}><path d="M8 3.6C6.9 2.5 5 2 2.5 2v10.6c2.5 0 4.4.5 5.5 1.6 1.1-1.1 3-1.6 5.5-1.6V2C11 2 9.1 2.5 8 3.6zM8 3.6V14" /></svg>
-  if (name === 'download') return <svg {...common}><path d="M8 2.5v8M5 7.5l3 3 3-3M3 13.5h10" /></svg>
-  if (name === 'duplicate') return <svg {...common}><rect x="5.5" y="5.5" width="8" height="8" rx="1.2" /><path d="M10.5 3h-7a.5.5 0 0 0-.5.5v7" /></svg>
-  if (name === 'send') return <svg {...common}><path d="M14 2L7 9M14 2L9.5 14l-2.5-5L2 6.5 14 2z" /></svg>
-  if (name === 'close') return <svg {...common}><path d="M4 4l8 8M12 4l-8 8" /></svg>
-  if (name === 'deleteProject') return <svg {...common}><path d="M2.5 5h11M6.5 5V3h3v2M4 5l.8 8.5h6.4L12 5M6.7 7.5v3.5M9.3 7.5v3.5" /></svg>
-  return <svg {...common}><path d="M8 2l1.2 4.2L13.5 8l-4.3 1.8L8 14l-1.2-4.2L2.5 8l4.3-1.8L8 2z" /></svg>
+  const common = { size, strokeWidth: 1.6, 'aria-hidden': true as const }
+  switch (name) {
+    case 'new': return <Plus {...common} />
+    case 'select': return <MousePointer2 {...common} />
+    case 'pan': return <Hand {...common} />
+    case 'image': return <ImageIcon {...common} />
+    case 'text': return <Type {...common} />
+    case 'trash': return <Trash2 {...common} />
+    case 'undo': return <Undo2 {...common} />
+    case 'redo': return <Redo2 {...common} />
+    case 'fit': return <Maximize {...common} />
+    case 'minimap': return <MapIcon {...common} />
+    case 'background': return <Wallpaper {...common} />
+    case 'template': return <BookOpen {...common} />
+    case 'download': return <Download {...common} />
+    case 'duplicate': return <Copy {...common} />
+    case 'sparkle': return <Sparkles {...common} />
+    case 'send': return <SendHorizonal {...common} />
+    case 'close': return <X {...common} />
+    case 'deleteProject': return <FolderX {...common} />
+  }
 }
 
 function IconButton(props: {
@@ -245,6 +257,59 @@ function IconButton(props: {
   ><ToolbarIcon name={props.name} size={props.size} /></button>
 }
 
+/** Styled dropdown standing in for a native <select> so the composer and the
+ * picker match the canvas visual language instead of the OS popup. */
+function ComposerSelect(props: {
+  value: string
+  options: Array<{ value: string; label: string }>
+  ariaLabel: string
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<{ left: number; top: number; minWidth: number } | null>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent): void => {
+      if (event.target instanceof Element && buttonRef.current?.contains(event.target) === true) return
+      setOpen(false)
+    }
+    window.addEventListener('pointerdown', close, true)
+    return () => window.removeEventListener('pointerdown', close, true)
+  }, [open])
+  const selected = props.options.find(option => option.value === props.value) ?? props.options[0]
+  return <>
+    <button
+      type="button"
+      ref={buttonRef}
+      className={css.composerSelect}
+      data-open={open ? '' : undefined}
+      aria-label={props.ariaLabel}
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      onClick={() => {
+        if (open) { setOpen(false); return }
+        const rect = buttonRef.current?.getBoundingClientRect()
+        if (rect !== undefined) setPosition({ left: rect.left, top: rect.bottom + 6, minWidth: rect.width })
+        setOpen(true)
+      }}
+    >
+      <span className={css.composerSelectValue}>{selected?.label ?? ''}</span>
+      <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
+    </button>
+    {open && position !== null ? <div className={css.composerSelectMenu} style={{ left: position.left, top: position.top, minWidth: position.minWidth }} role="listbox" aria-label={props.ariaLabel}>
+      {props.options.map(option => <button
+        key={option.value}
+        type="button"
+        role="option"
+        aria-selected={option.value === props.value}
+        data-selected={option.value === props.value ? '' : undefined}
+        onClick={() => { props.onChange(option.value); setOpen(false) }}
+      >{option.label}</button>)}
+    </div> : null}
+  </>
+}
+
 export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element {
   const { api, imageModels, defaultChannelId, connected, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -259,6 +324,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [connecting, setConnecting] = useState<ConnectState | null>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [createMenu, setCreateMenu] = useState<{ screen: Point; world: Point } | null>(null)
+  const [nodeAddMenu, setNodeAddMenu] = useState<{ nodeId: string; nodeType: CanvasNode['type']; screen: Point } | null>(null)
   const [minimapOpen, setMinimapOpen] = useState(true)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [backgroundMenu, setBackgroundMenu] = useState<Point | null>(null)
@@ -434,6 +500,28 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     }
   }, [canvasCenter])
 
+  /** A brand-new canvas starts with one text node wired into one config node,
+   *  laid out around the visible viewport center so the workflow is obvious. */
+  const seedDocument = useCallback((created: CanvasDocument): CanvasDocument => {
+    if (created.nodes.length > 0) return created
+    const bounds = viewportRef.current?.getBoundingClientRect()
+    const viewport = created.viewport
+    const center = bounds !== undefined && bounds.width > 0 && bounds.height > 0
+      ? { x: (bounds.width / 2 - viewport.x) / viewport.k, y: (bounds.height / 2 - viewport.y) / viewport.k }
+      : { x: 480, y: 320 }
+    const config = createConfigNode(center)
+    const text: CanvasNode = {
+      ...createTextNode(),
+      x: Math.round(config.x - TEXT_NODE_SIZE.width - 80),
+      y: Math.round(config.y + (CONFIG_NODE_SIZE.height - TEXT_NODE_SIZE.height) / 2),
+    }
+    return {
+      ...created,
+      nodes: [text, config],
+      connections: [{ id: newId('edge'), fromNodeId: text.id, toNodeId: config.id }],
+    }
+  }, [createConfigNode, createTextNode])
+
   const updateNodes = useCallback((updater: (nodes: CanvasNode[]) => CanvasNode[]): void => {
     updateDocument(previous => ({ ...previous, nodes: updater(previous.nodes) }))
   }, [updateDocument])
@@ -502,6 +590,73 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (current.connections.some(connection => connection.fromNodeId === fromNodeId && connection.toNodeId === toNodeId)) return
     mutate(previous => ({ ...previous, connections: [...previous.connections, { id: newId('edge'), fromNodeId, toNodeId }] }))
   }, [mutate])
+
+  /** Dify-style quick add: create a node to the right of `sourceId`, vertically
+   *  centered against it, and wire source -> new node in one history step. The
+   *  target spot walks right past any node already occupying it, and the
+   *  viewport pans just enough to keep the new node visible. */
+  const addConnectedNode = useCallback((sourceId: string, factory: (position: Point) => CanvasNode): void => {
+    const current = documentRef.current
+    if (current === null) return
+    const source = current.nodes.find(item => item.id === sourceId)
+    if (source === undefined) return
+    const draft = factory({ x: 0, y: 0 })
+    const y = Math.round(source.y + (source.height - draft.height) / 2)
+    let x = source.x + source.width + 90
+    for (let guard = 0; guard < 24; guard += 1) {
+      const clash = current.nodes.find(node =>
+        Math.abs((y + draft.height / 2) - (node.y + node.height / 2)) < (draft.height + node.height) / 2 + 20
+        && x < node.x + node.width + 48
+        && x + draft.width > node.x - 48)
+      if (clash === undefined) break
+      x = clash.x + clash.width + 88
+    }
+    const node: CanvasNode = { ...draft, x, y }
+    mutate(previous => ({
+      ...previous,
+      nodes: [...previous.nodes, node],
+      connections: [...previous.connections, { id: newId('edge'), fromNodeId: sourceId, toNodeId: node.id }],
+    }))
+    const bounds = viewportRef.current?.getBoundingClientRect()
+    if (bounds === undefined) return
+    const viewport = current.viewport
+    const k = viewport.k
+    const left = viewport.x + x * k
+    const right = viewport.x + (x + draft.width) * k
+    const top = viewport.y + y * k
+    const bottom = viewport.y + (y + draft.height) * k
+    let dx = 0
+    let dy = 0
+    if (right > bounds.width - 24) dx = right - (bounds.width - 24)
+    if (bottom > bounds.height - 24) dy = bottom - (bounds.height - 24)
+    if (dx !== 0 || dy !== 0) setViewport({ x: viewport.x - dx, y: viewport.y - dy, k })
+  }, [mutate, setViewport])
+
+  /** Anchor the add-node menu at the source handle's on-screen position. The
+   *  menu opens on hover (no click needed) and lingers briefly on leave. */
+  const nodeAddMenuTimer = useRef<number | null>(null)
+  const clearNodeAddMenuTimer = useCallback((): void => {
+    if (nodeAddMenuTimer.current !== null) { window.clearTimeout(nodeAddMenuTimer.current); nodeAddMenuTimer.current = null }
+  }, [])
+  const scheduleNodeAddMenuClose = useCallback((): void => {
+    clearNodeAddMenuTimer()
+    nodeAddMenuTimer.current = window.setTimeout(() => setNodeAddMenu(null), 260)
+  }, [clearNodeAddMenuTimer])
+  const openNodeAddMenu = useCallback((node: CanvasNode): void => {
+    const current = documentRef.current
+    const bounds = viewportRef.current?.getBoundingClientRect()
+    if (current === null || bounds === undefined) return
+    clearNodeAddMenuTimer()
+    const viewport = current.viewport
+    setNodeAddMenu({
+      nodeId: node.id,
+      nodeType: node.type,
+      screen: {
+        x: bounds.left + viewport.x + (node.x + node.width) * viewport.k,
+        y: bounds.top + viewport.y + (node.y + node.height / 2) * viewport.k,
+      },
+    })
+  }, [clearNodeAddMenuTimer])
 
   const downloadNode = useCallback((node: CanvasNode): void => {
     const asset = assetOf(node)
@@ -766,15 +921,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     let disposed = false
     void api.canvasList().then(async list => {
       if (disposed) return
-      const first = list[0] === undefined ? await api.canvasCreate(tt('canvas.untitled')) : await api.canvasRead(list[0].id)
+      const created = list[0] === undefined ? await api.canvasCreate(tt('canvas.untitled')) : null
+      const first = created === null ? await api.canvasRead(list[0]!.id) : seedDocument(created)
       if (disposed) return
-      setProjects(list[0] === undefined ? [summaryOf(first)] : list)
+      setProjects(created === null ? list : [summaryOf(first)])
       setDocument(normalizeConfigNodeSizes(first))
-      syncedRef.current = JSON.stringify(first)
+      syncedRef.current = JSON.stringify(created ?? first)
       setSaveState('saved')
     }).catch(caught => { if (!disposed) { setError(caught instanceof Error ? caught.message : String(caught)); setSaveState('error') } })
     return () => { disposed = true }
-  }, [api])
+  }, [api, seedDocument])
 
   useEffect(() => {
     if (document === null || saveState === 'loading') return
@@ -846,7 +1002,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       if (documentRef.current === null) return
       const mod = event.ctrlKey || event.metaKey
       if (event.key === 'Escape') {
-        setContextMenu(null); setCreateMenu(null); setBackgroundMenu(null); setImageMenu(null)
+        setContextMenu(null); setCreateMenu(null); setBackgroundMenu(null); setImageMenu(null); setNodeAddMenu(null)
         if (!isEditingTarget(event.target)) { setSelectedIds(new Set()); setSelectedConnectionId(null) }
         return
       }
@@ -922,7 +1078,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
 
   const onViewportPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const target = event.target instanceof Element ? event.target : null
-    setContextMenu(null); setCreateMenu(null)
+    setContextMenu(null); setCreateMenu(null); setNodeAddMenu(null)
     if (!target?.closest('[data-canvas-no-zoom]')) { setBackgroundMenu(null); setImageMenu(null) }
     const isBackground = target?.closest('[data-node-id],[data-connection-hit]') === null
     const shouldPan = event.button === 1 || (event.button === 0 && (tool === 'pan' || temporaryPanTool) && isBackground)
@@ -1017,6 +1173,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const connect = connectRef.current
       if (connect !== null) {
         const world = screenToWorld(event.clientX, event.clientY)
+        if (!connect.moved && Math.hypot(event.clientX - connect.startClient.x, event.clientY - connect.startClient.y) > 4) {
+          connect.moved = true
+          setNodeAddMenu(null)
+        }
         const nodes = documentRef.current?.nodes ?? []
         let targetId: string | null = null
         for (let index = nodes.length - 1; index >= 0; index -= 1) {
@@ -1139,6 +1299,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (node === undefined) return
     event.stopPropagation()
     const additive = event.shiftKey || event.ctrlKey || event.metaKey
+    setNodeAddMenu(null)
     let nextSelection = selectedIdsRef.current
     if (additive) {
       nextSelection = new Set(selectedIdsRef.current)
@@ -1160,12 +1321,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const handleConnectStart = useCallback((event: ReactPointerEvent<HTMLDivElement>, nodeId: string, handleType: 'source' | 'target'): void => {
     if (event.button !== 0) return
     event.stopPropagation(); event.preventDefault()
+    clearNodeAddMenuTimer(); setNodeAddMenu(null)
     const world = screenToWorld(event.clientX, event.clientY)
-    const next: ConnectState = { nodeId, handleType, mouse: world, targetId: null }
+    const next: ConnectState = { nodeId, handleType, mouse: world, targetId: null, moved: false, startClient: { x: event.clientX, y: event.clientY } }
     connectRef.current = next
     setConnecting(next)
     setSelectedConnectionId(null)
-  }, [screenToWorld])
+  }, [clearNodeAddMenuTimer, screenToWorld])
 
   const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode, corner: 'bottom-right' | 'bottom-left'): void => {
     if (event.button !== 0) return
@@ -1199,13 +1361,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
 
   const newCanvas = useCallback(async (): Promise<void> => {
     try {
-      const next = await api.canvasCreate(tt('canvas.untitled'))
+      const created = await api.canvasCreate(tt('canvas.untitled'))
+      const next = seedDocument(created)
       setProjects(previous => [summaryOf(next), ...previous])
       setDocument(next); setSelectedIds(new Set()); setSelectedConnectionId(null)
-      syncedRef.current = JSON.stringify(next); setSaveState('saved')
+      syncedRef.current = JSON.stringify(created); setSaveState('saved')
       pastRef.current = []; futureRef.current = []; setHistoryVersion(version => version + 1)
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)) }
-  }, [api])
+  }, [api, seedDocument])
 
   const selectProject = useCallback(async (id: string): Promise<void> => {
     try {
@@ -1225,7 +1388,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const nextId = remaining[0]?.id
       if (nextId === undefined) {
         const created = await api.canvasCreate(tt('canvas.untitled'))
-        setProjects([summaryOf(created)]); setDocument(created)
+        const created2 = seedDocument(created)
+        setProjects([summaryOf(created2)]); setDocument(created2)
         syncedRef.current = JSON.stringify(created); setSaveState('saved')
       } else {
         setProjects(remaining)
@@ -1233,7 +1397,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }
       setSelectedIds(new Set()); setSelectedConnectionId(null)
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)) }
-  }, [api, selectProject])
+  }, [api, selectProject, seedDocument])
 
   // -------------------------------------------------------------- derived
 
@@ -1366,7 +1530,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ? <div className={css.resizeHandle} onPointerDown={event => handleResizeStart(event, node, 'bottom-right')} title={tt('canvas.resizeHint')} />
         : null}
       <div className={`${css.handle} ${css.handleLeft}`} title={tt('canvas.connectHint')} onPointerDown={event => handleConnectStart(event, node.id, 'target')} />
-      <div className={`${css.handle} ${css.handleRight}`} title={tt('canvas.connectHint')} onPointerDown={event => handleConnectStart(event, node.id, 'source')} />
+      <div
+        className={`${css.handle} ${css.handleRight}`}
+        title={tt('canvas.connectAddHint')}
+        onPointerDown={event => handleConnectStart(event, node.id, 'source')}
+        onMouseEnter={() => { window.setTimeout(() => { if (connectRef.current === null) openNodeAddMenu(node) }, 120) }}
+        onMouseLeave={scheduleNodeAddMenuClose}
+      />
       <div className={css.hoverToolbar} onPointerDown={event => event.stopPropagation()}>
         {node.type === 'image' && hasImage ? <IconButton name="download" label={tt('canvas.download')} onClick={() => downloadNode(node)} /> : null}
         <IconButton name="duplicate" label={tt('canvas.duplicate')} onClick={duplicateSelection} />
@@ -1375,19 +1545,44 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     </div>
   }
 
-  const renderConnections = (): React.JSX.Element => (
-    <svg
+  const renderConnections = (): React.JSX.Element => {
+    const visible = (document?.connections ?? []).filter(connection => nodeById.has(connection.fromNodeId) && nodeById.has(connection.toNodeId))
+    const gradientOf = (connection: CanvasConnection): React.JSX.Element => {
+      const from = nodeById.get(connection.fromNodeId)!
+      const to = nodeById.get(connection.toNodeId)!
+      const start = nodeAnchor(from, 'right')
+      const end = nodeAnchor(to, 'left')
+      return <linearGradient
+        key={connection.id}
+        id={`conn-g-${connection.id}`}
+        gradientUnits="userSpaceOnUse"
+        x1={start.x} y1={start.y} x2={end.x} y2={end.y}
+      >
+        <stop offset="0" stopColor="var(--dsw-alias-brand-primary)" stopOpacity="0.08" />
+        <stop offset="0.7" stopColor="var(--dsw-alias-brand-primary)" stopOpacity="0.4" />
+        <stop offset="1" stopColor="var(--dsw-alias-brand-primary)" stopOpacity="0.85" />
+      </linearGradient>
+    }
+    return <svg
       className={css.connectionLayer}
       width={WORLD_PAD * 2}
       height={WORLD_PAD * 2}
       style={{ left: -WORLD_PAD, top: -WORLD_PAD }}
       aria-hidden="true"
     >
+      <defs>
+        <marker id="conn-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+          <path d="M 0 1.6 L 8.4 5 L 0 8.4 Z" fill="color-mix(in srgb, var(--dsw-alias-brand-primary) 62%, transparent)" />
+        </marker>
+        <marker id="conn-arrow-active" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+          <path d="M 0 1.6 L 8.4 5 L 0 8.4 Z" fill="var(--dsw-alias-brand-primary)" />
+        </marker>
+        {visible.map(gradientOf)}
+      </defs>
       <g transform={`translate(${WORLD_PAD},${WORLD_PAD})`}>
-        {(document?.connections ?? []).map(connection => {
-          const from = nodeById.get(connection.fromNodeId)
-          const to = nodeById.get(connection.toNodeId)
-          if (from === undefined || to === undefined) return null
+        {visible.map(connection => {
+          const from = nodeById.get(connection.fromNodeId)!
+          const to = nodeById.get(connection.toNodeId)!
           const path = bezierPath(nodeAnchor(from, 'right'), nodeAnchor(to, 'left'))
           const active = connection.id === selectedConnectionId
           return <g key={connection.id}>
@@ -1405,7 +1600,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
                 setContextMenu({ type: 'connection', screen: { x: event.clientX, y: event.clientY }, connectionId: connection.id })
               }}
             />
-            <path d={path} className={`${css.connectionPath} ${active ? css.connectionActive : ''}`} />
+            <path
+              d={path}
+              stroke={`url(#conn-g-${connection.id})`}
+              className={css.connectionPath}
+              markerEnd={active ? 'url(#conn-arrow-active)' : 'url(#conn-arrow)'}
+            />
+            {/* A soft light band glides along the path (source -> target). */}
+            <path d={path} className={`${css.connectionFlow} ${active ? css.connectionFlowActive : ''}`} />
           </g>
         })}
         {connecting !== null ? (() => {
@@ -1421,7 +1623,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         })() : null}
       </g>
     </svg>
-  )
+  }
 
   const renderComposer = (): ReactNode => {
     if (!composerVisible || document === null || composerTarget === null) return null
@@ -1453,26 +1655,41 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         <span className={css.composerChip}>{tt('canvas.composerLinked', { count: linkedCount })}</span>
       </div> : null}
       <div className={css.composerControls}>
-        <select value={composerModel} onChange={(event: ChangeEvent<HTMLSelectElement>) => setComposerModel(event.target.value)} aria-label={tt('canvas.model')}>
-          <option value="">{tt('canvas.modelPlaceholder')}</option>
-          {imageModels.map(item => <option key={item} value={item}>{item}</option>)}
-        </select>
-        <select value={composerSize} onChange={event => setComposerSize(event.target.value)} aria-label={tt('canvas.size')}>
-          <option value="auto">{tt('canvas.sizeAuto')}</option>
-          <option value="1:1">1:1</option>
-          <option value="3:4">3:4</option>
-          <option value="16:9">16:9</option>
-          <option value="9:16">9:16</option>
-        </select>
-        <select value={composerQuality} onChange={event => setComposerQuality(event.target.value)} aria-label={tt('canvas.quality')}>
-          <option value="auto">{tt('canvas.qualityAuto')}</option>
-          <option value="1k">1K</option>
-          <option value="2k">2K</option>
-          <option value="4k">4K</option>
-        </select>
-        <select value={composerCount} onChange={event => setComposerCount(Number(event.target.value))} aria-label={tt('canvas.count')}>
-          {[1, 2, 3, 4].map(item => <option key={item} value={item}>{tt('canvas.countUnit', { count: item })}</option>)}
-        </select>
+        <ComposerSelect
+          ariaLabel={tt('canvas.model')}
+          value={composerModel}
+          options={[{ value: '', label: tt('canvas.modelPlaceholder') }, ...imageModels.map(item => ({ value: item, label: item }))]}
+          onChange={setComposerModel}
+        />
+        <ComposerSelect
+          ariaLabel={tt('canvas.size')}
+          value={composerSize}
+          options={[
+            { value: 'auto', label: tt('canvas.sizeAuto') },
+            { value: '1:1', label: '1:1' },
+            { value: '3:4', label: '3:4' },
+            { value: '16:9', label: '16:9' },
+            { value: '9:16', label: '9:16' },
+          ]}
+          onChange={setComposerSize}
+        />
+        <ComposerSelect
+          ariaLabel={tt('canvas.quality')}
+          value={composerQuality}
+          options={[
+            { value: 'auto', label: tt('canvas.qualityAuto') },
+            { value: '1k', label: '1K' },
+            { value: '2k', label: '2K' },
+            { value: '4k', label: '4K' },
+          ]}
+          onChange={setComposerQuality}
+        />
+        <ComposerSelect
+          ariaLabel={tt('canvas.count')}
+          value={String(composerCount)}
+          options={[1, 2, 3, 4].map(item => ({ value: String(item), label: tt('canvas.countUnit', { count: item }) }))}
+          onChange={value => setComposerCount(Number(value))}
+        />
         <button
           type="button"
           className={css.composerSend}
@@ -1555,8 +1772,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     }
     if (createMenu !== null) {
       return <div className={css.contextMenu} style={{ left: createMenu.screen.x, top: createMenu.screen.y }} data-canvas-no-zoom="" role="menu">
-        <button type="button" role="menuitem" onClick={() => { placeNewNode(createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' }, createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="image" />{tt('canvas.addImageNode')}</button>
-        <button type="button" role="menuitem" onClick={() => { placeNewNode(createTextNode(createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="text" />{tt('canvas.addTextNode')}</button>
+        <button type="button" role="menuitem" onClick={() => { placeNewNode(createTextNode(createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="text" size={16} />{tt('canvas.addTextNode')}</button>
+        <button type="button" role="menuitem" onClick={() => { placeNewNode(createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' }, createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="image" size={16} />{tt('canvas.addImageNode')}</button>
+        <button type="button" role="menuitem" onClick={() => { placeNewNode(createConfigNode(createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="sparkle" size={16} />{tt('canvas.addConfigNode')}</button>
       </div>
     }
     return null
@@ -1615,7 +1833,6 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         const target = event.target instanceof Element ? event.target : null
         if (target?.closest('[data-node-id],[data-connection-hit],[data-canvas-no-zoom]')) return
         event.preventDefault()
-        setCreateMenu(null)
         setContextMenu({ type: 'canvas', screen: { x: event.clientX, y: event.clientY }, world: screenToWorld(event.clientX, event.clientY) })
       }}
       onDragOver={event => event.preventDefault()}
@@ -1625,11 +1842,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         className={css.grid}
         style={backgroundMode === 'image' && document?.backgroundImage
           ? { backgroundImage: `url(${document.backgroundImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-          : { backgroundSize: `${gridSize}px ${gridSize}px`, backgroundPosition: `${gridOffsetX}px ${gridOffsetY}px` }}
+          : backgroundMode === 'aurora'
+            ? undefined
+            : { backgroundSize: `${gridSize}px ${gridSize}px`, backgroundPosition: `${gridOffsetX}px ${gridOffsetY}px` }}
         data-mode={backgroundMode}
         aria-hidden="true"
       >
         {backgroundMode === 'image' ? <div className={css.gridScrim} /> : null}
+        {backgroundMode === 'flow' ? <FlowBackground /> : null}
       </div>
       <div className={css.world} style={{ transform: `translate(${document?.viewport.x ?? 0}px, ${document?.viewport.y ?? 0}px) scale(${document?.viewport.k ?? 1})` }}>
         {renderConnections()}
@@ -1643,16 +1863,24 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       className={`${css.dock} ${cursorClass}`}
       data-canvas-no-zoom=""
       onPointerMove={event => {
+        if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true) return
         const dock = event.currentTarget
-        const buttons = [...dock.querySelectorAll<HTMLButtonElement>('.iconButton')]
-        for (const button of buttons) {
-          const rect = button.getBoundingClientRect()
-          const distance = Math.abs(event.clientX - (rect.left + rect.width / 2)) / 40
-          button.style.setProperty('--dock-lift', `${Math.max(0, 4 - distance * 1.5)}px`)
+        const cursorX = event.clientX - dock.getBoundingClientRect().left
+        // CSS-module class names are hashed in the DOM, so match by tag.
+        for (const button of dock.querySelectorAll<HTMLButtonElement>('button')) {
+          // offsetLeft is the layout position, unaffected by the scale transform,
+          // so the magnification wave does not feed back into itself.
+          const distance = Math.abs(cursorX - (button.offsetLeft + button.offsetWidth / 2))
+          const influence = Math.exp(-(distance * distance) / (2 * 48 * 48))
+          button.style.setProperty('--dock-scale', (1 + 0.24 * influence).toFixed(3))
+          button.style.setProperty('--dock-lift', `${(-8 * influence).toFixed(2)}px`)
         }
       }}
       onPointerLeave={event => {
-        for (const button of event.currentTarget.querySelectorAll<HTMLButtonElement>('.iconButton')) button.style.removeProperty('--dock-lift')
+        for (const button of event.currentTarget.querySelectorAll<HTMLButtonElement>('button')) {
+          button.style.setProperty('--dock-scale', '1')
+          button.style.setProperty('--dock-lift', '0px')
+        }
       }}
     >
       <IconButton name="select" size={18} label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
@@ -1694,10 +1922,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onMouseEnter={clearMenuCloseTimer}
       onMouseLeave={scheduleMenuClose}
     >
-      <button type="button" role="menuitem" onClick={() => { imageFileRef.current?.click(); setImageMenu(null) }}><ToolbarIcon name="image" size={16} />{tt('canvas.imageMenuUpload')}</button>
-      <button type="button" role="menuitem" onClick={() => { setPickerTab('gallery'); setPickerOpen(true); setImageMenu(null) }}><ToolbarIcon name="template" size={16} />{tt('canvas.imageMenuAssets')}</button>
-      <button type="button" role="menuitem" onClick={() => { setPickerTab('history'); setPickerOpen(true); setImageMenu(null) }}><ToolbarIcon name="undo" size={16} />{tt('canvas.imageMenuHistory')}</button>
-      <button type="button" role="menuitem" onClick={() => { setPickerTab('generate'); setPickerOpen(true); setImageMenu(null) }}><ToolbarIcon name="sparkle" size={16} />{tt('canvas.imageMenuGenerate')}</button>
+      <button type="button" role="menuitem" onClick={() => { imageFileRef.current?.click(); setImageMenu(null) }}>{tt('canvas.imageMenuUpload')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('gallery'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuAssets')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('history'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuHistory')}</button>
+      <button type="button" role="menuitem" onClick={() => { setPickerTab('generate'); setPickerOpen(true); setImageMenu(null) }}>{tt('canvas.imageMenuGenerate')}</button>
     </div> : null}
     <input
       ref={imageFileRef}
@@ -1738,6 +1966,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ['lines', tt('canvas.backgroundLines')],
         ['diagonal', tt('canvas.backgroundDiagonal')],
         ['checker', tt('canvas.backgroundChecker')],
+        ['flow', tt('canvas.backgroundFlow')],
+        ['aurora', tt('canvas.backgroundAurora')],
         ['blank', tt('canvas.backgroundBlank')],
       ] as const).map(([mode, label]) => <button key={mode} type="button" role="menuitem" data-active={backgroundMode === mode ? '' : undefined} onClick={() => setBackgroundMode(mode)}>{label}</button>)}
       <span className={css.backgroundMenuDivider} />
@@ -1754,6 +1984,19 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           event.target.value = ''
         }}
       />
+    </div> : null}
+
+    {nodeAddMenu !== null ? <div
+      className={css.contextMenu}
+      style={{ left: nodeAddMenu.screen.x + 12, top: nodeAddMenu.screen.y, transform: 'translateY(-50%)' }}
+      data-canvas-no-zoom=""
+      role="menu"
+      onMouseEnter={clearNodeAddMenuTimer}
+      onMouseLeave={scheduleNodeAddMenuClose}
+    >
+      <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createTextNode(position)); setNodeAddMenu(null) }}><ToolbarIcon name="text" size={16} />{tt('canvas.addTextNode')}</button>
+      <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' }, position)); setNodeAddMenu(null) }}><ToolbarIcon name="image" size={16} />{tt('canvas.addImageNode')}</button>
+      {nodeAddMenu.nodeType !== 'config' ? <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createConfigNode(position)); setNodeAddMenu(null) }}><ToolbarIcon name="sparkle" size={16} />{tt('canvas.addConfigNode')}</button> : null}
     </div> : null}
 
     <div className={css.zoomDock} data-canvas-no-zoom="">
@@ -1804,6 +2047,103 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }}
     /> : null}
   </section>
+}
+
+/** Interactive flowmap-style dot field ("fluid distortion"): the pointer's
+ *  velocity pushes dots sideways like a fluid; they spring back home when it
+ *  moves on, with a barely-visible idle drift keeping the field alive. */
+function FlowBackground(): React.JSX.Element {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    // canvas lives inside the grid layer; events must be observed on the
+    // viewport container itself (the grid never receives pointer events).
+    const layer = canvas?.parentElement
+    const viewport = layer?.parentElement
+    if (canvas === null || canvas === undefined || viewport === null || viewport === undefined) return
+    const ctx = canvas.getContext('2d')
+    if (ctx === null) return
+    let disposed = false
+    const pointer = { x: -1e4, y: -1e4, vx: 0, vy: 0, seen: false }
+    const SPACING = 44
+    const RADIUS = 120
+    let width = 0
+    let height = 0
+    let points: Array<{ hx: number; hy: number; x: number; y: number; vx: number; vy: number }> = []
+    const rebuild = (): void => {
+      const rect = viewport.getBoundingClientRect()
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio ?? 1))
+      width = Math.max(1, Math.round(rect.width))
+      height = Math.max(1, Math.round(rect.height))
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      points = []
+      for (let y = SPACING / 2; y < height; y += SPACING) {
+        for (let x = SPACING / 2; x < width; x += SPACING) points.push({ hx: x, hy: y, x, y, vx: 0, vy: 0 })
+      }
+    }
+    rebuild()
+    const observer = new ResizeObserver(rebuild)
+    observer.observe(viewport)
+    const onMove = (event: PointerEvent): void => {
+      const rect = viewport.getBoundingClientRect()
+      const x = event.clientX - rect.left
+      const y = event.clientY - rect.top
+      if (pointer.seen) {
+        pointer.vx = pointer.vx * 0.6 + (x - pointer.x) * 0.4
+        pointer.vy = pointer.vy * 0.6 + (y - pointer.y) * 0.4
+      }
+      pointer.x = x
+      pointer.y = y
+      pointer.seen = true
+    }
+    const onLeave = (): void => { pointer.x = -1e4; pointer.y = -1e4; pointer.vx = 0; pointer.vy = 0 }
+    viewport.addEventListener('pointermove', onMove, true)
+    viewport.addEventListener('pointerleave', onLeave)
+    let frame = 0
+    let time = 0
+    const tick = (): void => {
+      time += 0.016
+      const r2 = RADIUS * RADIUS
+      for (const p of points) {
+        // A barely-visible idle drift keeps the field alive without the pointer.
+        p.vx += (p.hx + Math.sin(time * 1.3 + p.hy * 0.055) * 0.5 - p.x) * 0.03
+        p.vy += (p.hy + Math.cos(time * 1.1 + p.hx * 0.055) * 0.5 - p.y) * 0.03
+        const dx = p.x - pointer.x
+        const dy = p.y - pointer.y
+        const d2 = dx * dx + dy * dy
+        if (d2 < RADIUS * RADIUS && d2 > 0.01) {
+          const d = Math.sqrt(d2)
+          const force = (1 - d / RADIUS) * 0.9
+          p.vx += pointer.vx * force + (dx / d) * force * 2.2
+          p.vy += pointer.vy * force + (dy / d) * force * 2.2
+        }
+        p.vx *= 0.86
+        p.vy *= 0.86
+        p.x += p.vx
+        p.y += p.vy
+      }
+      ctx.clearRect(0, 0, width, height)
+      for (const p of points) {
+        const speed = Math.min(4, Math.hypot(p.vx, p.vy))
+        ctx.fillStyle = `rgba(96, 125, 255, ${(0.16 + speed * 0.16).toFixed(3)})`
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 1.4 + Math.min(1.8, speed * 0.5), 0, Math.PI * 2)
+        ctx.fill()
+      }
+      frame = window.requestAnimationFrame(tick)
+    }
+    frame = window.requestAnimationFrame(tick)
+    return () => {
+      disposed = true
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+      viewport.removeEventListener('pointermove', onMove)
+      viewport.removeEventListener('pointerleave', onLeave)
+    }
+  }, [])
+  return <canvas ref={canvasRef} className={css.flowCanvas} aria-hidden="true" />
 }
 
 function ImagePicker(props: {
@@ -1865,7 +2205,7 @@ function ImagePicker(props: {
     <div className={css.pickerBody}>
       {tab === 'upload' ? <label className={css.uploadBox} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); const files = [...(event.dataTransfer.files ?? [])].filter(file => file.type.startsWith('image/')); if (files.length === 0) return; uploadFiles(files) }}><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy} onChange={event => { const files = [...(event.target.files ?? [])]; if (files.length > 0) uploadFiles(files) }} /><span className={css.uploadIcon}><ToolbarIcon name="image" /></span><strong>{tt('canvas.dropHint')}</strong><small>{tt('canvas.dropSub')}</small></label> : null}
       {(tab === 'history' || tab === 'gallery') ? <><div className={css.pickerGrid}>{items.map(item => <button key={item.key} type="button" role="option" aria-selected={selected.includes(item.key)} className={css.pickerCard} data-selected={selected.includes(item.key) ? '' : undefined} onClick={() => toggle(item.key)}><img draggable={false} src={item.image.url} alt={item.entry.prompt} onLoad={event => { const image = event.currentTarget; setDimensions(previous => ({ ...previous, [item.key]: { width: image.naturalWidth || 1, height: image.naturalHeight || 1 } })) }} /><span className={css.pickerCardPrompt}>{item.entry.prompt || tt('canvas.untitledWork')}</span><small>{item.entry.model} · {item.index + 1}/{item.entry.images.length}</small></button>)}</div><footer className={css.pickerFooter}><span>{tt('canvas.picked', { count: selected.length })}</span><button type="button" disabled={busy || selected.length === 0} onClick={() => { void addSelected() }}>{tt('canvas.addToCanvas')}</button></footer></> : null}
-      {tab === 'generate' ? <div className={css.generateForm}><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={tt('canvas.composerPlaceholder')} /><select value={model} onChange={event => setModel(event.target.value)}>{imageModels.map(item => <option key={item} value={item}>{item}</option>)}</select><div className={css.inspectorRow}><select value={size} onChange={event => setSize(event.target.value)}><option value="auto">{tt('canvas.sizeAuto')}</option><option value="1:1">1:1</option><option value="3:4">3:4</option><option value="16:9">16:9</option><option value="9:16">9:16</option></select><select value={quality} onChange={event => setQuality(event.target.value)}><option value="auto">{tt('canvas.qualityAuto')}</option><option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option></select></div><button type="button" disabled={!connected || busy || prompt.trim() === ''} onClick={() => { void generate() }}><ToolbarIcon name="sparkle" />{tt('canvas.generateAndAdd')}</button>{!connected ? <small>{tt('canvas.needApi')}</small> : null}</div> : null}
+      {tab === 'generate' ? <div className={css.generateForm}><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={tt('canvas.composerPlaceholder')} /><ComposerSelect value={model} options={imageModels.map(item => ({ value: item, label: item }))} ariaLabel={tt('canvas.model')} onChange={setModel} /><div className={css.inspectorRow}><ComposerSelect value={size} options={[{ value: 'auto', label: tt('canvas.sizeAuto') }, { value: '1:1', label: '1:1' }, { value: '3:4', label: '3:4' }, { value: '16:9', label: '16:9' }, { value: '9:16', label: '9:16' }]} ariaLabel={tt('canvas.size')} onChange={setSize} /><ComposerSelect value={quality} options={[{ value: 'auto', label: tt('canvas.qualityAuto') }, { value: '1k', label: '1K' }, { value: '2k', label: '2K' }, { value: '4k', label: '4K' }]} ariaLabel={tt('canvas.quality')} onChange={setQuality} /></div><button type="button" disabled={!connected || busy || prompt.trim() === ''} onClick={() => { void generate() }}><ToolbarIcon name="sparkle" />{tt('canvas.generateAndAdd')}</button>{!connected ? <small>{tt('canvas.needApi')}</small> : null}</div> : null}
     </div>
   </section></div>
 }

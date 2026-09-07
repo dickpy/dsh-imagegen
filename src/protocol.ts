@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.5.7'
+export const PLUGIN_VERSION = '1.5.8'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -324,7 +324,7 @@ export interface CanvasDocument {
   title: string
   revision: number
   viewport: CanvasViewport
-  background: 'dots' | 'lines' | 'diagonal' | 'checker' | 'blank' | 'image'
+  background: 'dots' | 'lines' | 'diagonal' | 'checker' | 'blank' | 'image' | 'flow' | 'aurora'
   /** Custom background image URL (a canvas asset) when background is 'image'. */
   backgroundImage?: string
   nodes: CanvasNode[]

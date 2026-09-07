@@ -76,8 +76,11 @@ const clientConfig: UserConfig = {
   clean: false,
   deps: {
     // Platform modules resolve from the injected require (loader module
-    // table); everything else is inlined by the bundle.
+    // table); everything else is inlined by the bundle. lucide-react must be
+    // forced in: `dependencies` default to external, which a browser bundle
+    // cannot resolve at runtime.
     neverBundle: [...CLIENT_EXTERNALS],
+    alwaysBundle: ['lucide-react'],
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
