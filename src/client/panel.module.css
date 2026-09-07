@@ -1763,6 +1763,13 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   font-variant-numeric: tabular-nums;
 }
 
+/* Over the model's documented prompt limit: red + bold so the locked generate
+   button is self-explanatory (the tooltip repeats the exact limit). */
+.promptCount[data-over] {
+  color: var(--dsw-alias-status-danger, #e5484d);
+  font-weight: 600;
+}
+
 /* --- parameter groups ----------------------------------------------------------- */
 
 .paramGroup {
