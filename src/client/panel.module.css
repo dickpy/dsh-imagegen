@@ -920,21 +920,17 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   padding: 10px 8px 18px;
 }
 
-/* Flat sections in the CapyAI style: plain headings, no card boxes. */
+/* Config cards in the 参考布局 style: elevated white cards, head row with a
+ * count chip, hint line under the title. */
 .ecommerceSection {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 0 0 16px;
-  border: none;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 0;
-  background: transparent;
-}
-
-.ecommerceSection:last-of-type {
-  padding-bottom: 4px;
-  border-bottom: none;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
 .ecommerceSection h3 {
@@ -944,11 +940,45 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   display: flex;
   align-items: baseline;
   gap: 7px;
+  min-width: 0;
 }
 
 .ecommerceSectionHint {
   font-size: 11px;
   font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ecommerceCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ecommerceCardHead h3 {
+  flex: 1;
+  min-width: 0;
+}
+
+.ecommerceCardCount {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.ecommerceCardHint {
+  margin: -4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--dsw-alias-label-tertiary);
 }
 
@@ -1321,6 +1351,25 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   gap: 16px;
 }
 
+/* 套图结果左右布局:主图组独占左侧大图,其余分组纵排在右侧。 */
+.ecommerceGroups[data-split] {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.ecommerceGroupsSide {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.ecommerceGroup[data-main] .ecommerceGroupGrid {
+  grid-template-columns: 1fr;
+}
+
 .ecommerceGroup {
   display: flex;
   flex-direction: column;
@@ -1355,6 +1404,32 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
+}
+
+/* AI 帮写 icon button, floats at the 参数信息 card's top-right. */
+.ecommerceAiButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
+  color: var(--dsw-alias-brand-primary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ecommerceAiButton:hover {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent);
+}
+
+.ecommerceAiButton:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .ecommerceTaskCard {

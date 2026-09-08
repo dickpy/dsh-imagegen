@@ -17,6 +17,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -353,7 +354,7 @@ function formatTime(timestamp: number): string {
 function defaultEcommerceDraft(): ProductSetDraft {
   return {
     projectId: '', projectName: '', category: '通用商品', platform: '通用', language: '中文', customLanguage: '', size: '1:1',
-    productName: '', sellingPoints: '', protectedFeatures: '', styleHint: '',
+    productName: '', promptInfo: '',
     slots: PRODUCT_SET_SLOTS.map(slot => ({ ...slot })),
   }
 }
@@ -377,13 +378,12 @@ function effectiveEcommerceLanguage(draft: ProductSetDraft): string {
 }
 
 function ecommercePrompt(draft: ProductSetDraft, slot: ProductSetSlot): string {
-  const points = draft.sellingPoints.trim() || '突出商品真实材质、结构和核心价值'
-  const protectedFeatures = draft.protectedFeatures.trim() || '保持商品颜色、形状、Logo、包装文字和结构真实，不添加不存在的配件'
+  const info = draft.promptInfo.trim() || '突出商品真实材质、结构和核心价值；保持商品颜色、形状、Logo、包装文字和结构真实，不添加不存在的配件'
   const language = effectiveEcommerceLanguage(draft) || '中文'
   const refClause = slot.refRole !== undefined && slot.refRole !== 'none'
     ? `本图以上传的${ECOMMERCE_ROLE_PROMPT_LABELS[slot.refRole]}图片为参考，商品与风格必须与参考图保持一致；`
     : ''
-  return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${language}。商品卖点：${points}。必须遵守：${protectedFeatures}。${refClause}整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布；${draft.styleHint.trim()}`
+  return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${language}。${refClause}商品信息与要求：${info}。整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布。`
 }
 
 /** Consistency prefix for slots generated after the main image exists. */
@@ -561,6 +561,14 @@ export function ImageGenPanel(props: {
         if (Array.isArray(merged.slots)) {
           merged.slots = merged.slots.map(slot => ({ ...slot, refRole: slot.refRole ?? 'product' }))
         }
+        // Drafts from the three-field era (卖点/保护要素/风格) fold into 参数信息.
+        merged.promptInfo = typeof merged.promptInfo === 'string' ? merged.promptInfo : ''
+        if (merged.promptInfo.trim() === '') {
+          const legacy = [merged.sellingPoints ?? '', merged.protectedFeatures ?? '', merged.styleHint ?? '']
+            .map(part => part.trim())
+            .filter(part => part !== '')
+          if (legacy.length > 0) merged.promptInfo = legacy.join('\n')
+        }
         return merged
       }
     } catch { /* ignore malformed or unavailable storage */ }
@@ -568,6 +576,7 @@ export function ImageGenPanel(props: {
   })
   const [ecommercePreview, setEcommercePreview] = useState(false)
   const [ecommerceGenerating, setEcommerceGenerating] = useState(false)
+  const [ecommerceEnhancing, setEcommerceEnhancing] = useState(false)
   const [ecommerceProjectId, setEcommerceProjectId] = useState<string | null>(null)
   const [ecommerceAssets, setEcommerceAssets] = useState<ProductAsset[]>([])
   /** History-restored product set currently shown in the results canvas. */
@@ -827,6 +836,34 @@ export function ImageGenPanel(props: {
     }
   }
 
+  /** AI 帮写:整理/补全电商参数信息(提示词),走提示词增强通道。 */
+  const ecommerceEnhanceInfo = async (): Promise<void> => {
+    if (ecommerceEnhancing) return
+    const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || configured
+    if ((config?.promptModel ?? '').trim() === '' || !promptEndpointConfigured || (!promptKeySet && !apiKeySet)) {
+      openSettingsGuide('enhancement')
+      return
+    }
+    setEcommerceEnhancing(true)
+    setError(null)
+    try {
+      const instruction = [
+        '你是电商图文策划。请把下面的商品信息整理成一段可直接用于 AI 生图提示词的中文参数描述(120 字以内),',
+        '涵盖商品主体、规格材质、核心卖点与必须保留的特征;信息缺失处按商品类目合理补全,不要解释,只输出整理结果。',
+        `商品名称:${ecommerce.productName.trim() || '未提供'}`,
+        `商品类目:${ecommerce.category}`,
+        `商品平台:${ecommerce.platform}`,
+        `已有信息:${ecommerce.promptInfo.trim() !== '' ? ecommerce.promptInfo : '无,请根据商品名称与类目合理补全'}`,
+      ].join('\n')
+      const result = await api.enhancePrompt(instruction)
+      setEcommerce(previous => ({ ...previous, promptInfo: result }))
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setEcommerceEnhancing(false)
+    }
+  }
+
   /** Read an uploaded reference image into a data URL. */
   const acceptFile = (file: File | undefined): void => {
     if (file === undefined) return
@@ -846,9 +883,10 @@ export function ImageGenPanel(props: {
     reader.readAsDataURL(file)
   }
 
-  /** Read uploaded product assets into session-only data-URL chips, capped at
-   *  MAX_ECOMMERCE_ASSETS. Each starts as the product-role reference. */
-  const acceptEcommerceFiles = (files: FileList | undefined): void => {
+  /** Read uploaded product assets into session-only data-URL chips. Product
+   *  refs cap at MAX_ECOMMERCE_ASSETS; the style group holds a single image
+   *  that gets replaced on re-upload. */
+  const acceptEcommerceFiles = (files: FileList | undefined, role: 'product' | 'style' = 'product'): void => {
     if (files === undefined) return
     const incoming = Array.from(files).filter(file => file.type.startsWith('image/') && file.size <= REF_IMAGE_MAX_BYTES)
     if (incoming.length === 0) {
@@ -861,7 +899,11 @@ export function ImageGenPanel(props: {
         if (typeof reader.result !== 'string') return
         const dataUrl = reader.result
         setEcommerceAssets(previous => {
-          if (previous.length >= MAX_ECOMMERCE_ASSETS) {
+          if (role === 'style') {
+            const styleAsset = { id: newComparisonId(), dataUrl, name: file.name, role: 'style' as const }
+            return [...previous.filter(item => item.role !== 'style'), styleAsset]
+          }
+          if (previous.filter(item => item.role !== 'style').length >= MAX_ECOMMERCE_ASSETS) {
             setError(tt('ecommerce.assetsFull'))
             return previous
           }
@@ -1059,9 +1101,7 @@ export function ImageGenPanel(props: {
         platform: ecommerce.platform,
         language: ecommerce.language,
         size: ecommerce.size,
-        sellingPoints: ecommerce.sellingPoints,
-        protectedFeatures: ecommerce.protectedFeatures,
-        styleHint: ecommerce.styleHint,
+        promptInfo: ecommerce.promptInfo,
       },
       generatedAt: new Date().toISOString(),
       images: ecommerceMergedItems.map(item => ({
@@ -1494,6 +1534,8 @@ export function ImageGenPanel(props: {
   const ecommerceTotal = ecommerceSlots.reduce((total, slot) => total + slot.count, 0)
   const ecommerceGenerateDisabled = submitting || ecommerceGenerating || ecommerceSlots.length === 0 || ecommerce.productName.trim() === '' || (ecommerce.language === 'custom' && effectiveEcommerceLanguage(ecommerce) === '')
   const ecommerceFileInput = useRef<HTMLInputElement>(null)
+  /** Which group (主图/风格) the shared file input uploads into. */
+  const ecommerceUploadRoleRef = useRef<'product' | 'style'>('product')
   // The results canvas merges live tasks of the active project with restored
   // history entries of the same project; restored slots that were regenerated
   // this session are covered by their live counterparts (same slotKey).
@@ -1522,6 +1564,49 @@ export function ImageGenPanel(props: {
   const ecommerceResultGroups = [...new Set(ecommerceMergedItems.map(item => item.label))]
     .filter(label => label !== '')
     .map(label => ({ label, items: ecommerceMergedItems.filter(item => item.label === label) }))
+  // 套图结果左右布局:主图组独占左侧,其余分组在右侧纵排。live 任务的
+  // slotKey 带序号后缀(main-1),这里按 main 前缀识别主图组。
+  const ecommerceMainGroup = ecommerceResultGroups.find(group => group.items.some(item => item.slotKey === 'main' || item.slotKey.startsWith('main-'))) ?? null
+  const ecommerceSideGroups = ecommerceResultGroups.filter(group => group !== ecommerceMainGroup)
+  const renderEcommerceGroup = (group: { label: string, items: EcommerceResultItem[] }, main = false): React.JSX.Element => (
+    <section key={group.label} className={css.ecommerceGroup} data-ecommerce-group={group.label} data-main={main ? '' : undefined}>
+      <header>
+        <strong>{group.label}</strong>
+        <span>{group.items.filter(item => item.status === 'completed').length}/{group.items.length}</span>
+        <button type="button" className={css.galleryBulkButton} disabled={ecommerceGenerating} onClick={() => { void regenerateEcommerceSlot(group.label) }}>{tt('ecommerce.results.regenerate')}</button>
+      </header>
+      <div className={css.ecommerceGroupGrid}>
+        {group.items.map(item => (
+          <div key={item.id} className={css.ecommerceTaskCard} data-status={item.status}>
+            {item.status === 'completed' && item.images.length > 0 ? item.images.map((image, imageIndex) => (
+              <figure
+                key={imageIndex}
+                className={css.imageCard}
+                role="button"
+                tabIndex={0}
+                title={tt('preview.open')}
+                onClick={() => { openPreview(item.images, imageIndex) }}
+              >
+                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} />
+                <span className={css.ecommerceResultBadge}>{group.label}</span>
+                <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
+                  <a className={css.ecommerceActionChip} href={srcOf(image)} download={`product-${item.slotKey || item.id}-${imageIndex + 1}.${extensionOf(image.mime)}`}>{tt('download')}</a>
+                  <button type="button" className={css.ecommerceActionChip} disabled={galleryAdding} onClick={() => { void addToGallery(image) }}>{tt('gallery.add')}</button>
+                  <button type="button" className={css.ecommerceActionChip} disabled={conversationBusy} onClick={() => { void addImageToConversation(image, imageIndex, `${item.id}:${imageIndex}`) }}>{addingToConversation === `${item.id}:${imageIndex}` ? tt('conversation.adding') : tt('conversation.add')}</button>
+                </span>
+              </figure>
+            )) : (
+              <span className={css.ecommerceTaskState}>
+                <b>{group.label}</b>
+                {tt(`tasks.${item.status}` as never)}
+                {item.error !== undefined ? ` · ${item.error}` : ''}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
   const conversationBusy = addingToConversation !== null || galleryConversationAddingId !== null || historyConversationAddingId !== null
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
@@ -1752,13 +1837,22 @@ export function ImageGenPanel(props: {
             <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
           </a>
         </span>
-        <nav className={css.topNav} role="tablist" aria-label={tt('workspace.label')}>
-          <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab !== 'gallery' ? '' : undefined} onClick={() => { if (workspace !== 'normal' || tab === 'gallery') openTab('text') }}>{tt('workspace.normal')}</button>
-          <button type="button" className={css.topNavItem} data-active={workspace === 'normal' && tab === 'gallery' ? '' : undefined} onClick={() => { openTab('gallery') }}>{tt('gallery.title')}</button>
-          <span className={css.topNavDivider} aria-hidden="true" />
-          <button type="button" className={css.topNavItem} data-active={workspace === 'canvas' ? '' : undefined} onClick={() => { setWorkspace('canvas') }}>{tt('workspace.canvas')}</button>
-          <button type="button" className={css.topNavItem} data-active={workspace === 'ecommerce' ? '' : undefined} onClick={() => { setWorkspace('ecommerce') }}>{tt('workspace.ecommerce')}<span className={css.previewBadge}>{tt('ecommerce.badge')}</span></button>
-        </nav>
+        <GooeyNav
+          ariaLabel={tt('workspace.label')}
+          activeIndex={workspace === 'normal' ? (tab === 'gallery' ? 1 : 0) : workspace === 'canvas' ? 2 : 3}
+          onSelect={index => {
+            if (index === 0) openTab('text')
+            else if (index === 1) openTab('gallery')
+            else if (index === 2) setWorkspace('canvas')
+            else setWorkspace('ecommerce')
+          }}
+          items={[
+            { key: 'normal', label: tt('workspace.normal') },
+            { key: 'gallery', label: tt('gallery.title') },
+            { key: 'canvas', label: tt('workspace.canvas') },
+            { key: 'ecommerce', label: <>{tt('workspace.ecommerce')}<span className={css.previewBadge}>{tt('ecommerce.badge')}</span></> },
+          ]}
+        />
         <span className={css.panelHeaderActions}>
           <button
             type="button"
@@ -1883,30 +1977,13 @@ export function ImageGenPanel(props: {
             {workspace === 'ecommerce' ? (
               <section className={css.ecommerceWorkspace} data-ecommerce-workspace="">
                 <div className={css.ecommerceSection}>
-                  <h3>{tt('ecommerce.product')}</h3>
-                  <label className={css.ecommerceField}>
-                    <span className={css.ecommerceFieldLabel}>{tt('ecommerce.productName')}</span>
-                    <input value={ecommerce.productName} placeholder={tt('ecommerce.productName')} onChange={event => setEcommerce(previous => ({ ...previous, productName: event.target.value }))} />
-                  </label>
-                  {ecommerceAssets.length === 0 ? (
-                    <button
-                      type="button"
-                      className={css.ecommerceUploadHero}
-                      data-ecommerce-upload=""
-                      onClick={() => { ecommerceFileInput.current?.click() }}
-                      onDragOver={(event) => { event.preventDefault() }}
-                      onDrop={(event) => {
-                        event.preventDefault()
-                        acceptEcommerceFiles(event.dataTransfer.files ?? undefined)
-                      }}
-                    >
-                      <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 10V3.5"/><path d="M5.5 5.5L8 3l2.5 2.5"/><path d="M3 9.5V12a1.5 1.5 0 001.5 1.5h7A1.5 1.5 0 0013 12V9.5"/></svg>
-                      <span>{tt('ecommerce.uploadRef')}</span>
-                      <small>{tt('edit.uploadHint')}</small>
-                    </button>
-                  ) : (
+                  <header className={css.ecommerceCardHead}>
+                    <h3>{tt('ecommerce.productRefTitle')}<small className={css.ecommerceSectionHint}>{tt('ecommerce.productRefHint')}</small></h3>
+                    <span className={css.ecommerceCardCount}>{ecommerceAssets.filter(asset => asset.role !== 'style').length}/{MAX_ECOMMERCE_ASSETS}</span>
+                  </header>
+                  {ecommerceAssets.some(asset => asset.role !== 'style') ? (
                     <div className={css.ecommerceAssets}>
-                      {ecommerceAssets.map(asset => (
+                      {ecommerceAssets.filter(asset => asset.role !== 'style').map(asset => (
                         <div key={asset.id} className={css.ecommerceAsset} data-ecommerce-asset="">
                           <img src={asset.dataUrl} alt={asset.name} />
                           <select
@@ -1915,24 +1992,24 @@ export function ImageGenPanel(props: {
                             aria-label={tt('ecommerce.refSelect')}
                             onChange={event => setEcommerceAssets(previous => previous.map(item => item.id === asset.id ? { ...item, role: event.target.value as EcommerceAssetRole } : item))}
                           >
-                            {ECOMMERCE_ASSET_ROLES.map(role => (
+                            {ECOMMERCE_ASSET_ROLES.filter(role => role !== 'style').map(role => (
                               <option key={role} value={role}>{tt(`ecommerce.role.${role}` as never)}</option>
                             ))}
                           </select>
                           <button type="button" aria-label={tt('edit.remove')} onClick={() => { setEcommerceAssets(previous => previous.filter(item => item.id !== asset.id)) }}>×</button>
                         </div>
                       ))}
-                      {ecommerceAssets.length < MAX_ECOMMERCE_ASSETS ? (
+                      {ecommerceAssets.filter(asset => asset.role !== 'style').length < MAX_ECOMMERCE_ASSETS ? (
                         <button
                           type="button"
                           className={css.ecommerceAssetAdd}
                           data-ecommerce-upload=""
                           title={tt('ecommerce.uploadRef')}
-                          onClick={() => { ecommerceFileInput.current?.click() }}
+                          onClick={() => { ecommerceUploadRoleRef.current = 'product'; ecommerceFileInput.current?.click() }}
                           onDragOver={(event) => { event.preventDefault() }}
                           onDrop={(event) => {
                             event.preventDefault()
-                            acceptEcommerceFiles(event.dataTransfer.files ?? undefined)
+                            acceptEcommerceFiles(event.dataTransfer.files ?? undefined, 'product')
                           }}
                         >
                           <span aria-hidden="true">＋</span>
@@ -1940,7 +2017,78 @@ export function ImageGenPanel(props: {
                         </button>
                       ) : null}
                     </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className={css.ecommerceUploadHero}
+                      data-ecommerce-upload=""
+                      onClick={() => { ecommerceUploadRoleRef.current = 'product'; ecommerceFileInput.current?.click() }}
+                      onDragOver={(event) => { event.preventDefault() }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        acceptEcommerceFiles(event.dataTransfer.files ?? undefined, 'product')
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 10V3.5"/><path d="M5.5 5.5L8 3l2.5 2.5"/><path d="M3 9.5V12a1.5 1.5 0 001.5 1.5h7A1.5 1.5 0 0013 12V9.5"/></svg>
+                      <span>{tt('ecommerce.uploadRef')}</span>
+                      <small>{tt('edit.uploadHint')}</small>
+                    </button>
                   )}
+                </div>
+                <div className={css.ecommerceSection}>
+                  <header className={css.ecommerceCardHead}>
+                    <h3>{tt('ecommerce.styleRefTitle')}<small className={css.ecommerceSectionHint}>({tt('ecommerce.styleRefBadge')})</small></h3>
+                    <span className={css.ecommerceCardCount}>{ecommerceAssets.some(asset => asset.role === 'style') ? 1 : 0}/1</span>
+                  </header>
+                  <p className={css.ecommerceCardHint}>{tt('ecommerce.styleRefHint')}</p>
+                  {ecommerceAssets.some(asset => asset.role === 'style') ? (
+                    <div className={css.ecommerceAssets}>
+                      {ecommerceAssets.filter(asset => asset.role === 'style').map(asset => (
+                        <div key={asset.id} className={css.ecommerceAsset} data-ecommerce-asset="">
+                          <img src={asset.dataUrl} alt={asset.name} />
+                          <button type="button" aria-label={tt('edit.remove')} onClick={() => { setEcommerceAssets(previous => previous.filter(item => item.id !== asset.id)) }}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className={css.ecommerceAssetAdd}
+                      data-ecommerce-upload=""
+                      title={tt('ecommerce.styleRefUpload')}
+                      onClick={() => { ecommerceUploadRoleRef.current = 'style'; ecommerceFileInput.current?.click() }}
+                      onDragOver={(event) => { event.preventDefault() }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        acceptEcommerceFiles(event.dataTransfer.files ?? undefined, 'style')
+                      }}
+                    >
+                      <span aria-hidden="true">＋</span>
+                      <small>{tt('ecommerce.styleRefUpload')}</small>
+                    </button>
+                  )}
+                </div>
+                <div className={css.ecommerceSection}>
+                  <label className={css.ecommerceField}>
+                    <span className={css.ecommerceFieldLabel}>{tt('ecommerce.productName')}</span>
+                    <input value={ecommerce.productName} placeholder={tt('ecommerce.productName')} onChange={event => setEcommerce(previous => ({ ...previous, productName: event.target.value }))} />
+                  </label>
+                </div>
+                <div className={css.ecommerceSection}>
+                  <header className={css.ecommerceCardHead}>
+                    <h3>{tt('ecommerce.refInfoTitle')}<small className={css.ecommerceSectionHint}>({tt('ecommerce.optional')})</small></h3>
+                    <button
+                      type="button"
+                      className={css.ecommerceAiButton}
+                      disabled={ecommerceEnhancing}
+                      title={tt('ecommerce.aiWriteHint')}
+                      onClick={() => { void ecommerceEnhanceInfo() }}
+                    >
+                      <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M8 1.5l1.4 3.6L13 6.5l-3.6 1.4L8 11.5 6.6 7.9 3 6.5l3.6-1.4z"/></svg>
+                      {ecommerceEnhancing ? tt('ecommerce.aiWriting') : tt('ecommerce.aiWrite')}
+                    </button>
+                  </header>
+                  <textarea value={ecommerce.promptInfo} placeholder={tt('ecommerce.promptInfoPlaceholder')} onChange={event => setEcommerce(previous => ({ ...previous, promptInfo: event.target.value }))} />
                 </div>
                 <div className={css.ecommerceSection}>
                   <h3>{tt('ecommerce.params')}</h3>
@@ -1965,18 +2113,14 @@ export function ImageGenPanel(props: {
                       ) : null}
                     </label>
                     <label className={css.ecommerceField}>
-                      <span className={css.ecommerceFieldLabel}>{tt('ecommerce.ratioLabel')}</span>
-                      <select value={ecommerce.size} onChange={event => setEcommerce(previous => ({ ...previous, size: event.target.value }))}>{SIZES.filter(size => size !== 'auto').map(size => <option key={size}>{size}</option>)}</select>
-                    </label>
-                    <label className={css.ecommerceField}>
                       <span className={css.ecommerceFieldLabel}>{tt('ecommerce.categoryLabel')}</span>
                       <select value={ecommerce.category} onChange={event => setEcommerce(previous => ({ ...previous, category: event.target.value }))}><option>通用商品</option><option>食品饮料</option><option>美妆个护</option><option>服装配饰</option><option>家居用品</option><option>3C 数码</option></select>
                     </label>
+                    <label className={css.ecommerceField}>
+                      <span className={css.ecommerceFieldLabel}>{tt('ecommerce.ratioLabel')}</span>
+                      <select value={ecommerce.size} onChange={event => setEcommerce(previous => ({ ...previous, size: event.target.value }))}>{SIZES.filter(size => size !== 'auto').map(size => <option key={size}>{size}</option>)}</select>
+                    </label>
                   </div>
-                </div>
-                <div className={css.ecommerceSection}>
-                  <h3>{tt('ecommerce.sellingTitle')}</h3>
-                  <textarea value={ecommerce.sellingPoints} placeholder={tt('ecommerce.sellingPoints')} onChange={event => setEcommerce(previous => ({ ...previous, sellingPoints: event.target.value }))} />
                 </div>
                 <div className={css.ecommerceSection}>
                   <h3>{tt('ecommerce.setStructure')}<small className={css.ecommerceSectionHint}>{tt('ecommerce.multiSelect')}</small></h3>
@@ -2033,12 +2177,6 @@ export function ImageGenPanel(props: {
                   <select value={modeModels.includes(model) ? model : modeModels[0] ?? ''} aria-label={tt('model.label')} onChange={event => setModel(event.target.value)}>{modeModels.map(option => <option key={option} value={option}>{option}</option>)}</select>
                   <div className={css.optionRow}>{QUALITIES.map(option => <Pill key={option} active={quality === option} onClick={() => { setQuality(option) }} className={css.optionPill}>{tt(`quality.${option}` as const)}</Pill>)}</div>
                 </div>
-                <div className={css.ecommerceSection}>
-                  <h3>{tt('ecommerce.styleTitle')}</h3>
-                  <textarea value={ecommerce.styleHint} placeholder={tt('ecommerce.styleHint')} onChange={event => setEcommerce(previous => ({ ...previous, styleHint: event.target.value }))} />
-                  <span className={css.ecommerceFieldLabel}>{tt('ecommerce.protectedLabel')}</span>
-                  <textarea value={ecommerce.protectedFeatures} placeholder={tt('ecommerce.protectedFeatures')} onChange={event => setEcommerce(previous => ({ ...previous, protectedFeatures: event.target.value }))} />
-                </div>
                 <input
                   ref={ecommerceFileInput}
                   type="file"
@@ -2046,7 +2184,7 @@ export function ImageGenPanel(props: {
                   accept="image/png,image/jpeg,image/webp,image/gif"
                   className={css.hiddenFile}
                   onChange={(event) => {
-                    acceptEcommerceFiles(event.target.files ?? undefined)
+                    acceptEcommerceFiles(event.target.files ?? undefined, ecommerceUploadRoleRef.current)
                     event.target.value = ''
                   }}
                 />
@@ -2456,46 +2594,11 @@ export function ImageGenPanel(props: {
               {ecommerceMergedItems.length === 0 ? (
                 <div className={css.ecommerceResultsEmpty}>{tt('ecommerce.results.empty')}</div>
               ) : (
-                <div className={css.ecommerceGroups}>
-                  {ecommerceResultGroups.map(group => (
-                    <section key={group.label} className={css.ecommerceGroup} data-ecommerce-group={group.label}>
-                      <header>
-                        <strong>{group.label}</strong>
-                        <span>{group.items.filter(item => item.status === 'completed').length}/{group.items.length}</span>
-                        <button type="button" className={css.galleryBulkButton} disabled={ecommerceGenerating} onClick={() => { void regenerateEcommerceSlot(group.label) }}>{tt('ecommerce.results.regenerate')}</button>
-                      </header>
-                      <div className={css.ecommerceGroupGrid}>
-                        {group.items.map(item => (
-                          <div key={item.id} className={css.ecommerceTaskCard} data-status={item.status}>
-                            {item.status === 'completed' && item.images.length > 0 ? item.images.map((image, imageIndex) => (
-                              <figure
-                                key={imageIndex}
-                                className={css.imageCard}
-                                role="button"
-                                tabIndex={0}
-                                title={tt('preview.open')}
-                                onClick={() => { openPreview(item.images, imageIndex) }}
-                              >
-                                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} />
-                                <span className={css.ecommerceResultBadge}>{group.label}</span>
-                                <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
-                                  <a className={css.ecommerceActionChip} href={srcOf(image)} download={`product-${item.slotKey || item.id}-${imageIndex + 1}.${extensionOf(image.mime)}`}>{tt('download')}</a>
-                                  <button type="button" className={css.ecommerceActionChip} disabled={galleryAdding} onClick={() => { void addToGallery(image) }}>{tt('gallery.add')}</button>
-                                  <button type="button" className={css.ecommerceActionChip} disabled={conversationBusy} onClick={() => { void addImageToConversation(image, imageIndex, `${item.id}:${imageIndex}`) }}>{addingToConversation === `${item.id}:${imageIndex}` ? tt('conversation.adding') : tt('conversation.add')}</button>
-                                </span>
-                              </figure>
-                            )) : (
-                              <span className={css.ecommerceTaskState}>
-                                <b>{group.label}</b>
-                                {tt(`tasks.${item.status}` as never)}
-                                {item.error !== undefined ? ` · ${item.error}` : ''}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  ))}
+                <div className={css.ecommerceGroups} data-split={ecommerceMainGroup !== null ? 'true' : undefined}>
+                  {ecommerceMainGroup !== null ? renderEcommerceGroup(ecommerceMainGroup, true) : null}
+                  <div className={css.ecommerceGroupsSide}>
+                    {ecommerceSideGroups.map(group => renderEcommerceGroup(group))}
+                  </div>
                 </div>
               )}
             </div>

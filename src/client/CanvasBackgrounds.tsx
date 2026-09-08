@@ -3,6 +3,7 @@
  * receives pointer events, so every listener observes the viewport element. */
 
 import { useEffect, useRef } from 'react'
+import { detectLightSurface } from './surface-theme.ts'
 import css from './canvas-workspace.module.css'
 
 /** Interactive flowmap-style dot field ("fluid distortion"): the pointer's
@@ -631,25 +632,6 @@ const SHADER_QUAD_VERTEX = `
     gl_Position = vec4(position, 1.0);
   }
 `
-
-/** Walk up from the grid layer to the first opaque surface and decide
- *  light vs dark, so the shader backdrops can pick their lightMode ink. */
-function detectLightSurface(element: HTMLElement): boolean {
-  let node: HTMLElement | null = element
-  while (node !== null) {
-    const color = getComputedStyle(node).backgroundColor
-    const match = color.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,]+([\d.]+))?\s*\)/)
-    if (match !== null) {
-      const alpha = match[4] !== undefined ? Number(match[4]) : 1
-      if (alpha >= 0.5) {
-        const luminance = (0.2126 * Number(match[1]) + 0.7152 * Number(match[2]) + 0.0722 * Number(match[3])) / 255
-        return luminance > 0.55
-      }
-    }
-    node = node.parentElement
-  }
-  return false
-}
 
 /** Shared engine for the fullscreen-shader backdrops: compiles one program,
  *  owns the DPR-sized canvas, the rAF loop, viewport resize and smoothed

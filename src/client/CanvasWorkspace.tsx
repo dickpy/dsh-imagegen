@@ -351,6 +351,95 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pickerTab, setPickerTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>('upload')
   const backgroundFileRef = useRef<HTMLInputElement>(null)
+
+  /** reactbits.dev "Dock" port: each tile spring-scales by its distance to the
+   *  pointer (width/height, so neighbours part like the macOS dock) and the
+   *  panel breathes taller while hovered to make room for the labels. */
+  const dockOuterRef = useRef<HTMLDivElement>(null)
+  const dockRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const outer = dockOuterRef.current
+    const dock = dockRef.current
+    if (outer === null || dock === null) return
+    if (typeof window.requestAnimationFrame !== 'function') return
+    const clockNow = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+    const BASE = 34
+    const MAGNIFIED = 50
+    const DISTANCE = 150
+    const REST_HEIGHT = 42
+    const HOVER_HEIGHT = MAGNIFIED + MAGNIFIED / 2 + 4
+    const STIFFNESS = 170
+    const DAMPING = 16
+    const MASS = 0.5
+    const tiles = [...dock.querySelectorAll<HTMLElement>('[data-dock-item]')].map(el => ({ el, size: BASE, velocity: 0 }))
+    let outerSize = REST_HEIGHT
+    let outerVelocity = 0
+    let mouseX = Number.POSITIVE_INFINITY
+    let hovered = false
+    let raf = 0
+    let running = false
+    let last = clockNow()
+    const step = (now: number): void => {
+      const dt = Math.min(0.05, (now - last) / 1000)
+      last = now
+      let settled = true
+      for (const tile of tiles) {
+        let target = BASE
+        if (hovered) {
+          const rect = tile.el.getBoundingClientRect()
+          const distance = Math.abs(mouseX - (rect.left + rect.width / 2))
+          target = BASE + (MAGNIFIED - BASE) * Math.max(0, 1 - distance / DISTANCE)
+        }
+        tile.velocity += ((STIFFNESS * (target - tile.size) - DAMPING * tile.velocity) / MASS) * dt
+        tile.size += tile.velocity * dt
+        if (Math.abs(target - tile.size) > 0.15 || Math.abs(tile.velocity) > 2) settled = false
+        else {
+          tile.size = target
+          tile.velocity = 0
+        }
+        tile.el.style.width = `${tile.size.toFixed(2)}px`
+        tile.el.style.height = `${tile.size.toFixed(2)}px`
+      }
+      const outerTarget = hovered ? HOVER_HEIGHT : REST_HEIGHT
+      outerVelocity += ((STIFFNESS * (outerTarget - outerSize) - DAMPING * outerVelocity) / MASS) * dt
+      outerSize += outerVelocity * dt
+      if (Math.abs(outerTarget - outerSize) > 0.25 || Math.abs(outerVelocity) > 3) settled = false
+      else {
+        outerSize = outerTarget
+        outerVelocity = 0
+      }
+      outer.style.height = `${outerSize.toFixed(2)}px`
+      if (settled) {
+        running = false
+        return
+      }
+      raf = window.requestAnimationFrame(step)
+    }
+    const wake = (): void => {
+      if (running) return
+      running = true
+      last = clockNow()
+      raf = window.requestAnimationFrame(step)
+    }
+    const onPointerMove = (event: PointerEvent): void => {
+      mouseX = event.clientX
+      hovered = true
+      wake()
+    }
+    const onPointerLeave = (): void => {
+      hovered = false
+      mouseX = Number.POSITIVE_INFINITY
+      wake()
+    }
+    dock.addEventListener('pointermove', onPointerMove)
+    dock.addEventListener('pointerleave', onPointerLeave)
+    wake()
+    return () => {
+      window.cancelAnimationFrame(raf)
+      dock.removeEventListener('pointermove', onPointerMove)
+      dock.removeEventListener('pointerleave', onPointerLeave)
+    }
+  }, [])
   const imageFileRef = useRef<HTMLInputElement>(null)
   const [renamingTitle, setRenamingTitle] = useState(false)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false)
@@ -1869,59 +1958,58 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       {emptyState}
     </div>
 
-    <div
-      className={`${css.dock} ${cursorClass}`}
-      data-canvas-no-zoom=""
-      onPointerMove={event => {
-        if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true) return
-        const dock = event.currentTarget
-        const cursorX = event.clientX - dock.getBoundingClientRect().left
-        // CSS-module class names are hashed in the DOM, so match by tag.
-        for (const button of dock.querySelectorAll<HTMLButtonElement>('button')) {
-          // offsetLeft is the layout position, unaffected by the scale transform,
-          // so the magnification wave does not feed back into itself.
-          const distance = Math.abs(cursorX - (button.offsetLeft + button.offsetWidth / 2))
-          const influence = Math.exp(-(distance * distance) / (2 * 48 * 48))
-          button.style.setProperty('--dock-scale', (1 + 0.24 * influence).toFixed(3))
-          button.style.setProperty('--dock-lift', `${(-8 * influence).toFixed(2)}px`)
-        }
-      }}
-      onPointerLeave={event => {
-        for (const button of event.currentTarget.querySelectorAll<HTMLButtonElement>('button')) {
-          button.style.setProperty('--dock-scale', '1')
-          button.style.setProperty('--dock-lift', '0px')
-        }
-      }}
-    >
-      <IconButton name="select" size={18} label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
-      <IconButton name="pan" size={18} label={tt('canvas.toolPan')} active={tool === 'pan'} onClick={() => setTool('pan')} />
-      <span className={css.dockDivider} />
-      <IconButton
-        name="image"
-        size={18}
-        label={tt('canvas.addImage')}
-        active={imageMenu !== null}
-        onClick={event => openDockMenu('image', event.currentTarget)}
-        onMouseEnter={event => openDockMenu('image', event.currentTarget)}
-        onMouseLeave={scheduleMenuClose}
-      />
-      <IconButton name="text" size={18} label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
-      <IconButton name="sparkle" size={18} label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
-      <IconButton name="template" size={18} label={tt('canvas.templateLibrary')} active={libraryOpen} onClick={() => setLibraryOpen(previous => !previous)} />
-      <span className={css.dockDivider} />
-      <IconButton
-        name="background"
-        size={18}
-        label={tt('canvas.background')}
-        active={backgroundMenu !== null}
-        onClick={event => openDockMenu('background', event.currentTarget)}
-        onMouseEnter={event => openDockMenu('background', event.currentTarget)}
-        onMouseLeave={scheduleMenuClose}
-      />
-      <IconButton name="undo" size={18} label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
-      <IconButton name="redo" size={18} label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
-      <span className={css.dockDivider} />
-      <IconButton name="trash" size={18} label={tt('canvas.delete')} disabled={selectedIds.size === 0 && selectedConnectionId === null} onClick={deleteSelection} />
+    <div className={css.dockOuter} data-canvas-no-zoom="" ref={dockOuterRef}>
+      <div className={`${css.dock} ${cursorClass}`} ref={dockRef} data-canvas-no-zoom="" role="toolbar">
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.toolSelect')}>
+          <IconButton name="select" size={18} label={tt('canvas.toolSelect')} active={tool === 'select'} onClick={() => setTool('select')} />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.toolPan')}>
+          <IconButton name="pan" size={18} label={tt('canvas.toolPan')} active={tool === 'pan'} onClick={() => setTool('pan')} />
+        </div>
+        <span className={css.dockDivider} aria-hidden="true" />
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.addImage')}>
+          <IconButton
+            name="image"
+            size={18}
+            label={tt('canvas.addImage')}
+            active={imageMenu !== null}
+            onClick={event => openDockMenu('image', event.currentTarget)}
+            onMouseEnter={event => openDockMenu('image', event.currentTarget)}
+            onMouseLeave={scheduleMenuClose}
+          />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.addText')}>
+          <IconButton name="text" size={18} label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.addConfigNode')}>
+          <IconButton name="sparkle" size={18} label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.templateLibrary')}>
+          <IconButton name="template" size={18} label={tt('canvas.templateLibrary')} active={libraryOpen} onClick={() => setLibraryOpen(previous => !previous)} />
+        </div>
+        <span className={css.dockDivider} aria-hidden="true" />
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.background')}>
+          <IconButton
+            name="background"
+            size={18}
+            label={tt('canvas.background')}
+            active={backgroundMenu !== null}
+            onClick={event => openDockMenu('background', event.currentTarget)}
+            onMouseEnter={event => openDockMenu('background', event.currentTarget)}
+            onMouseLeave={scheduleMenuClose}
+          />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.undo')}>
+          <IconButton name="undo" size={18} label={tt('canvas.undo')} disabled={pastRef.current.length === 0} onClick={undo} />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.redo')}>
+          <IconButton name="redo" size={18} label={tt('canvas.redo')} disabled={futureRef.current.length === 0} onClick={redo} />
+        </div>
+        <span className={css.dockDivider} aria-hidden="true" />
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.delete')}>
+          <IconButton name="trash" size={18} label={tt('canvas.delete')} disabled={selectedIds.size === 0 && selectedConnectionId === null} onClick={deleteSelection} />
+        </div>
+      </div>
     </div>
 
     {imageMenu !== null ? <div
