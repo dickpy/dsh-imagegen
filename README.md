@@ -56,6 +56,10 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 
 </details>
 
+<div align="center">
+  <img src="docs/images/infinite-canvas-demo.gif" alt="无限画布演示：连线节点、悬停快速添加与弹簧 Dock" width="100%" />
+</div>
+
 <a id="canvas"></a>
 ## 无限画布
 
