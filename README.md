@@ -8,10 +8,6 @@
   <a href="https://github.com/dickpy/dsh-imagegen"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-111827" alt="Platform" /></a>
 </p>
 
-<p align="center">
-  <img src="docs/images/imagegen-overview.png" alt="dsh-imagegen：三栏生图工作台与灵感案例墙" width="100%" />
-</p>
-
 <div align="center">
 
 ## DeepSeek Harness 最好用的 AI 生图工作台
@@ -111,8 +107,8 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 点击“新会话 / 生图”中的“生图”Tab，工作区按“历史记录 | 生图区 | AI 对话”三栏排列：文生图一句提示词起步，图生图上传参考图精准改图；顶部导航可在普通生图、画廊、无限画布与电商模式之间切换。右侧对话面板默认收起，点击头部的「对话」按钮随时展开；参数栏宽度可拖拽调整并自动记忆。
 
 <div align="center">
-  <img src="docs/images/image-generation-studio-three-column.png" alt="三栏工作台" width="100%" />
-  <p><sub>顶部导航切换模式，历史记录 ｜ 生图区 ｜ AI 对话 三栏同屏</sub></p>
+  <img src="docs/images/image-generation-studio-four.png" alt="VisioWork 三栏工作台与多图结果布局" width="100%" />
+  <p><sub>历史记录 ｜ 生图区 ｜ AI 对话 三栏同屏，一次可生成多张，支持全屏缩放与翻页</sub></p>
 </div>
 
 **生成参数与效率**
@@ -123,11 +119,6 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 - **历史记录**：保留提示词、模型与参数（最近 50 条），支持关键词、模型、比例筛选，点击即可恢复参数。
 - **图生图参考图**：支持本地上传或拖拽（≤10MB），也可从结果卡、全屏预览、历史和画廊一键转为参考图。
 - **灵感案例**：空画布自动刷出一批随机模板卡片，点击即把完整提示词填入左侧，不满意点「随机」换一批。
-
-<div align="center">
-  <img src="docs/images/image-generation-studio-four.png" alt="AI 生图工作台四图结果布局" width="100%" />
-  <p><sub>一次生成多张时的结果布局，可全屏缩放、翻页查看</sub></p>
-</div>
 
 <a id="workflow"></a>
 ### 连续编辑：加入对话 → 继续编辑
@@ -140,11 +131,6 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 | **查看** | 工具结果旁 / 工作台画布 / 全屏预览 | 图片内联显示在对应位置，支持缩放、翻页、复制提示词 |
 | **加入对话** | 结果卡或画廊点“加入对话” | 图片进入当前会话，自动适配附件限制，无需手动上传 |
 | **继续编辑** | 对 Agent 说，或输入 `/edit_image …` | 以上一张成图为参考提交图生图，只需描述要改的地方 |
-
-<div align="center">
-  <img src="docs/videos/agent-chat-edit.gif" alt="Agent 对话生图与连续编辑演示" width="100%" />
-  <p><sub><a href="docs/videos/agent-chat-edit.mp4">查看高清 MP4</a> — 从把图片加入对话到 /edit_image 继续修改的完整流程</sub></p>
-</div>
 
 两种继续编辑的方式：
 
