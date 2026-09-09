@@ -272,6 +272,21 @@ export interface CanvasAssetRef {
 
 export type CanvasNodeType = 'image' | 'text' | 'config'
 
+/** One free-hand stroke on a sketch board. Points are normalized to the board
+ *  rect (0..1 on both axes) so the drawing survives resize and raster export. */
+export interface CanvasSketchStroke {
+  color: string
+  /** Stroke width in board pixels (the board's on-screen size at 100% zoom). */
+  width: number
+  points: Array<{ x: number; y: number }>
+}
+
+/** Sketch boards: vector strokes kept in node metadata, rasterized to a PNG
+ *  asset in the background so downstream nodes treat the board like an image. */
+export interface CanvasSketchDrawing {
+  strokes: CanvasSketchStroke[]
+}
+
 export interface CanvasViewport {
   x: number
   y: number
@@ -299,6 +314,8 @@ export interface CanvasNodeMetadata {
   /** Text nodes. */
   text?: string
   fontSize?: number
+  /** Sketch boards: the live drawing behind an image node. */
+  sketch?: CanvasSketchDrawing
 }
 
 export interface CanvasNode {

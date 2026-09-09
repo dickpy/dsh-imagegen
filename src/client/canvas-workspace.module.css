@@ -447,6 +447,149 @@
 
 .textArea::placeholder { color: var(--dsw-alias-label-tertiary); }
 
+/* ------------------------------------------------- sketch board node */
+
+.sketchNode { cursor: default; }
+
+.sketch {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sketchBoardWrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 0 10px;
+}
+
+/* White "paper" board; strokes render on the canvas child at device ratio. */
+.sketchBoard {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-label-primary) 16%, transparent);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.sketchBoard[data-erasing] { cursor: cell; }
+
+.sketchPlaceholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--dsw-alias-label-tertiary);
+  pointer-events: none;
+}
+
+.sketchToolbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px 11px;
+}
+
+.sketchColors {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.sketchSwatch {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.sketchSwatch:hover { transform: scale(1.15); }
+
+.sketchSwatch[data-active] {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 2px var(--dsw-alias-bg-layer-1), 0 0 0 3.5px var(--dsw-alias-brand-primary);
+}
+
+.sketchTools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.sketchWidth {
+  width: 26px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.sketchWidth span {
+  display: block;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-primary);
+}
+
+.sketchWidth:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+.sketchWidth[data-active] {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);
+}
+
+.sketchWidth[data-active] span { background: var(--dsw-alias-brand-primary); }
+
+.sketchToolDivider {
+  width: 1px;
+  height: 14px;
+  margin: 0 3px;
+  background: var(--dsw-alias-border-l1);
+}
+
+.sketchToolBtn {
+  width: 26px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.sketchToolBtn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+
+.sketchToolBtn[data-active] {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);
+  color: var(--dsw-alias-brand-primary);
+}
+
+.sketchToolBtn:disabled { opacity: 0.35; cursor: not-allowed; }
+
 /* --------------------------------------------------- bottom dock */
 
 /* reactbits.dev "Dock" port: dark pill panel; a spring engine (see the dock

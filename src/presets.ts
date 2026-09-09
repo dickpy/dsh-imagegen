@@ -40,8 +40,9 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     id: 'openai-official',
     name: 'OpenAI 官方',
     apiUrl: 'https://api.openai.com/v1',
-    hint: 'OpenAI 官方图像生成接口',
+    hint: 'OpenAI 官方图像生成接口（gpt-image-2.5 支持手绘草图生图）',
     models: [
+      { alias: 'gpt-image-2.5', id: 'gpt-image-2.5' },
       { alias: 'gpt-image-2', id: 'gpt-image-2' },
     ],
   },

@@ -6,11 +6,12 @@
  * as a reference, and results land as new image nodes on the right. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
-  BookOpen, ChevronDown, Copy, Download, FolderX, Hand, Image as ImageIcon, Map as MapIcon, Maximize,
-  MousePointer2, Plus, Redo2, SendHorizonal, Sparkles, Trash2, Type, Undo2, Wallpaper, X,
+  BookOpen, ChevronDown, Copy, Download, Eraser, FolderX, Hand, Image as ImageIcon, Map as MapIcon, Maximize,
+  MousePointer2, Pencil, Plus, Redo2, SendHorizonal, Sparkles, Trash2, Type, Undo2, Wallpaper, X,
 } from 'lucide-react'
-import type { CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasNode, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
+import type { CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasNode, CanvasSketchStroke, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { tt } from './helpers.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
@@ -27,6 +28,14 @@ const IMAGE_NODE_SIZE = { width: 240, height: 240 }
 const TEXT_NODE_SIZE = { width: 280, height: 150 }
 const CONFIG_NODE_SIZE = { width: 320, height: 190 }
 const LEGACY_CONFIG_NODE_SIZE = { width: 240, height: 96 }
+/** Sketch boards keep a fixed frame (header + square-ish board + two tool rows)
+ *  so the normalized strokes always map onto the same rect. */
+const SKETCH_NODE_SIZE = { width: 300, height: 396 }
+const SKETCH_EXPORT_WIDTH = 1024
+const SKETCH_COLORS = ['#1f2328', '#e03131', '#1971c2', '#2f9e44', '#f59f00', '#9c36b5', '#0ca678', '#f06595']
+const SKETCH_WIDTHS = [3, 6, 12]
+const SKETCH_WIDTH_DOTS = [5, 8, 12]
+const SKETCH_ERASER_RADIUS = 16
 const HISTORY_LIMIT = 60
 const WORLD_PAD = 12000
 
@@ -207,7 +216,53 @@ function nodeAnchor(node: CanvasNode, side: 'left' | 'right'): Point {
   return { x: side === 'right' ? node.x + node.width : node.x, y: node.y + node.height / 2 }
 }
 
-type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
+function isSketchNode(node: CanvasNode): boolean {
+  return node.type === 'image' && nodeMetadata(node).sketch !== undefined
+}
+
+/** Draw one normalized stroke onto a 2d context already sized to the board. */
+function drawSketchStroke(ctx: CanvasRenderingContext2D, stroke: CanvasSketchStroke, boardWidth: number, boardHeight: number): void {
+  ctx.strokeStyle = stroke.color
+  ctx.fillStyle = stroke.color
+  ctx.lineWidth = stroke.width
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  const points = stroke.points
+  if (points.length === 0) return
+  if (points.length === 1) {
+    const only = points[0]!
+    ctx.beginPath()
+    ctx.arc(only.x * boardWidth, only.y * boardHeight, stroke.width / 2, 0, Math.PI * 2)
+    ctx.fill()
+    return
+  }
+  ctx.beginPath()
+  points.forEach((point, index) => {
+    const x = point.x * boardWidth
+    const y = point.y * boardHeight
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.stroke()
+}
+
+/** Flatten strokes onto an opaque white PNG sized for gpt-image edits (the
+ *  models treat the sketch as a plain reference image). */
+function rasterizeSketch(strokes: CanvasSketchStroke[], boardWidth: number, boardHeight: number): { dataUrl: string; width: number; height: number } {
+  const scale = SKETCH_EXPORT_WIDTH / Math.max(1, boardWidth)
+  const canvas = globalThis.document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(boardWidth * scale))
+  canvas.height = Math.max(1, Math.round(boardHeight * scale))
+  const ctx = canvas.getContext('2d')
+  if (ctx === null) throw new Error('canvas 2d context unavailable')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.scale(scale, scale)
+  for (const stroke of strokes) drawSketchStroke(ctx, stroke, boardWidth, boardHeight)
+  return { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
+}
+
+type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
 
 /** Lucide icons (stroke matches the DSH line style); one shared component so
  *  every dock/toolbar icon comes from the same well-drawn set. */
@@ -219,6 +274,8 @@ function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number
     case 'pan': return <Hand {...common} />
     case 'image': return <ImageIcon {...common} />
     case 'text': return <Type {...common} />
+    case 'sketch': return <Pencil {...common} />
+    case 'eraser': return <Eraser {...common} />
     case 'trash': return <Trash2 {...common} />
     case 'undo': return <Undo2 {...common} />
     case 'redo': return <Redo2 {...common} />
@@ -259,7 +316,10 @@ function IconButton(props: {
 }
 
 /** Styled dropdown standing in for a native <select> so the composer and the
- * picker match the canvas visual language instead of the OS popup. */
+ *  picker match the canvas visual language instead of the OS popup. The menu
+ *  portals to <body>: ancestors styled with backdrop-filter (the composer's
+ *  glass panel) become containing blocks for position:fixed, which used to
+ *  push the menu off-screen by re-anchoring its viewport coordinates. */
 function ComposerSelect(props: {
   value: string
   options: Array<{ value: string; label: string }>
@@ -272,7 +332,7 @@ function ComposerSelect(props: {
   useEffect(() => {
     if (!open) return
     const close = (event: PointerEvent): void => {
-      if (event.target instanceof Element && buttonRef.current?.contains(event.target) === true) return
+      if (event.target instanceof Element && (buttonRef.current?.contains(event.target) === true || event.target.closest(`.${css.composerSelectMenu}`) !== null)) return
       setOpen(false)
     }
     window.addEventListener('pointerdown', close, true)
@@ -298,7 +358,7 @@ function ComposerSelect(props: {
       <span className={css.composerSelectValue}>{selected?.label ?? ''}</span>
       <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
     </button>
-    {open && position !== null ? <div className={css.composerSelectMenu} style={{ left: position.left, top: position.top, minWidth: position.minWidth }} role="listbox" aria-label={props.ariaLabel}>
+    {open && position !== null ? createPortal(<div className={css.composerSelectMenu} style={{ left: position.left, top: position.top, minWidth: position.minWidth }} role="listbox" aria-label={props.ariaLabel}>
       {props.options.map(option => <button
         key={option.value}
         type="button"
@@ -307,7 +367,7 @@ function ComposerSelect(props: {
         data-selected={option.value === props.value ? '' : undefined}
         onClick={() => { props.onChange(option.value); setOpen(false) }}
       >{option.label}</button>)}
-    </div> : null}
+    </div>, document.body) : null}
   </>
 }
 
@@ -590,6 +650,19 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     }
   }, [canvasCenter])
 
+  /** Sketch boards are image nodes carrying live stroke data; the rasterized
+   *  PNG lands in `metadata.asset` (see SketchBoard) so they join generation
+   *  as ordinary reference images. */
+  const createSketchNode = useCallback((position?: Point): CanvasNode => {
+    const center = position ?? canvasCenter()
+    return {
+      id: newId('node'), type: 'image', title: tt('canvas.sketchNode'),
+      x: Math.round(center.x - SKETCH_NODE_SIZE.width / 2), y: Math.round(center.y - SKETCH_NODE_SIZE.height / 2),
+      width: SKETCH_NODE_SIZE.width, height: SKETCH_NODE_SIZE.height,
+      metadata: { sketch: { strokes: [] }, status: 'idle' },
+    }
+  }, [canvasCenter])
+
   /** A brand-new canvas starts with one text node wired into one config node,
    *  laid out around the visible viewport center so the workflow is obvious. */
   const seedDocument = useCallback((created: CanvasDocument): CanvasDocument => {
@@ -621,6 +694,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       ? { ...node, ...('title' in patch ? { title: patch.title ?? node.title } : {}), ...('x' in patch || 'y' in patch || 'width' in patch || 'height' in patch ? { x: patch.x ?? node.x, y: patch.y ?? node.y, width: patch.width ?? node.width, height: patch.height ?? node.height } : {}), metadata: { ...nodeMetadata(node), ...patch } }
       : node))
   }, [updateNodes])
+
+  /** Sketch board write-backs. Stroke edits bypass history (the board has its
+   *  own stroke-level undo); asset sync happens inside SketchBoard. */
+  const patchSketchStrokes = useCallback((nodeId: string, strokes: CanvasSketchStroke[]): void => {
+    patchNode(nodeId, { sketch: { strokes } })
+  }, [patchNode])
+
+  const patchSketchAsset = useCallback((nodeId: string, asset: CanvasAssetRef | undefined): void => {
+    patchNode(nodeId, { asset, status: asset === undefined ? 'idle' : 'success' })
+  }, [patchNode])
 
   const deleteSelection = useCallback((): void => {
     const ids = selectedIdsRef.current
@@ -1568,11 +1651,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const isConnectTarget = connecting?.targetId === node.id
     const hasImage = asset !== undefined && asset.url !== ''
     const isConfig = node.type === 'config'
+    const isSketch = isSketchNode(node)
     const isTextual = node.type === 'text' || isConfig
     return <div
       key={node.id}
       data-node-id={node.id}
-      className={`${css.node} ${isConfig ? css.configNode : isTextual ? css.textNode : css.imageNode} ${isSelected ? css.nodeSelected : ''} ${isRelated ? css.nodeRelated : ''} ${isConnectTarget ? css.nodeConnectTarget : ''}`}
+      className={`${css.node} ${isSketch ? css.sketchNode : isConfig ? css.configNode : isTextual ? css.textNode : css.imageNode} ${isSelected ? css.nodeSelected : ''} ${isRelated ? css.nodeRelated : ''} ${isConnectTarget ? css.nodeConnectTarget : ''}`}
       style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
       onPointerDown={event => handleNodePointerDown(event, node.id)}
       onContextMenu={event => {
@@ -1583,7 +1667,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }}
     >
       <div className={css.nodeGlow} aria-hidden="true" />
-      {isTextual ? <header className={css.nodeHeader}>
+      {isTextual || isSketch ? <header className={css.nodeHeader}>
         <span className={css.nodeTitle}>{node.title}</span>
       </header> : null}
       {isConfig ? <div className={css.configLinks} data-config-links={node.id}>
@@ -1598,6 +1682,15 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             placeholder={tt('canvas.textPlaceholder')}
             onPointerDown={event => event.stopPropagation()}
             onChange={event => patchNode(node.id, { text: event.target.value })}
+          />
+        : isSketch
+        ? <SketchBoard
+            api={api}
+            node={node}
+            zoom={document?.viewport.k ?? 1}
+            strokes={metadata.sketch?.strokes ?? []}
+            onStrokesChange={strokes => patchSketchStrokes(node.id, strokes)}
+            onAssetChange={asset => patchSketchAsset(node.id, asset)}
           />
         : <div className={css.nodeBody}>
             {hasImage ? <div aria-hidden="true">
@@ -1616,7 +1709,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
                   ? <img src={asset.url} alt={node.title} draggable={false} onDragStart={event => event.preventDefault()} />
                   : <button type="button" className={css.nodeEmpty} onClick={() => imageFileRef.current?.click()}><ToolbarIcon name="image" /><span>{tt('canvas.emptyImageNode')}</span></button>}
           </div>}
-      {isSelected
+      {isSelected && !isSketch
         ? <div className={css.resizeHandle} onPointerDown={event => handleResizeStart(event, node, 'bottom-right')} title={tt('canvas.resizeHint')} />
         : null}
       <div className={`${css.handle} ${css.handleLeft}`} title={tt('canvas.connectHint')} onPointerDown={event => handleConnectStart(event, node.id, 'target')} />
@@ -1853,6 +1946,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       } else {
         items.push({ label: tt('canvas.addImage'), icon: 'image', action: () => setPickerOpen(true) })
         items.push({ label: tt('canvas.addTextNode'), icon: 'text', action: () => placeNewNode(createTextNode(contextMenu.world)) })
+        items.push({ label: tt('canvas.addSketchNode'), icon: 'sketch', action: () => placeNewNode(createSketchNode(contextMenu.world)) })
         items.push({ label: tt('canvas.paste'), icon: 'duplicate', action: () => pasteClipboard(contextMenu.world) })
         items.push({ label: tt('canvas.fitView'), icon: 'fit', action: fitView })
       }
@@ -1863,6 +1957,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (createMenu !== null) {
       return <div className={css.contextMenu} style={{ left: createMenu.screen.x, top: createMenu.screen.y }} data-canvas-no-zoom="" role="menu">
         <button type="button" role="menuitem" onClick={() => { placeNewNode(createTextNode(createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="text" size={16} />{tt('canvas.addTextNode')}</button>
+        <button type="button" role="menuitem" onClick={() => { placeNewNode(createSketchNode(createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="sketch" size={16} />{tt('canvas.addSketchNode')}</button>
         <button type="button" role="menuitem" onClick={() => { placeNewNode(createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' }, createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="image" size={16} />{tt('canvas.addImageNode')}</button>
         <button type="button" role="menuitem" onClick={() => { placeNewNode(createConfigNode(createMenu.world)); setCreateMenu(null) }}><ToolbarIcon name="sparkle" size={16} />{tt('canvas.addConfigNode')}</button>
       </div>
@@ -1980,6 +2075,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         </div>
         <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.addText')}>
           <IconButton name="text" size={18} label={tt('canvas.addText')} onClick={() => placeNewNode(createTextNode())} />
+        </div>
+        <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.addSketch')}>
+          <IconButton name="sketch" size={18} label={tt('canvas.addSketch')} onClick={() => placeNewNode(createSketchNode())} />
         </div>
         <div className={css.dockItem} data-dock-item="" data-label={tt('canvas.addConfigNode')}>
           <IconButton name="sparkle" size={18} label={tt('canvas.addConfigNode')} onClick={() => placeNewNode(createConfigNode())} />
@@ -2099,6 +2197,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onMouseLeave={scheduleNodeAddMenuClose}
     >
       <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createTextNode(position)); setNodeAddMenu(null) }}><ToolbarIcon name="text" size={16} />{tt('canvas.addTextNode')}</button>
+      <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createSketchNode(position)); setNodeAddMenu(null) }}><ToolbarIcon name="sketch" size={16} />{tt('canvas.addSketchNode')}</button>
       <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createImageNode({ assetId: '', url: '', mime: 'image/png', bytes: 0, width: 1, height: 1, origin: 'upload' }, position)); setNodeAddMenu(null) }}><ToolbarIcon name="image" size={16} />{tt('canvas.addImageNode')}</button>
       {nodeAddMenu.nodeType !== 'config' ? <button type="button" role="menuitem" onClick={() => { addConnectedNode(nodeAddMenu.nodeId, position => createConfigNode(position)); setNodeAddMenu(null) }}><ToolbarIcon name="sparkle" size={16} />{tt('canvas.addConfigNode')}</button> : null}
     </div> : null}
@@ -2151,6 +2250,238 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }}
     /> : null}
   </section>
+}
+
+/** Free-hand drawing surface for sketch nodes. Strokes live in node metadata
+ *  (normalized 0..1 board space, so the frame is fixed-size and never rescaled);
+ *  after a short idle the board rasterizes to a white-background PNG and stores
+ *  it as the node asset, which makes the sketch usable as a generation
+ *  reference exactly like any uploaded image node. */
+function SketchBoard(props: {
+  api: ImageGenApi
+  node: CanvasNode
+  /** Current viewport zoom; only used to keep the backing store crisp. */
+  zoom: number
+  strokes: CanvasSketchStroke[]
+  onStrokesChange: (strokes: CanvasSketchStroke[]) => void
+  onAssetChange: (asset: CanvasAssetRef | undefined) => void
+}): React.JSX.Element {
+  const { node, strokes } = props
+  const [color, setColor] = useState(SKETCH_COLORS[0]!)
+  const [widthIndex, setWidthIndex] = useState(1)
+  const [erasing, setErasing] = useState(false)
+  const [drawing, setDrawing] = useState(false)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const strokesRef = useRef(strokes)
+  strokesRef.current = strokes
+  const zoomRef = useRef(props.zoom)
+  zoomRef.current = props.zoom
+  const liveStrokeRef = useRef<CanvasSketchStroke | null>(null)
+  const eraserDragRef = useRef(false)
+  const apiRef = useRef(props.api)
+  apiRef.current = props.api
+  const callbacksRef = useRef({ onStrokesChange: props.onStrokesChange, onAssetChange: props.onAssetChange })
+  callbacksRef.current = { onStrokesChange: props.onStrokesChange, onAssetChange: props.onAssetChange }
+
+  const redraw = useCallback((): void => {
+    const canvas = canvasRef.current
+    if (canvas === null) return
+    const width = canvas.clientWidth
+    const height = canvas.clientHeight
+    if (width < 2 || height < 2) return
+    const dpr = (typeof window.devicePixelRatio === 'number' && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1)
+      * Math.min(3, Math.max(1, zoomRef.current))
+    const backingWidth = Math.round(width * dpr)
+    const backingHeight = Math.round(height * dpr)
+    if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+      canvas.width = backingWidth
+      canvas.height = backingHeight
+    }
+    const ctx = canvas.getContext('2d')
+    if (ctx === null) return
+    ctx.setTransform(backingWidth / width, 0, 0, backingHeight / height, 0, 0)
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, width, height)
+    for (const stroke of strokesRef.current) drawSketchStroke(ctx, stroke, width, height)
+    const live = liveStrokeRef.current
+    if (live !== null) drawSketchStroke(ctx, live, width, height)
+  }, [])
+
+  // Debounced raster sync: every committed stroke state lands as the node's
+  // PNG asset (or clears it when the board is emptied). Token-guarded against
+  // burst edits; a synced-strokes key dedupes re-runs that only happen because
+  // a canvas save round-trip handed React a fresh (but identical) strokes
+  // array — without it every save would trigger a redundant re-upload.
+  const syncTokenRef = useRef(0)
+  const syncedStrokesRef = useRef<string | null>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (canvas === null) return
+    const token = ++syncTokenRef.current
+    const strokesKey = JSON.stringify(strokes)
+    if (syncedStrokesRef.current === strokesKey) return
+    const timer = window.setTimeout(() => {
+      if (syncTokenRef.current !== token) return
+      if (strokes.length === 0) {
+        syncedStrokesRef.current = strokesKey
+        callbacksRef.current.onAssetChange(undefined)
+        return
+      }
+      const width = canvas.clientWidth
+      const height = canvas.clientHeight
+      if (width < 2 || height < 2) return
+      let raster: { dataUrl: string; width: number; height: number }
+      try {
+        raster = rasterizeSketch(strokes, width, height)
+      } catch { return }
+      void apiRef.current.canvasUpload(raster.dataUrl, raster.width, raster.height, { origin: 'upload', originId: `sketch-${node.id}` })
+        .then(asset => {
+          if (syncTokenRef.current !== token) return
+          syncedStrokesRef.current = strokesKey
+          callbacksRef.current.onAssetChange(asset)
+        })
+        .catch(() => { /* board stays usable without the synced reference */ })
+    }, strokes.length === 0 ? 150 : 600)
+    return () => window.clearTimeout(timer)
+  }, [node.id, strokes])
+
+  useEffect(() => { redraw() }, [redraw, strokes, drawing, Math.round(props.zoom * 50)])
+
+  const boardPoint = (event: ReactPointerEvent<HTMLCanvasElement>): Point | null => {
+    const canvas = canvasRef.current
+    if (canvas === null) return null
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return null
+    return {
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+    }
+  }
+
+  const eraseAt = (point: Point): void => {
+    const canvas = canvasRef.current
+    if (canvas === null) return
+    const rect = canvas.getBoundingClientRect()
+    const radiusX = SKETCH_ERASER_RADIUS / rect.width
+    const radiusY = SKETCH_ERASER_RADIUS / rect.height
+    const kept = strokesRef.current.filter(stroke => !stroke.points.some(candidate =>
+      Math.abs(candidate.x - point.x) < radiusX && Math.abs(candidate.y - point.y) < radiusY))
+    if (kept.length !== strokesRef.current.length) callbacksRef.current.onStrokesChange(kept)
+  }
+
+  const onBoardPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>): void => {
+    if (event.button !== 0) return
+    // Keep the stroke off the node-drag / marquee gesture stack.
+    event.stopPropagation()
+    event.preventDefault()
+    const point = boardPoint(event)
+    if (point === null) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    if (erasing) {
+      eraserDragRef.current = true
+      eraseAt(point)
+      return
+    }
+    liveStrokeRef.current = { color, width: SKETCH_WIDTHS[widthIndex]!, points: [point] }
+    setDrawing(true)
+    redraw()
+  }
+
+  const onBoardPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>): void => {
+    if (eraserDragRef.current) {
+      const point = boardPoint(event)
+      if (point !== null) eraseAt(point)
+      return
+    }
+    const live = liveStrokeRef.current
+    if (live === null) return
+    const point = boardPoint(event)
+    if (point === null) return
+    const canvas = canvasRef.current
+    const rect = canvas?.getBoundingClientRect()
+    const last = live.points[live.points.length - 1]!
+    if (rect !== undefined && Math.hypot((point.x - last.x) * rect.width, (point.y - last.y) * rect.height) < 1.5) return
+    live.points.push({ x: Math.round(point.x * 10000) / 10000, y: Math.round(point.y * 10000) / 10000 })
+    redraw()
+  }
+
+  const onBoardPointerUp = (): void => {
+    if (eraserDragRef.current) {
+      eraserDragRef.current = false
+      return
+    }
+    const live = liveStrokeRef.current
+    if (live === null) return
+    liveStrokeRef.current = null
+    setDrawing(false)
+    callbacksRef.current.onStrokesChange([...strokesRef.current, live])
+  }
+
+  return <div className={css.sketch} data-canvas-no-zoom="">
+    <div className={css.sketchBoardWrap}>
+      <canvas
+        ref={canvasRef}
+        className={css.sketchBoard}
+        data-erasing={erasing ? '' : undefined}
+        onPointerDown={onBoardPointerDown}
+        onPointerMove={onBoardPointerMove}
+        onPointerUp={onBoardPointerUp}
+        onPointerCancel={onBoardPointerUp}
+      />
+      {strokes.length === 0 && !drawing ? <span className={css.sketchPlaceholder}>{tt('canvas.sketchPlaceholder')}</span> : null}
+    </div>
+    <div className={css.sketchToolbar} onPointerDown={event => event.stopPropagation()}>
+      <div className={css.sketchColors} role="radiogroup" aria-label={tt('canvas.sketchBrush')}>
+        {SKETCH_COLORS.map(item => <button
+          key={item}
+          type="button"
+          role="radio"
+          aria-checked={item === color && !erasing}
+          data-active={item === color && !erasing ? '' : undefined}
+          className={css.sketchSwatch}
+          style={{ background: item }}
+          title={tt('canvas.sketchBrush')}
+          onClick={() => { setColor(item); setErasing(false) }}
+        />)}
+      </div>
+      <div className={css.sketchTools}>
+        {SKETCH_WIDTHS.map((item, index) => <button
+          key={item}
+          type="button"
+          className={css.sketchWidth}
+          data-active={!erasing && index === widthIndex ? '' : undefined}
+          title={tt('canvas.sketchWidth')}
+          aria-label={`${tt('canvas.sketchWidth')} ${index + 1}`}
+          onClick={() => { setWidthIndex(index); setErasing(false) }}
+        ><span style={{ width: SKETCH_WIDTH_DOTS[index], height: SKETCH_WIDTH_DOTS[index] }} /></button>)}
+        <span className={css.sketchToolDivider} aria-hidden="true" />
+        <button
+          type="button"
+          className={css.sketchToolBtn}
+          data-active={erasing ? '' : undefined}
+          title={tt('canvas.sketchEraser')}
+          aria-label={tt('canvas.sketchEraser')}
+          onClick={() => setErasing(previous => !previous)}
+        ><ToolbarIcon name="eraser" size={14} /></button>
+        <button
+          type="button"
+          className={css.sketchToolBtn}
+          title={tt('canvas.sketchUndo')}
+          aria-label={tt('canvas.sketchUndo')}
+          disabled={strokes.length === 0}
+          onClick={() => callbacksRef.current.onStrokesChange(strokes.slice(0, -1))}
+        ><ToolbarIcon name="undo" size={14} /></button>
+        <button
+          type="button"
+          className={css.sketchToolBtn}
+          title={tt('canvas.sketchClear')}
+          aria-label={tt('canvas.sketchClear')}
+          disabled={strokes.length === 0}
+          onClick={() => callbacksRef.current.onStrokesChange([])}
+        ><ToolbarIcon name="trash" size={14} /></button>
+      </div>
+    </div>
+  </div>
 }
 
 function ImagePicker(props: {
