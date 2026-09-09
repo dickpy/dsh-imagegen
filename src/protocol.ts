@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.5.10'
+export const PLUGIN_VERSION = '1.5.11'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -379,6 +379,9 @@ export interface ProductSetDraft {
   productName: string
   /** 参数信息（提示词）: the merged reference-info field (v1.5.9+). */
   promptInfo: string
+  /** Per-image prompt overrides keyed by `slotKey` (`main-1`, `selling-2`…);
+   *  written from the pre-generation preview board. */
+  promptOverrides?: Record<string, string>
   /** Legacy v1.5.9 separate fields; folded into promptInfo on load. */
   sellingPoints?: string
   protectedFeatures?: string

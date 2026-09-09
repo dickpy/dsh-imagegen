@@ -1351,6 +1351,93 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   gap: 16px;
 }
 
+/* 生成前预览版面: 提交前逐张展示/修改提示词。 */
+.ecommercePromptPreview {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 12px 8px 20px;
+}
+
+.ecommercePromptPreview .ecommerceResultsHeader h3 {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.ecommercePromptPreview .ecommerceResultsHeader > div > span {
+  font-size: 12px;
+}
+
+.ecommercePromptList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ecommercePromptCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  transition: border-color 0.15s ease;
+}
+
+.ecommercePromptCard:focus-within {
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent);
+}
+
+.ecommercePromptCard header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.ecommercePromptBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
+  color: var(--dsw-alias-brand-primary);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+.ecommercePromptAuto {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.ecommercePromptCard textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 104px;
+  padding: 11px 13px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-3);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.ecommercePromptCard textarea:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+
 /* 套图结果左右布局:主图组独占左侧大图,其余分组纵排在右侧。 */
 .ecommerceGroups[data-split] {
   display: grid;

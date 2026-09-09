@@ -386,6 +386,13 @@ function ecommercePrompt(draft: ProductSetDraft, slot: ProductSetSlot): string {
   return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${language}。${refClause}商品信息与要求：${info}。整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布。`
 }
 
+/** Effective prompt for one image of a slot: the per-image override written in
+ *  the pre-generation preview board wins over the auto-composed prompt. */
+function ecommerceSlotPrompt(draft: ProductSetDraft, slot: ProductSetSlot, index: number): string {
+  const override = draft.promptOverrides?.[`${slot.key}-${index + 1}`]
+  return override !== undefined && override.trim() !== '' ? override : ecommercePrompt(draft, slot)
+}
+
 /** Consistency prefix for slots generated after the main image exists. */
 function withAnchorNote(prompt: string): string {
   return '商品套图一致性约束：附件是本套商品的主图，图中商品（外形、颜色、材质、Logo、包装文字）必须与附件完全一致，不得重新发明商品。' + prompt
@@ -979,7 +986,7 @@ export function ImageGenPanel(props: {
       return {
         mode: asset !== undefined ? 'edit' as const : 'text' as const,
         model: modeModels.includes(model) ? model : modeModels[0] ?? '',
-        prompt: ecommercePrompt(ecommerce, slot),
+        prompt: ecommerceSlotPrompt(ecommerce, slot, index),
         size: ecommerce.size,
         quality,
         n: 1,
@@ -2570,7 +2577,53 @@ export function ImageGenPanel(props: {
               )}
             </div>
           ) : null}
-          {workspace === 'ecommerce' ? (
+          {workspace === 'ecommerce' && ecommercePreview ? (
+            <div className={css.ecommercePromptPreview} data-ecommerce-preview="">
+              <header className={css.ecommerceResultsHeader}>
+                <div>
+                  <h3>{tt('ecommerce.previewBoardTitle')}</h3>
+                  <span>{tt('ecommerce.previewBoardHint')}</span>
+                </div>
+                <div className={css.ecommerceResultsActions}>
+                  <button type="button" className={css.galleryBulkButton} onClick={() => { setEcommercePreview(false) }}>{tt('gallery.tagsCancel')}</button>
+                </div>
+              </header>
+              <div className={css.ecommercePromptList}>
+                {ecommerceSlots.filter(slot => slot.enabled).flatMap(slot => Array.from({ length: slot.count }, (_, index) => {
+                  const key = `${slot.key}-${index + 1}`
+                  const override = ecommerce.promptOverrides?.[key] ?? ''
+                  const edited = override.trim() !== ''
+                  return (
+                    <div key={key} className={css.ecommercePromptCard}>
+                      <header>
+                        <span className={css.ecommercePromptBadge}>{slot.label}{slot.count > 1 ? ` · 第 ${index + 1} 张` : ''}</span>
+                        {edited ? (
+                          <button
+                            type="button"
+                            className={css.galleryBulkButton}
+                            onClick={() => setEcommerce(previous => {
+                              const overrides = { ...previous.promptOverrides }
+                              delete overrides[key]
+                              return { ...previous, promptOverrides: overrides }
+                            })}
+                          >
+                            {tt('ecommerce.promptReset')}
+                          </button>
+                        ) : (
+                          <span className={css.ecommercePromptAuto}>{tt('ecommerce.promptAutoHint')}</span>
+                        )}
+                      </header>
+                      <textarea
+                        value={edited ? override : ecommerceSlotPrompt(ecommerce, slot, index)}
+                        onChange={event => setEcommerce(previous => ({ ...previous, promptOverrides: { ...previous.promptOverrides, [key]: event.target.value } }))}
+                        rows={5}
+                      />
+                    </div>
+                  )
+                }))}
+              </div>
+            </div>
+          ) : workspace === 'ecommerce' ? (
             <div className={css.ecommerceResults} data-ecommerce-results="">
               <header className={css.ecommerceResultsHeader}>
                 <div>
