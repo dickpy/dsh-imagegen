@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { CANVAS_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
+import { CANVAS_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasLayerPlan, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -214,6 +214,12 @@ export class ImageGenApi {
   async canvasImport(source: 'history' | 'gallery', entryId: string, imageIndex: number, width: number, height: number): Promise<CanvasAssetRef> {
     const response = await fetch(CANVAS_API.assetImport, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source, entryId, imageIndex, width, height }) })
     return (await readEnvelope<{ ok: true; asset: CanvasAssetRef }>(response)).asset
+  }
+
+  /** Ask the host's chat model to decompose one image into editable layers. */
+  async canvasLayers(image: string): Promise<CanvasLayerPlan> {
+    const response = await fetch(CANVAS_API.layers, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image }) })
+    return (await readEnvelope<{ ok: true; plan: CanvasLayerPlan }>(response)).plan
   }
 
   /** Fetch one template source's list (bundled snapshot or refreshed copy). */

@@ -185,11 +185,26 @@ const upstream = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     const asked = body.messages.at(-1).content
-    const reply = asked === 'think leak'
-      ? '<think>\u9996\u5148\u5206\u6790\u7528\u6237\u9700\u6c42\u2026\uff08\u5927\u6bb5\u63a8\u7406\uff09</think>\nA lighthouse at dusk over a stormy sea.'
-      : asked === 'dangling think'
-        ? '<think>reasoning that never closes'
-        : 'A calm meadow under morning light.'
+    // Vision request (layer decomposition): the canvas route sends a content
+    // array; answer with a fenced JSON plan that also exercises normalization
+    // (background first, a text layer, and one degenerate box to drop).
+    const visionReply = '```json\n'
+      + JSON.stringify({
+        layers: [
+          { kind: 'text', label: '标题', rect: { x: 0.1, y: 0.08, width: 0.6, height: 0.12 }, text: '夏日限定', color: '#FFEE00' },
+          { kind: 'background', label: '背景' },
+          { kind: 'object', label: '人物', rect: { x: 0.3, y: 0.25, width: 0.3, height: 0.6 } },
+          { kind: 'object', label: '退化框', rect: { x: 0.2, y: 0.2, width: 0, height: 0.3 } },
+        ],
+      })
+      + '\n```'
+    const reply = Array.isArray(asked)
+      ? visionReply
+      : asked === 'think leak'
+        ? '<think>\u9996\u5148\u5206\u6790\u7528\u6237\u9700\u6c42\u2026\uff08\u5927\u6bb5\u63a8\u7406\uff09</think>\nA lighthouse at dusk over a stormy sea.'
+        : asked === 'dangling think'
+          ? '<think>reasoning that never closes'
+          : 'A calm meadow under morning light.'
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }))
     return
@@ -900,6 +915,45 @@ await check('C0b prompt enhance strips reasoning-model <think> blocks', async ()
   assert.equal(clean.body.prompt, 'A calm meadow under morning light.')
 })
 
+await check('C0c canvas layer decomposition parses a fenced vision plan and clamps it', async () => {
+  // Unit: the normalizer accepts the documented shape, drops degenerate boxes,
+  // clamps rectangles into the frame, orders background first and de-dupes it.
+  assert.equal(host.normalizeLayerPlan({ layers: [] }), undefined)
+  assert.equal(host.normalizeLayerPlan({ nope: 1 }), undefined)
+  assert.equal(host.normalizeLayerPlan({ layers: [{ kind: 'object' }] }), undefined, 'an object layer without a rect is dropped')
+  const clamped = host.normalizeLayerPlan({
+    layers: [
+      { kind: 'text', label: '  title  ', rect: { x: 0.9, y: 0.9, width: 0.5, height: 0.5 }, text: ' hi ' },
+      { kind: 'text', label: 'no text', rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 } },
+    ],
+  })
+  assert.deepEqual(clamped.layers, [{ kind: 'text', label: 'title', rect: { x: 0.9, y: 0.9, width: 0.1, height: 0.1 }, text: 'hi' }])
+  const ordered = host.normalizeLayerPlan([
+    { kind: 'object', label: 'b', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
+    { kind: 'background', label: 'bg' },
+    { kind: 'background', label: 'bg2' },
+  ])
+  assert.deepEqual(ordered.layers.map(layer => layer.kind), ['background', 'object'])
+  assert.equal(ordered.layers[0].rect, undefined, 'the background layer carries no rect')
+
+  // Route: the browser sends one data URL, the host answers with the plan.
+  const plan = await post('/api/dsh-imagegen/canvas/layers', { image: `data:image/png;base64,${pngBytes.toString('base64')}` })
+  assert.equal(plan.body.ok, true, JSON.stringify(plan.body))
+  assert.deepEqual(plan.body.plan.layers.map(layer => layer.kind), ['background', 'object', 'text'])
+  assert.equal(plan.body.plan.layers[2].text, '夏日限定')
+  assert.equal(plan.body.plan.layers[2].color, '#ffee00', 'hex colors are normalized to lower case')
+  assert.deepEqual(plan.body.plan.layers[1].rect, { x: 0.3, y: 0.25, width: 0.3, height: 0.6 })
+
+  const missing = await post('/api/dsh-imagegen/canvas/layers', {})
+  assert.equal(missing.body.ok, false)
+  assert.equal(missing.body.code, 'bad-request')
+  // A channel without a vision chat model fails with an actionable message.
+  await assert.rejects(
+    host.analyzeLayers({ apiUrl: '', apiKey: '', model: '' }, `data:image/png;base64,${pngBytes.toString('base64')}`),
+    /提示词增强/,
+  )
+})
+
 await check('C1 settings describe serves the redacted namespace', async () => {
   const { status, body } = await post('/api/dsh-imagegen/settings/describe', {})
   assert.equal(status, 200)
@@ -979,7 +1033,7 @@ await check('C5 image model discovery and configured-model allow-list work', asy
   assert.deepEqual(discovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image'])
   const presets = await post('/api/dsh-imagegen/presets', {})
   assert.equal(presets.body.ok, true)
-  assert.deepEqual(presets.body.presets.find(preset => preset.id === 'openai-official').models, [{ alias: 'gpt-image-2', id: 'gpt-image-2' }])
+  assert.deepEqual(presets.body.presets.find(preset => preset.id === 'openai-official').models, [{ alias: 'gpt-image-2.5', id: 'gpt-image-2.5' }, { alias: 'gpt-image-2', id: 'gpt-image-2' }])
   assert.deepEqual(presets.body.presets.find(preset => preset.id === 'zhipu-official').models, [{ alias: 'glm-image', id: 'glm-image' }])
   const rejected = await post('/api/dsh-imagegen/tasks/submit', {
     mode: 'text', model: 'not-configured', prompt: 'a cat', size: 'auto', quality: 'auto', n: 1, detail: '',
@@ -1330,7 +1384,7 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
 await new Promise(resolve => server.close(resolve))
 
 // -------------------------------------------------- D. client bundle shape
-await check('D1 client bundle registers via __ModuleLoader__', () => {
+await check('D1 client bundle registers via __ModuleLoader__ and exposes the canvas raster helpers', () => {
   const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   let handoff
   const sandbox = {
@@ -1380,6 +1434,156 @@ await check('D1 client bundle registers via __ModuleLoader__', () => {
   assert.equal(typeof exportsOf.apply, 'function')
   // Cross-realm array (VM context): compare contents, not identity.
   assert.equal([...exportsOf.inject].join(','), 'slots,locale,connection,sessions,conversation')
+
+  // --- canvas raster helpers (image-ops.ts), reachable only through the bundle
+  // Cross-realm values (VM context): spread into local objects before comparing.
+  const { containRect, rectBetween, rectToPixels, removeBackground, autoRemoveBackground, transparencyRatio, drawAnnotation, compositeAnnotatedResult } = exportsOf
+  // Letterbox: a 200x100 image inside a 100x100 node body.
+  assert.deepEqual({ ...containRect(100, 100, 200, 100) }, { left: 0, top: 25, width: 100, height: 50 })
+  // Dragging across the letterboxed image yields the full normalized rect.
+  assert.deepEqual(
+    { ...rectBetween({ x: 0, y: 25 }, { x: 100, y: 75 }, { left: 0, top: 25, width: 100, height: 50 }) },
+    { x: 0, y: 0, width: 1, height: 1 },
+  )
+  // Drags that leave the image clamp to [0,1] instead of going negative.
+  assert.deepEqual(
+    { ...rectBetween({ x: -50, y: -50 }, { x: 10, y: 37.5 }, { left: 0, top: 25, width: 100, height: 50 }) },
+    { x: 0, y: 0, width: 0.1, height: 0.25 },
+  )
+  // Normalized rect -> pixels, kept inside the canvas bounds.
+  assert.deepEqual({ ...rectToPixels({ x: 0.5, y: 0.5, width: 0.75, height: 0.75 }, 200, 100) }, { x: 100, y: 50, width: 100, height: 50 })
+
+  // Minimal 2D canvas mock: enough of the API for the matting, annotation and
+  // composite helpers (createElement/getImageData/putImageData/drawImage/fillRect
+  // plus destination-out erasing) to run headless.
+  const makeCanvas = (width = 0, height = 0, fill) => {
+    let pixels = null
+    const canvas = { width, height }
+    const ensure = () => {
+      const size = canvas.width * canvas.height * 4
+      if (pixels === null || pixels.length !== size) {
+        pixels = new Uint8ClampedArray(size)
+        if (fill !== undefined) fill(pixels, canvas.width, canvas.height)
+      }
+      return pixels
+    }
+    // `_data` mirrors a real canvas: allocated lazily, filled by drawImage.
+    Object.defineProperty(canvas, '_data', { get: () => ensure(), set: next => { pixels = next } })
+    const drawImage = (source, ...args) => {
+      const dest = ensure()
+      const src = source?._data
+      if (src === undefined) return
+      const sourceWidth = source.width
+      const sourceHeight = source.height
+      let sx = 0
+      let sy = 0
+      let sWidth = sourceWidth
+      let sHeight = sourceHeight
+      let dx = 0
+      let dy = 0
+      let dWidth = canvas.width
+      let dHeight = canvas.height
+      if (args.length === 2) { dx = args[0]; dy = args[1] }
+      else if (args.length === 4) { dx = args[0]; dy = args[1]; dWidth = args[2]; dHeight = args[3] }
+      else if (args.length === 8) { [sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight] = args }
+      for (let y = 0; y < dHeight; y += 1) {
+        const sourceY = Math.min(sourceHeight - 1, sy + Math.floor((y * sHeight) / dHeight))
+        for (let x = 0; x < dWidth; x += 1) {
+          const sourceX = Math.min(sourceWidth - 1, sx + Math.floor((x * sWidth) / dWidth))
+          const from = (sourceY * sourceWidth + sourceX) * 4
+          const to = ((dy + y) * canvas.width + dx + x) * 4
+          if (to < 0 || to + 3 >= dest.length) continue
+          const alpha = src[from + 3] / 255
+          if (alpha === 0) continue
+          for (let channel = 0; channel < 3; channel += 1) {
+            dest[to + channel] = Math.round(src[from + channel] * alpha + dest[to + channel] * (1 - alpha))
+          }
+          dest[to + 3] = Math.round((alpha + (dest[to + 3] / 255) * (1 - alpha)) * 255)
+        }
+      }
+    }
+    const fillRect = (x, y, w, h) => {
+      const dest = ensure()
+      const erase = canvas.__composite === 'destination-out'
+      const hex = /^#([0-9a-f]{6})$/i.exec(String(canvas.__fillStyle ?? ''))
+      const red = hex === null ? 0 : parseInt(hex[1].slice(0, 2), 16)
+      const green = hex === null ? 0 : parseInt(hex[1].slice(2, 4), 16)
+      const blue = hex === null ? 0 : parseInt(hex[1].slice(4, 6), 16)
+      for (let py = Math.max(0, Math.round(y)); py < Math.min(canvas.height, Math.round(y + h)); py += 1) {
+        for (let px = Math.max(0, Math.round(x)); px < Math.min(canvas.width, Math.round(x + w)); px += 1) {
+          const offset = (py * canvas.width + px) * 4
+          if (erase) { dest[offset] = 0; dest[offset + 1] = 0; dest[offset + 2] = 0; dest[offset + 3] = 0 }
+          else { dest[offset] = red; dest[offset + 1] = green; dest[offset + 2] = blue; dest[offset + 3] = 255 }
+        }
+      }
+    }
+    canvas.getContext = () => ({
+      getImageData: () => ({ data: ensure(), width: canvas.width, height: canvas.height }),
+      putImageData: image => { ensure().set(image.data) },
+      drawImage,
+      fillRect,
+      save() {}, restore() {}, strokeRect() {}, fillText() {},
+      measureText: () => ({ width: 8 }),
+      get fillStyle() { return canvas.__fillStyle ?? '#000000' },
+      set fillStyle(value) { canvas.__fillStyle = value },
+      get globalCompositeOperation() { return canvas.__composite ?? 'source-over' },
+      set globalCompositeOperation(value) { canvas.__composite = value },
+    })
+    canvas.toDataURL = () => 'data:image/png;base64,AAAA'
+    ensure()
+    return canvas
+  }
+  // White backdrop with a red square in the middle.
+  const subjectCanvas = makeCanvas(64, 64, (data, width) => {
+    for (let y = 0; y < 64; y += 1) {
+      for (let x = 0; x < 64; x += 1) {
+        const offset = (y * width + x) * 4
+        const subject = x >= 20 && x < 44 && y >= 20 && y < 44
+        data[offset] = subject ? 220 : 255
+        data[offset + 1] = subject ? 40 : 255
+        data[offset + 2] = subject ? 60 : 255
+        data[offset + 3] = 255
+      }
+    }
+  })
+  // image-ops reads globalThis.document inside the VM realm, so the stub has
+  // to live on the sandbox global, not on this module's globalThis.
+  sandbox.document = { createElement: () => makeCanvas() }
+  try {
+    const removed = removeBackground(subjectCanvas)
+    assert.ok(removed.removedRatio > 0.5 && removed.removedRatio < 0.95, `border backdrop removed, got ${removed.removedRatio}`)
+    const output = removed.canvas._data
+    assert.equal(output[0 * 4 + 3], 0, 'the corner is fully transparent')
+    assert.equal(output[(32 * 64 + 32) * 4 + 3], 255, 'the subject stays opaque')
+    assert.equal(output[(32 * 64 + 32) * 4], 220, 'the subject keeps its color')
+    assert.equal(output[(0 * 64 + 32) * 4 + 3], 0, 'the top edge is transparent')
+    assert.ok(transparencyRatio(removed.canvas) > 0.4, 'the cut-out is detected as transparent')
+    // A uniform image has no distinguishable background: nothing is removed.
+    const flat = makeCanvas(32, 32, data => data.fill(200))
+    assert.equal(autoRemoveBackground(flat).removedRatio, 0, 'a flat image is left untouched')
+    // Annotation marks are burned into a copy, not the source.
+    const marked = drawAnnotation(subjectCanvas, [{ rect: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }, index: 0 }])
+    assert.equal(marked.width, 64)
+    assert.equal(marked._data[(0 * 64 + 0) * 4], 255, 'outside the box the pixels are unchanged')
+    assert.equal(subjectCanvas._data[(20 * 64 + 20) * 4], 220, 'the source image is not modified')
+
+    // 标注 composite: the model's "result" keeps the marker everywhere, but the
+    // final image must show generated pixels only inside the box and the clean
+    // original outside it.
+    const modelResult = makeCanvas(64, 64, data => { for (let i = 0; i < data.length; i += 4) { data[i] = 7; data[i + 1] = 7; data[i + 2] = 7; data[i + 3] = 255 } })
+    const cleanOriginal = makeCanvas(64, 64, data => { for (let i = 0; i < data.length; i += 4) { data[i] = 200; data[i + 1] = 200; data[i + 2] = 200; data[i + 3] = 255 } })
+    const composited = compositeAnnotatedResult(modelResult, cleanOriginal, [{ x: 0.25, y: 0.25, width: 0.5, height: 0.5 }], 0)
+    const pixels = composited._data
+    const at = (x, y) => pixels[(y * 64 + x) * 4]
+    assert.equal(at(32, 32), 7, 'inside the box the generated content is kept')
+    assert.equal(at(4, 4), 200, 'outside the box the clean original is restored')
+    assert.equal(at(60, 60), 200, 'the marker in the result is overwritten outside the box')
+    // The inset shaves the marker stroke that sits on the box border.
+    const inset = compositeAnnotatedResult(modelResult, cleanOriginal, [{ x: 0.25, y: 0.25, width: 0.5, height: 0.5 }], 4)._data
+    assert.equal(inset[(16 * 64 + 16) * 4], 200, 'the inset restores the pixels right on the box edge')
+  } finally {
+    delete sandbox.document
+  }
 })
 
 // --------------- E. full client apply in jsdom (mounts the sidebar entry)
@@ -1405,6 +1609,104 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     unobserve() {}
     disconnect() {}
   }
+  // Pointer capture is a no-op here; the annotation drag only needs the events.
+  jsdomWindow.Element.prototype.setPointerCapture = function setPointerCapture() {}
+  jsdomWindow.Element.prototype.releasePointerCapture = function releasePointerCapture() {}
+  jsdomWindow.Element.prototype.hasPointerCapture = function hasPointerCapture() { return true }
+  // Headless 2D canvas: white backdrop with a red square, nearest-neighbour
+  // drawImage (source rect aware, like the real API) and a fixed PNG data URL.
+  const paintSample = (data, width, height) => {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset = (y * width + x) * 4
+        const subject = x >= width * 0.3 && x < width * 0.7 && y >= height * 0.3 && y < height * 0.7
+        data[offset] = subject ? 220 : 255
+        data[offset + 1] = subject ? 40 : 255
+        data[offset + 2] = subject ? 60 : 255
+        data[offset + 3] = 255
+      }
+    }
+  }
+  jsdomWindow.HTMLCanvasElement.prototype.getContext = function getContext(type) {
+    // WebGL backgrounds opt out (the real jsdom build has no GL either).
+    if (type !== '2d') return null
+    const canvas = this
+    const ensure = () => {
+      const size = Math.max(1, canvas.width * canvas.height * 4)
+      if (canvas.__pixels === undefined || canvas.__pixels.length !== size) {
+        canvas.__pixels = new Uint8ClampedArray(size)
+        if (canvas.__painted === true) paintSample(canvas.__pixels, canvas.width, canvas.height)
+      }
+      return canvas.__pixels
+    }
+    const drawImage = (source, ...args) => {
+      const dest = ensure()
+      const src = source?.__pixels
+      if (src === undefined) {
+        canvas.__painted = true
+        paintSample(dest, canvas.width, canvas.height)
+        return
+      }
+      let sx = 0
+      let sy = 0
+      let sWidth = source.width
+      let sHeight = source.height
+      let dx = 0
+      let dy = 0
+      let dWidth = canvas.width
+      let dHeight = canvas.height
+      if (args.length === 2) { dx = args[0]; dy = args[1] }
+      else if (args.length === 4) { dx = args[0]; dy = args[1]; dWidth = args[2]; dHeight = args[3] }
+      else if (args.length === 8) { [sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight] = args }
+      for (let y = 0; y < dHeight; y += 1) {
+        const sourceY = Math.min(source.height - 1, sy + Math.floor((y * sHeight) / dHeight))
+        for (let x = 0; x < dWidth; x += 1) {
+          const sourceX = Math.min(source.width - 1, sx + Math.floor((x * sWidth) / dWidth))
+          const from = (sourceY * source.width + sourceX) * 4
+          const to = ((dy + y) * canvas.width + dx + x) * 4
+          if (to < 0 || to + 3 >= dest.length) continue
+          // Source-over compositing: fully transparent source pixels leave the
+          // destination untouched (the real canvas does the same).
+          const alpha = src[from + 3] / 255
+          if (alpha === 0) continue
+          for (let channel = 0; channel < 3; channel += 1) {
+            dest[to + channel] = Math.round(src[from + channel] * alpha + dest[to + channel] * (1 - alpha))
+          }
+          dest[to + 3] = Math.round((alpha + (dest[to + 3] / 255) * (1 - alpha)) * 255)
+        }
+      }
+    }
+    const fillRect = (x, y, w, h) => {
+      const dest = ensure()
+      const hex = /^#([0-9a-f]{6})$/i.exec(String(canvas.__fillStyle ?? ''))
+      const red = hex === null ? 0 : parseInt(hex[1].slice(0, 2), 16)
+      const green = hex === null ? 0 : parseInt(hex[1].slice(2, 4), 16)
+      const blue = hex === null ? 0 : parseInt(hex[1].slice(4, 6), 16)
+      const erase = canvas.__composite === 'destination-out'
+      for (let py = Math.max(0, Math.round(y)); py < Math.min(canvas.height, Math.round(y + h)); py += 1) {
+        for (let px = Math.max(0, Math.round(x)); px < Math.min(canvas.width, Math.round(x + w)); px += 1) {
+          const offset = (py * canvas.width + px) * 4
+          if (erase) { dest[offset] = 0; dest[offset + 1] = 0; dest[offset + 2] = 0; dest[offset + 3] = 0 }
+          else { dest[offset] = red; dest[offset + 1] = green; dest[offset + 2] = blue; dest[offset + 3] = 255 }
+        }
+      }
+    }
+    return {
+      getImageData: () => ({ data: ensure(), width: canvas.width, height: canvas.height }),
+      putImageData: image => { ensure().set(image.data) },
+      drawImage,
+      fillRect,
+      save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, arc() {}, fill() {},
+      strokeRect() {}, clearRect() {}, fillText() {}, scale() {},
+      measureText: () => ({ width: 8 }),
+      strokeStyle: '', lineWidth: 1, font: '', textBaseline: '', textAlign: '', lineCap: '', lineJoin: '',
+      get fillStyle() { return canvas.__fillStyle ?? '#000000' },
+      set fillStyle(value) { canvas.__fillStyle = value },
+      get globalCompositeOperation() { return canvas.__composite ?? 'source-over' },
+      set globalCompositeOperation(value) { canvas.__composite = value },
+    }
+  }
+  jsdomWindow.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,QUJD'
 
   // Stateful bridge stub: describe + mutate (same wire shapes as the routes).
   // The redacted view never returns the key; the secrets sidecar tracks it.
@@ -1424,6 +1726,22 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   const channelSecrets = () => [{ path: ['channelSecrets', 'default'], set: keyState.set }]
   const mutateCalls = []
   const ecommerceSubmissions = []
+  /** Canvas generation requests submitted from the workspace composer. */
+  const canvasTasks = []
+  /** Documents the workspace persisted through /canvas/save. */
+  const canvasSaves = []
+  const canvasImageAsset = {
+    assetId: `${'a'.repeat(64)}.png`,
+    url: `/api/dsh-imagegen/canvas/asset/${'a'.repeat(64)}.png`,
+    mime: 'image/png',
+    bytes: 128,
+    width: 64,
+    height: 64,
+    origin: 'upload',
+  }
+  let canvasUploads = 0
+  /** Every fetch path the client issued (debug aid for the canvas tools). */
+  const requestPaths = []
   const canvasDocument = {
     version: 2,
     id: 'canvas-smoke',
@@ -1438,6 +1756,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   }
   const fetchStub = async (input, init) => {
     const path = String(input)
+    requestPaths.push(path)
     if (path.endsWith('/settings/describe')) {
       return {
         ok: true,
@@ -1509,6 +1828,51 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     if (path.endsWith('/canvas/read')) {
       return { ok: true, json: async () => ({ ok: true, document: canvasDocument }) }
     }
+    if (path.endsWith('/canvas/save')) {
+      const payload = JSON.parse(init.body)
+      canvasSaves.push(payload.document)
+      return { ok: true, json: async () => ({ ok: true, document: { ...payload.document, revision: payload.document.revision + 1 } }) }
+    }
+    if (path.endsWith('/canvas/asset/upload')) {
+      canvasUploads += 1
+      const payload = JSON.parse(init.body)
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          asset: {
+            assetId: `${String(canvasUploads).padStart(64, 'b')}.png`,
+            url: `/api/dsh-imagegen/canvas/asset/${String(canvasUploads).padStart(64, 'b')}.png`,
+            mime: 'image/png',
+            bytes: 64,
+            width: payload.width,
+            height: payload.height,
+            origin: payload.origin ?? 'upload',
+          },
+        }),
+      }
+    }
+    if (path.endsWith('/canvas/layers')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          plan: {
+            layers: [
+              { kind: 'background', label: '背景' },
+              { kind: 'object', label: '人物', rect: { x: 0.3, y: 0.3, width: 0.4, height: 0.4 } },
+              { kind: 'text', label: '标题', rect: { x: 0.1, y: 0.08, width: 0.6, height: 0.12 }, text: '夏日限定', color: '#ffee00' },
+            ],
+          },
+        }),
+      }
+    }
+    if (path.startsWith('/api/dsh-imagegen/canvas/asset/')) {
+      return {
+        ok: true,
+        blob: async () => new jsdomWindow.Blob([pngBytes], { type: 'image/png' }),
+      }
+    }
     if (path.startsWith('/history/')) {
       return {
         ok: true,
@@ -1566,6 +1930,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     if (path.endsWith('/tasks/submit')) {
       const payload = JSON.parse(init.body)
       ecommerceSubmissions.push(payload)
+      if (payload.canvas !== undefined) canvasTasks.push(payload)
       // Freeze the id eagerly: the json() closure runs after all concurrent
       // submits pushed, so a lazy template literal would hand every response
       // the same id.
@@ -1601,6 +1966,20 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     CustomEvent: jsdomWindow.CustomEvent,
     HTMLElement: jsdomWindow.HTMLElement,
     FileReader: jsdomWindow.FileReader,
+    // image-ops decodes asset URLs through `new Image()`; jsdom never loads
+    // resources, so the stub resolves onload on the next tick.
+    Image: class SmokeImage {
+      constructor() { this.naturalWidth = 0; this.naturalHeight = 0 }
+      set src(value) {
+        this._src = value
+        setTimeout(() => {
+          this.naturalWidth = 64
+          this.naturalHeight = 64
+          this.onload?.()
+        }, 0)
+      }
+      get src() { return this._src }
+    },
     fetch: fetchStub,
     console,
   }
@@ -1741,6 +2120,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Fill the product name through the native value setter (React 18 +
     // jsdom), then open the local plan preview: this must not call the host.
     const nativeInputSetter = Object.getOwnPropertyDescriptor(jsdomWindow.HTMLInputElement.prototype, 'value').set
+    const nativeTextAreaSetter = Object.getOwnPropertyDescriptor(jsdomWindow.HTMLTextAreaElement.prototype, 'value').set
     nativeInputSetter.call(ecommerceName, '测试保温杯')
     ecommerceName.dispatchEvent(new jsdomWindow.Event('input', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 20))
@@ -1935,6 +2315,267 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     canvasSwitch.click()
     await waitForSelector(view, '[data-canvas-workspace]')
     assert.ok(view.querySelector('[data-canvas-workspace]') !== null, 'infinite canvas workspace is mounted')
+
+    // --- canvas image tools: 标注 / 移除背景 / 图层拆分 / 模型选择 ---
+    // The fixture below seeds an image -> config pair, so the whole pipeline can
+    // run headless: draw a box, get a prompt card, generate a boxed edit, cut
+    // out the background, and decompose the picture into layer nodes.
+    canvasDocument.nodes = [
+      { id: 'node-image', type: 'image', title: '图片节点', x: 0, y: 0, width: 240, height: 240, metadata: { asset: canvasImageAsset, status: 'success' } },
+      { id: 'node-config', type: 'config', title: '生成配置', x: 640, y: 0, width: 320, height: 190, metadata: { status: 'idle' } },
+    ]
+    canvasDocument.connections = [{ id: 'edge-fixture', fromNodeId: 'node-image', toNodeId: 'node-config' }]
+    // Leave and re-enter the workspace so it reads the seeded document.
+    ecommerceSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 60))
+    canvasSwitch.click()
+    await waitForSelector(view, '[data-node-id="node-image"]')
+    assert.ok(view.querySelector('[data-node-id="node-image"]') !== null, 'image node rendered from the fixture')
+
+    const waitUntil = async (predicate, timeout = 2500) => {
+      const deadline = Date.now() + timeout
+      while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+      return predicate()
+    }
+    const nodeTool = (nodeId, label) => view.querySelector(`[data-node-id="${nodeId}"] [title^="${label}"]`)
+    assert.ok(nodeTool('node-image', '标注') !== null, '标注 button rendered')
+    assert.ok(nodeTool('node-image', '移除背景') !== null, '移除背景 button rendered')
+    assert.ok(nodeTool('node-image', '图层拆分') !== null, '图层拆分 button rendered')
+    assert.ok(view.querySelector('[data-node-id="node-image"] button[aria-label^="本节点使用的模型"]') !== null, 'node model selector rendered')
+
+    // Enter annotation mode: the image body gains a drawing overlay.
+    nodeTool('node-image', '标注').click()
+    await waitForSelector(view, '[data-node-id="node-image"][data-annotating]')
+    const overlay = view.querySelector('[data-node-id="node-image"] [title^="在图片上拖拽画框"]')
+    assert.ok(overlay !== null, 'annotation overlay mounted')
+    // The 64x64 image letterboxes into a 100x100 overlay: a drag from 10% to
+    // 60% must land as a normalized 0.5 box.
+    overlay.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) })
+    const pointer = (type, x, y) => overlay.dispatchEvent(new jsdomWindow.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }))
+    pointer('pointerdown', 10, 10)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    pointer('pointermove', 60, 60)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    pointer('pointerup', 60, 60)
+    await waitForSelector(view, 'textarea[placeholder^="描述这个框里要改成什么"]')
+    const cardArea = view.querySelector('textarea[placeholder^="描述这个框里要改成什么"]')
+    assert.ok(cardArea !== null, 'releasing the box created a prompt card')
+    assert.ok(view.querySelector('[data-node-id="node-image"][data-annotating]') !== null, 'annotation mode stays active for more boxes')
+    // Delete inside an empty card removes the card itself (the key would look
+    // broken otherwise, since a fresh card has nothing to erase).
+    const firstCardId = cardArea.closest('[data-node-id]').getAttribute('data-node-id')
+    // Make sure the card is on the canvas (a save carrying it landed) before
+    // deleting it, so the assertion below cannot pass on a stale snapshot.
+    assert.ok(await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).some(node => node.id === firstCardId)), 'the prompt card reached the document')
+    cardArea.dispatchEvent(new jsdomWindow.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+    assert.ok(
+      await waitUntil(() => view.querySelector(`[data-node-id="${firstCardId}"]`) === null),
+      'Delete removes an empty text card',
+    )
+    // Draw the box that carries the real prompt.
+    const overlay2 = view.querySelector('[data-node-id="node-image"] [title^="在图片上拖拽画框"]')
+    overlay2.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) })
+    const pointer2 = (type, x, y) => overlay2.dispatchEvent(new jsdomWindow.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }))
+    pointer2('pointerdown', 10, 10)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    pointer2('pointermove', 60, 60)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    pointer2('pointerup', 60, 60)
+    await waitForSelector(view, 'textarea[placeholder^="描述这个框里要改成什么"]')
+    const cardArea2 = view.querySelector('textarea[placeholder^="描述这个框里要改成什么"]')
+    assert.ok(cardArea2 !== null, 'a second box produced a new prompt card')
+    // Type the box prompt; the debounced save carries it into the document.
+    nativeTextAreaSetter.call(cardArea2, '把这里换成一只橘猫')
+    cardArea2.dispatchEvent(new jsdomWindow.Event('input', { bubbles: true }))
+    await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).some(node => node.metadata?.text === '把这里换成一只橘猫'))
+    const savedAfterAnnotation = canvasSaves.at(-1)
+    assert.ok(savedAfterAnnotation !== undefined, 'annotation edit was persisted')
+    const annotationImage = savedAfterAnnotation.nodes.find(node => node.id === 'node-image')
+    assert.equal(annotationImage.metadata.annotations.length, 1, `the box is recorded on the image node: ${JSON.stringify(annotationImage.metadata.annotations)}`)
+    const recordedBox = annotationImage.metadata.annotations[0]
+    assert.deepEqual(
+      { x: recordedBox.x, y: recordedBox.y, width: recordedBox.width, height: recordedBox.height },
+      { x: 0.1, y: 0.1, width: 0.5, height: 0.5 },
+    )
+    const cardNode = savedAfterAnnotation.nodes.find(node => node.id === recordedBox.nodeId)
+    assert.ok(cardNode !== undefined, 'the box links to its prompt card')
+    assert.equal(cardNode.metadata.text, '把这里换成一只橘猫')
+    assert.deepEqual(
+      savedAfterAnnotation.connections.map(connection => `${connection.fromNodeId}->${connection.toNodeId}`),
+      ['node-image->node-config'],
+      'annotation cards are attached, not wired into the graph',
+    )
+    const linkLayer = view.querySelector('[data-annotation-links]')
+    assert.ok(linkLayer !== null, 'annotation leader lines render in their own layer')
+    assert.ok(linkLayer.querySelector('[data-annotation-link]') !== null, 'the box has a leader line')
+    assert.ok(linkLayer.querySelector('circle') !== null, 'the leader line starts with an anchor dot on the box')
+    // The layer must paint above the nodes, otherwise the line hides under the
+    // picture it points at.
+    const imageElementForOrder = view.querySelector('[data-node-id="node-image"]')
+    assert.equal(
+      linkLayer.compareDocumentPosition(imageElementForOrder) & jsdomWindow.Node.DOCUMENT_POSITION_PRECEDING,
+      jsdomWindow.Node.DOCUMENT_POSITION_PRECEDING,
+      'the leader-line layer comes after the nodes in document order',
+    )
+
+    // Generate from the config node: the request must carry the boxed reference.
+    // The earlier settings flow cleared the channel key, so restore it first —
+    // the composer refuses to submit while the plugin reads as disconnected.
+    face.channels.setChannelKey('default', 'sk-new')
+    await face.channels.commit()
+    await new Promise(resolve => setTimeout(resolve, 120))
+    view.querySelector('[data-node-id="node-config"]').dispatchEvent(new jsdomWindow.MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5, button: 0 }))
+    await waitForSelector(view, '[aria-label="生成图片"]')
+    const sendButton = view.querySelector('[aria-label="生成图片"]')
+    // React refuses to invoke click handlers on a disabled control (mirroring
+    // the browser), so wait for the composer to leave the disconnected state.
+    assert.ok(await waitUntil(() => view.querySelector('[aria-label="生成图片"]')?.disabled === false), 'composer enabled after the key is restored')
+    sendButton.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true, cancelable: true }))
+    if (!await waitUntil(() => canvasTasks.length > 0)) {
+      const toast = [...view.querySelectorAll('[role="status"]')].map(element => element.textContent).join(' | ')
+      throw new Error(`no task submitted; toast: ${toast}; requests: ${requestPaths.slice(-6).join(',')}`)
+    }
+    const boxed = canvasTasks[0]
+    assert.equal(boxed.mode, 'edit', 'an annotated generation runs in edit mode')
+    assert.equal(boxed.model, 'gpt-image-2', 'the configured model is used')
+    assert.ok(String(boxed.image).startsWith('data:image/png;base64,'), 'the marked reference is uploaded as a data URL')
+    assert.equal(boxed.refName, 'canvas-annotated.png')
+    assert.ok(boxed.prompt.includes('【局部修改约束】'), 'the box constraint reaches the prompt')
+    assert.ok(boxed.prompt.includes('把这里换成一只橘猫'), 'the card prompt reaches the prompt')
+    assert.ok(boxed.prompt.includes('框 1（左 10%，上 10%，右 60%，下 60%）'), `box coordinates are described: ${boxed.prompt}`)
+    assert.equal(boxed.canvas.sourceNodeId, 'node-image', 'the generation is anchored on the annotated image')
+    assert.equal(boxed.canvas.parentNodeId, 'node-config')
+    // The placeholder remembers the boxes so the finished image can be
+    // composited back onto the clean original (the marker must not survive).
+    assert.ok(
+      await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).some(node => node.metadata?.annotationEdit !== undefined)),
+      'the generated placeholder records the annotated boxes for compositing',
+    )
+
+    // 移除背景: local matting uploads a transparent PNG and adds a result node.
+    nodeTool('node-image', '移除背景').click()
+    assert.ok(
+      await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).some(node => node.metadata?.transparent === true)),
+      'a transparent cut-out node was created',
+    )
+    const savedAfterMatte = canvasSaves.at(-1)
+    const matteNode = savedAfterMatte.nodes.find(node => node.metadata.transparent === true)
+    assert.ok(
+      savedAfterMatte.connections.some(connection => connection.fromNodeId === 'node-image' && connection.toNodeId === matteNode.id),
+      'the cut-out is connected to its source',
+    )
+
+    // 图层拆分: the host plan becomes background / object / text nodes.
+    nodeTool('node-image', '图层拆分').click()
+    assert.ok(
+      await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).filter(node => node.metadata?.layer !== undefined).length >= 3),
+      'the planned layers became nodes',
+    )
+    const savedAfterLayers = canvasSaves.at(-1)
+    const layerNodes = savedAfterLayers.nodes.filter(node => node.metadata.layer !== undefined)
+    assert.deepEqual(layerNodes.map(node => node.metadata.layer.kind).sort(), ['background', 'object', 'text'], 'every planned layer became a node')
+    const layerText = layerNodes.find(node => node.metadata.layer.kind === 'text')
+    assert.equal(layerText.metadata.text, '夏日限定', 'the recognized text lands in an editable text node')
+    assert.equal(layerText.metadata.color, '#ffee00')
+    assert.ok(layerText.metadata.fontSize > 0, 'the text layer keeps an editable font size')
+    const layerObject = layerNodes.find(node => node.metadata.layer.kind === 'object')
+    assert.ok(String(layerObject.metadata.asset.url).startsWith('/api/dsh-imagegen/canvas/asset/'), 'the object layer was uploaded as its own asset')
+    assert.ok(
+      layerNodes.every(node => savedAfterLayers.connections.some(connection => connection.fromNodeId === 'node-image' && connection.toNodeId === node.id)),
+      'every layer node is wired to the source image',
+    )
+
+    // Text cards expose font size, weight and color controls.
+    const textNodeId = layerText.id
+    assert.ok(view.querySelector(`[data-node-id="${textNodeId}"] [aria-label="放大字号"]`) !== null, 'font size controls rendered')
+    assert.ok(view.querySelector(`[data-node-id="${textNodeId}"] [aria-label="加粗"]`) !== null, 'bold control rendered')
+    assert.ok(view.querySelector(`[data-node-id="${textNodeId}"] [aria-label="文字颜色"]`) !== null, 'color control rendered')
+    view.querySelector(`[data-node-id="${textNodeId}"] [aria-label="放大字号"]`).click()
+    view.querySelector(`[data-node-id="${textNodeId}"] [aria-label="文字颜色"]`).click()
+    await waitForSelector(view, `[data-node-id="${textNodeId}"] [title="#e03131"]`)
+    view.querySelector(`[data-node-id="${textNodeId}"] [title="#e03131"]`).click()
+    assert.ok(
+      await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).some(node => node.id === textNodeId && node.metadata?.color === '#e03131')),
+      'the palette writes the text color',
+    )
+    const savedText = canvasSaves.at(-1).nodes.find(node => node.id === textNodeId)
+    assert.ok(savedText.metadata.fontSize > layerText.metadata.fontSize, 'the font size stepper writes metadata')
+
+    // --- layout + interaction regressions ---
+    // Image node chrome no longer covers the picture: no info chips inside the
+    // body, a footer strip instead, and the toolbar hangs below the frame.
+    const imageNode = view.querySelector('[data-node-id="node-image"]')
+    assert.ok(imageNode.querySelector('[data-image-footer]') !== null, 'image node renders an info footer')
+    assert.equal(imageNode.querySelector('[data-toolbar]').getAttribute('data-toolbar'), 'bottom', 'image node toolbar sits below the frame')
+    assert.ok(imageNode.querySelector('[data-image-footer]').textContent.includes('64×64'), 'footer carries the asset size')
+    // Layer nodes are laid out as a column, not stacked on one another.
+    const layerBoxes = layerNodes.map(node => ({ y: node.y, height: node.height })).sort((a, b) => a.y - b.y)
+    for (let index = 1; index < layerBoxes.length; index += 1) {
+      assert.ok(layerBoxes[index].y >= layerBoxes[index - 1].y + layerBoxes[index - 1].height, `layer nodes overlap at index ${index}`)
+    }
+    // The composer survives the image-node tools (the config node stays selected).
+    assert.ok(view.querySelector('[aria-label="生成图片"]') !== null, 'composer still visible after the image-node tools')
+    // Ctrl-clicking another node keeps the config node in the selection, so the
+    // generation bar does not vanish.
+    imageNode.dispatchEvent(new jsdomWindow.MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5, button: 0, ctrlKey: true }))
+    await new Promise(resolve => setTimeout(resolve, 60))
+    assert.ok(view.querySelector('[aria-label="生成图片"]') !== null, 'composer survives a multi-selection containing the config node')
+
+    // The hover toolbar acts on the node under the pointer, not on the
+    // selection: deleting an unselected layer node removes exactly that node.
+    view.querySelector(`[data-node-id="${layerObject.id}"] [title="删除"]`).dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    assert.ok(
+      await waitUntil(() => (canvasSaves.at(-1)?.nodes ?? []).every(node => node.id !== layerObject.id)),
+      'the hovered node was deleted',
+    )
+    const afterDelete = canvasSaves.at(-1)
+    assert.ok(afterDelete.nodes.some(node => node.id === 'node-image'), 'other nodes survive a targeted delete')
+    assert.ok(afterDelete.nodes.some(node => node.id === 'node-config'), 'the config node survives a targeted delete')
+    assert.equal(
+      afterDelete.connections.some(connection => connection.fromNodeId === layerObject.id || connection.toNodeId === layerObject.id),
+      false,
+      'its connections are cleaned up',
+    )
+
+    // --- image node ergonomics: attached cards follow, four corner grips ---
+    const beforeDrag = canvasSaves.at(-1)
+    const imageBefore = beforeDrag.nodes.find(node => node.id === 'node-image')
+    const cardBefore = beforeDrag.nodes.find(node => node.id === cardNode.id)
+    const imageElement = view.querySelector('[data-node-id="node-image"]')
+    imageElement.dispatchEvent(new jsdomWindow.MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }))
+    jsdomWindow.dispatchEvent(new jsdomWindow.MouseEvent('pointermove', { bubbles: true, clientX: 110, clientY: 60, button: 0 }))
+    await new Promise(resolve => setTimeout(resolve, 40))
+    jsdomWindow.dispatchEvent(new jsdomWindow.MouseEvent('pointerup', { bubbles: true, clientX: 110, clientY: 60, button: 0 }))
+    assert.ok(
+      await waitUntil(() => {
+        const moved = (canvasSaves.at(-1)?.nodes ?? []).find(node => node.id === 'node-image')
+        return moved !== undefined && moved.x === imageBefore.x + 100 && moved.y === imageBefore.y + 50
+      }),
+      'the image node moved with the pointer',
+    )
+    const afterDrag = canvasSaves.at(-1)
+    const cardAfter = afterDrag.nodes.find(node => node.id === cardNode.id)
+    assert.equal(cardAfter.x, cardBefore.x + 100, 'the attached prompt card follows its image node horizontally')
+    assert.equal(cardAfter.y, cardBefore.y + 50, 'the attached prompt card follows its image node vertically')
+
+    // Four corner grips, and dragging one resizes (images keep their ratio).
+    const grips = [...view.querySelectorAll('[data-node-id="node-image"] [data-corner]')].map(element => element.getAttribute('data-corner')).sort()
+    assert.deepEqual(grips, ['ne', 'nw', 'se', 'sw'], 'all four resize corners are rendered')
+    const grip = view.querySelector('[data-node-id="node-image"] [data-corner="se"]')
+    grip.dispatchEvent(new jsdomWindow.MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }))
+    jsdomWindow.dispatchEvent(new jsdomWindow.MouseEvent('pointermove', { bubbles: true, clientX: 90, clientY: 40, button: 0 }))
+    await new Promise(resolve => setTimeout(resolve, 40))
+    jsdomWindow.dispatchEvent(new jsdomWindow.MouseEvent('pointerup', { bubbles: true, clientX: 90, clientY: 40, button: 0 }))
+    assert.ok(
+      await waitUntil(() => {
+        const resized = (canvasSaves.at(-1)?.nodes ?? []).find(node => node.id === 'node-image')
+        return resized !== undefined && resized.width > imageBefore.width + 40
+      }),
+      'dragging a corner grip grows the node',
+    )
+    const resizedImage = canvasSaves.at(-1).nodes.find(node => node.id === 'node-image')
+    assert.equal(resizedImage.height, Math.round(resizedImage.width), 'the image keeps its aspect ratio while resizing')
+    assert.equal(resizedImage.x, imageBefore.x + 100, 'the anchored corner stays put')
   } finally {
     if (previousWindow === undefined) delete globalThis.window
     else globalThis.window = previousWindow

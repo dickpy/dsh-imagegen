@@ -16,6 +16,7 @@ import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@d
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
+import { analyzeLayers, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
 import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
@@ -1091,6 +1092,32 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           const asset = await canvas.putImage({ data: found.data, mime: found.mime, width, height, origin: source, originId: entryId, entryId, imageIndex })
           writeJson(res, 200, { ok: true, asset })
         } catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-asset-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------- canvas layer decomposition
+    // The browser sends one image data URL; the host asks the configured chat
+    // model (the prompt-enhancement endpoint) for a strict JSON layer plan.
+    {
+      kind: 'exact',
+      path: CANVAS_API.layers,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const raw = typeof body?.image === 'string' ? body.image.trim() : ''
+        const image = raw === '' ? undefined : imageDataUrl(raw)
+        if (image === undefined) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'image data URL is required' })
+          return
+        }
+        if (image.data.byteLength > MAX_LAYER_IMAGE_BYTES) {
+          writeJson(res, 200, { ok: false, code: 'image-too-large', message: '图片超过 12MB 上限，请先压缩后再拆分图层' })
+          return
+        }
+        try {
+          writeJson(res, 200, { ok: true, plan: await analyzeLayers(resolvePrompt(), raw) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'layer-analysis-failed', message: messageOf(error) })
+        }
       },
     },
     // ------------------------------------------- canvas asset (prefix)

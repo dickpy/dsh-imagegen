@@ -63,6 +63,10 @@ export interface ImageGenPluginItemOwnerProps {
 /** Required services (fiber inject waiting — the runtime must be up first). */
 export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversation']
 
+// Internals re-exported for the standalone smoke test (the browser bundle is
+// the only place these are reachable from Node); not part of the contract.
+export { autoRemoveBackground, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, rectBetween, rectToPixels, removeBackground, transparencyRatio } from './image-ops.ts'
+
 /**
  * Mount the studio, its sidebar entry, and the settings card.
  * @param ctx - client root context (services: slots, locale, connection).

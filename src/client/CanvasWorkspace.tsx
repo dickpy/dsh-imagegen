@@ -5,15 +5,17 @@
  * there (or supplied by connected text nodes), every upstream image node joins
  * as a reference, and results land as new image nodes on the right. */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  BookOpen, ChevronDown, Copy, Download, Eraser, FolderX, Hand, Image as ImageIcon, Map as MapIcon, Maximize,
-  MousePointer2, Pencil, Plus, Redo2, SendHorizonal, Sparkles, Trash2, Type, Undo2, Wallpaper, X,
+  Bold, BookOpen, ChevronDown, Copy, Download, Eraser, FolderX, Hand, Image as ImageIcon, Layers, Map as MapIcon,
+  Maximize, MousePointer2, Palette, Pencil, Plus, Redo2, Scissors, SendHorizonal, Sparkles, SquareDashedMousePointer,
+  Trash2, Type, Undo2, Wallpaper, X,
 } from 'lucide-react'
-import type { CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasNode, CanvasSketchStroke, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
+import type { CanvasAnnotation, CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasLayerInfo, CanvasLayerPlanItem, CanvasNode, CanvasRect, CanvasSketchStroke, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { tt } from './helpers.ts'
+import { autoRemoveBackground, canvasToDataUrl, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { DotFieldBackground, DotGridBackground, FaultyTerminalBackground, FloatingLinesBackground, FlowBackground, GalaxyBackground, LiquidEtherBackground, ShapeGridBackground, SilkBackground, WavesBackground } from './CanvasBackgrounds.tsx'
 import css from './canvas-workspace.module.css'
@@ -38,6 +40,21 @@ const SKETCH_WIDTH_DOTS = [5, 8, 12]
 const SKETCH_ERASER_RADIUS = 16
 const HISTORY_LIMIT = 60
 const WORLD_PAD = 12000
+/** Footprint of the prompt card the 标注 tool drops next to a boxed image. */
+const ANNOTATION_TEXT_SIZE = { width: 268, height: 132 }
+/** Horizontal gap used when new nodes are laid out beside their source. */
+const NODE_GAP = 90
+/** Smallest normalized box the annotation tool accepts (area fraction). */
+const MIN_ANNOTATION_AREA = 0.0004
+/** Text colors offered by the text-node palette (first entry = theme default). */
+const TEXT_COLORS = ['', '#1f2328', '#ffffff', '#e03131', '#1971c2', '#2f9e44', '#f59f00', '#9c36b5']
+/** Layer-split output column: node width and vertical gap (the gap also keeps
+ *  a hover toolbar, which hangs below each image node, off its neighbour). */
+const LAYER_COLUMN_WIDTH = 280
+const LAYER_COLUMN_GAP = 48
+/** Smallest footprint a node can be resized to. */
+const MIN_NODE_WIDTH = 96
+const MIN_NODE_HEIGHT = 64
 
 interface CanvasWorkspaceProps {
   api: ImageGenApi
@@ -90,9 +107,12 @@ interface ConnectState {
   startClient: Point
 }
 
+/** Which corner the pointer grabbed. */
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se'
+
 interface ResizeState {
   nodeId: string
-  corner: 'bottom-right' | 'bottom-left'
+  corner: ResizeCorner
   startX: number
   startY: number
   width: number
@@ -220,6 +240,156 @@ function isSketchNode(node: CanvasNode): boolean {
   return node.type === 'image' && nodeMetadata(node).sketch !== undefined
 }
 
+/** Letterboxed rect of an `object-fit: contain` image inside its container. */
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value))
+}
+
+/** Annotation boxes whose prompt card still exists. */
+function liveAnnotations(node: CanvasNode, nodes: CanvasNode[]): CanvasAnnotation[] {
+  const annotations = nodeMetadata(node).annotations ?? []
+  return annotations.filter(annotation => annotation.nodeId === undefined || nodes.some(item => item.id === annotation.nodeId))
+}
+
+/** Drop annotation boxes whose prompt card was deleted, so image nodes do not
+ *  accumulate invisible orphan boxes. */
+function pruneAnnotations(nodes: CanvasNode[], removed: Set<string>): CanvasNode[] {
+  if (removed.size === 0) return nodes
+  return nodes.map(node => {
+    const annotations = nodeMetadata(node).annotations
+    if (annotations === undefined || annotations.length === 0) return node
+    const kept = annotations.filter(annotation => annotation.nodeId === undefined || !removed.has(annotation.nodeId))
+    return kept.length === annotations.length ? node : { ...node, metadata: { ...nodeMetadata(node), annotations: kept } }
+  })
+}
+
+/** Expand a deletion to the prompt cards attached to the deleted image nodes,
+ *  then remove everything and prune the surviving annotation lists. */
+function removeNodesAndCards(nodes: CanvasNode[], requested: Set<string>): { nodes: CanvasNode[]; removed: Set<string> } {
+  const removed = new Set(requested)
+  for (const node of nodes) {
+    if (node.type !== 'image' || !removed.has(node.id)) continue
+    for (const annotation of nodeMetadata(node).annotations ?? []) {
+      if (annotation.nodeId !== undefined) removed.add(annotation.nodeId)
+    }
+  }
+  return { nodes: pruneAnnotations(nodes.filter(node => !removed.has(node.id)), removed), removed }
+}
+
+/** Prompt cards attached to an image node's annotation boxes, in box order. */
+function attachedCards(image: CanvasNode, nodes: CanvasNode[]): CanvasNode[] {
+  if (image.type !== 'image') return []
+  return liveAnnotations(image, nodes).flatMap(annotation => {
+    if (annotation.nodeId === undefined) return []
+    const card = nodes.find(node => node.id === annotation.nodeId)
+    return card === undefined ? [] : [card]
+  })
+}
+
+/** Is this node one of the prompt cards the 标注 tool hangs off an image? */
+function isAnnotationCard(node: CanvasNode): boolean {
+  return node.type === 'text' && nodeMetadata(node).annotation !== undefined
+}
+
+/** World-space anchor of an annotation box (its right edge, vertically centred). */
+function annotationAnchor(image: CanvasNode, rect: CanvasRect): Point {
+  return {
+    x: image.x + (rect.x + rect.width) * image.width,
+    y: image.y + (rect.y + rect.height / 2) * image.height,
+  }
+}
+
+/** Clone a set of nodes plus the prompt cards attached to any cloned image
+ *  node, remapping every attachment link to the copies. */
+function cloneNodesWithCards(source: CanvasNode[], allNodes: CanvasNode[], dx: number, dy: number): { clones: CanvasNode[]; idMap: Map<string, string> } {
+  const idMap = new Map<string, string>()
+  const clones: CanvasNode[] = []
+  const push = (node: CanvasNode, metadata: CanvasNode['metadata']): void => {
+    const id = newId('node')
+    idMap.set(node.id, id)
+    clones.push({ ...node, id, x: Math.round(node.x + dx), y: Math.round(node.y + dy), metadata: metadata ?? { ...nodeMetadata(node) } })
+  }
+  for (const node of source) push(node, undefined)
+  for (const node of source) {
+    if (node.type !== 'image') continue
+    for (const card of attachedCards(node, allNodes)) {
+      if (idMap.has(card.id)) continue
+      const metadata = nodeMetadata(card)
+      const annotation = metadata.annotation
+      push(card, {
+        ...metadata,
+        ...annotation === undefined ? {} : { annotation: { ...annotation, sourceNodeId: idMap.get(annotation.sourceNodeId) ?? annotation.sourceNodeId } },
+      })
+    }
+  }
+  for (const clone of clones) {
+    const annotations = clone.type === 'image' ? nodeMetadata(clone).annotations : undefined
+    if (annotations === undefined) continue
+    clone.metadata = {
+      ...nodeMetadata(clone),
+      annotations: annotations.map(annotation => annotation.nodeId !== undefined && idMap.has(annotation.nodeId)
+        ? { ...annotation, nodeId: idMap.get(annotation.nodeId) }
+        : annotation),
+    }
+  }
+  return { clones, idMap }
+}
+
+/** New geometry for a corner drag, keeping the opposite corner pinned. */
+function resizedRect(resize: ResizeState, clientDx: number, clientDy: number, scale: number): { x: number; y: number; width: number; height: number } {
+  const dx = clientDx / scale
+  const dy = clientDy / scale
+  const east = resize.corner === 'ne' || resize.corner === 'se'
+  const south = resize.corner === 'sw' || resize.corner === 'se'
+  let width = Math.max(MIN_NODE_WIDTH, resize.width + (east ? dx : -dx))
+  let height = Math.max(MIN_NODE_HEIGHT, resize.height + (south ? dy : -dy))
+  if (resize.ratio !== null) {
+    // Aspect-locked (images): follow whichever axis the pointer moved further,
+    // so dragging sideways or downwards both scale the picture.
+    const fromWidth = width
+    const fromHeight = height / resize.ratio
+    width = Math.abs(fromWidth - resize.width) >= Math.abs(fromHeight - resize.width) ? fromWidth : fromHeight
+    width = Math.max(MIN_NODE_WIDTH, width)
+    height = Math.max(MIN_NODE_HEIGHT, width * resize.ratio)
+  }
+  return {
+    x: Math.round(east ? resize.x : resize.x + (resize.width - width)),
+    y: Math.round(south ? resize.y : resize.y + (resize.height - height)),
+    width: Math.round(width),
+    height: Math.round(height),
+  }
+}
+
+/** Localized layer-kind badge label. */
+function layerKindLabel(kind: CanvasLayerInfo['kind']): string {
+  return kind === 'background' ? tt('canvas.layerKindBackground') : kind === 'object' ? tt('canvas.layerKindObject') : tt('canvas.layerKindText')
+}
+
+/** Left edge of a free vertical band beside `source`, so a freshly created
+ *  column of nodes never lands on top of existing ones. */
+function freeColumnX(source: CanvasNode, nodes: CanvasNode[], columnHeight: number, columnWidth: number): number {
+  let x = source.x + source.width + NODE_GAP
+  for (let guard = 0; guard < 24; guard += 1) {
+    const clash = nodes.filter(node => node.id !== source.id
+      && x < node.x + node.width + 24 && x + columnWidth > node.x - 24
+      && source.y < node.y + node.height + 24 && source.y + columnHeight > node.y - 24)
+    if (clash.length === 0) break
+    x = Math.max(...clash.map(node => node.x + node.width)) + 48
+  }
+  return Math.round(x)
+}
+
+/** Inline style for a text node's content, honoring size/color/weight. */
+function textStyleOf(node: CanvasNode): { fontSize: number; color?: string; fontWeight?: number } {
+  const metadata = nodeMetadata(node)
+  const fontSize = typeof metadata.fontSize === 'number' && metadata.fontSize > 0 ? metadata.fontSize : 13
+  return {
+    fontSize: Math.min(96, Math.max(8, fontSize)),
+    ...metadata.color === undefined || metadata.color === '' ? {} : { color: metadata.color },
+    ...metadata.bold === true ? { fontWeight: 700 } : {},
+  }
+}
+
 /** Draw one normalized stroke onto a 2d context already sized to the board. */
 function drawSketchStroke(ctx: CanvasRenderingContext2D, stroke: CanvasSketchStroke, boardWidth: number, boardHeight: number): void {
   ctx.strokeStyle = stroke.color
@@ -262,7 +432,7 @@ function rasterizeSketch(strokes: CanvasSketchStroke[], boardWidth: number, boar
   return { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
 }
 
-type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject'
+type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject' | 'annotate' | 'removeBg' | 'layers' | 'bold' | 'color'
 
 /** Lucide icons (stroke matches the DSH line style); one shared component so
  *  every dock/toolbar icon comes from the same well-drawn set. */
@@ -289,6 +459,11 @@ function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number
     case 'send': return <SendHorizonal {...common} />
     case 'close': return <X {...common} />
     case 'deleteProject': return <FolderX {...common} />
+    case 'annotate': return <SquareDashedMousePointer {...common} />
+    case 'removeBg': return <Scissors {...common} />
+    case 'layers': return <Layers {...common} />
+    case 'bold': return <Bold {...common} />
+    case 'color': return <Palette {...common} />
   }
 }
 
@@ -324,6 +499,8 @@ function ComposerSelect(props: {
   value: string
   options: Array<{ value: string; label: string }>
   ariaLabel: string
+  /** 'toolbar' renders the compact variant used by node hover toolbars. */
+  variant?: 'composer' | 'toolbar'
   onChange: (value: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -339,15 +516,18 @@ function ComposerSelect(props: {
     return () => window.removeEventListener('pointerdown', close, true)
   }, [open])
   const selected = props.options.find(option => option.value === props.value) ?? props.options[0]
+  const className = props.variant === 'toolbar' ? css.toolbarSelect : css.composerSelect
   return <>
     <button
       type="button"
       ref={buttonRef}
-      className={css.composerSelect}
+      className={className}
       data-open={open ? '' : undefined}
       aria-label={props.ariaLabel}
       aria-haspopup="listbox"
       aria-expanded={open}
+      title={props.ariaLabel}
+      onPointerDown={event => event.stopPropagation()}
       onClick={() => {
         if (open) { setOpen(false); return }
         const rect = buttonRef.current?.getBoundingClientRect()
@@ -505,7 +685,17 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false)
   const [saveState, setSaveState] = useState<'loading' | 'saved' | 'saving' | 'error'>('loading')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [historyVersion, setHistoryVersion] = useState(0)
+
+  // Image-node tools: 标注 (box -> prompt card), 移除背景 (local matting) and
+  // 图层拆分 (vision layer plan -> editable nodes).
+  const [annotateNodeId, setAnnotateNodeId] = useState<string | null>(null)
+  const [annotationDraft, setAnnotationDraft] = useState<{ nodeId: string; rect: CanvasRect } | null>(null)
+  const [busyNodes, setBusyNodes] = useState<Record<string, string>>({})
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null)
+  const [colorPickerNodeId, setColorPickerNodeId] = useState<string | null>(null)
+  const annotationDragRef = useRef<{ nodeId: string; pointerId: number; start: Point; box: { left: number; top: number; width: number; height: number } } | null>(null)
 
   // Floating generation composer state.
   const [composerPrompt, setComposerPrompt] = useState('')
@@ -709,20 +899,60 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const ids = selectedIdsRef.current
     const connectionId = selectedConnectionId
     if (ids.size === 0 && connectionId === null) return
-    mutate(previous => ({
-      ...previous,
-      nodes: previous.nodes.filter(node => !ids.has(node.id)),
-      connections: previous.connections.filter(connection => !ids.has(connection.fromNodeId) && !ids.has(connection.toNodeId) && connection.id !== connectionId),
-    }))
+    const current = documentRef.current
+    if (current === null) return
+    const { removed } = removeNodesAndCards(current.nodes, ids)
+    mutate(previous => {
+      const result = removeNodesAndCards(previous.nodes, removed)
+      return {
+        ...previous,
+        nodes: result.nodes,
+        connections: previous.connections.filter(connection => !result.removed.has(connection.fromNodeId) && !result.removed.has(connection.toNodeId) && connection.id !== connectionId),
+      }
+    })
     setSelectedIds(new Set()); setSelectedConnectionId(null)
   }, [mutate, selectedConnectionId])
+
+  /** Delete one specific node. The hover toolbar acts on the node under the
+   *  pointer, never on whatever happens to be selected — clicking a button on a
+   *  node that was not selected used to delete the wrong node (or nothing). */
+  const deleteNode = useCallback((nodeId: string): void => {
+    const current = documentRef.current
+    if (current === null || !current.nodes.some(node => node.id === nodeId)) return
+    const { removed } = removeNodesAndCards(current.nodes, new Set([nodeId]))
+    mutate(previous => {
+      const result = removeNodesAndCards(previous.nodes, removed)
+      return {
+        ...previous,
+        nodes: result.nodes,
+        connections: previous.connections.filter(connection => !result.removed.has(connection.fromNodeId) && !result.removed.has(connection.toNodeId)),
+      }
+    })
+    setSelectedIds(previous => {
+      if (!previous.has(nodeId)) return previous
+      const next = new Set(previous)
+      next.delete(nodeId)
+      return next
+    })
+  }, [mutate])
+
+  /** Duplicate one specific node (same rule as {@link deleteNode}). */
+  const duplicateNode = useCallback((nodeId: string): void => {
+    const current = documentRef.current
+    if (current === null) return
+    const source = current.nodes.find(node => node.id === nodeId)
+    if (source === undefined) return
+    const { clones } = cloneNodesWithCards([source], current.nodes, 40, 40)
+    mutate(previous => ({ ...previous, nodes: [...previous.nodes, ...clones] }))
+    setSelectedIds(new Set(clones.map(node => node.id)))
+  }, [mutate])
 
   const duplicateSelection = useCallback((): void => {
     const current = documentRef.current
     if (current === null || selectedIdsRef.current.size === 0) return
-    const clones = current.nodes.filter(node => selectedIdsRef.current.has(node.id)).map(node => ({ ...node, id: newId('node'), x: node.x + 40, y: node.y + 40, metadata: { ...nodeMetadata(node) } }))
+    const source = current.nodes.filter(node => selectedIdsRef.current.has(node.id))
+    const { clones, idMap } = cloneNodesWithCards(source, current.nodes, 40, 40)
     if (clones.length === 0) return
-    const idMap = new Map(current.nodes.filter(node => selectedIdsRef.current.has(node.id)).map((node, index) => [node.id, clones[index]!.id]))
     const connections = current.connections
       .filter(connection => idMap.has(connection.fromNodeId) && idMap.has(connection.toNodeId))
       .map(connection => ({ id: newId('edge'), fromNodeId: idMap.get(connection.fromNodeId)!, toNodeId: idMap.get(connection.toNodeId)! }))
@@ -733,8 +963,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const copySelection = useCallback((): void => {
     const current = documentRef.current
     if (current === null || selectedIdsRef.current.size === 0) return
+    const selected = current.nodes.filter(node => selectedIdsRef.current.has(node.id))
+    // Attached 标注 cards travel with the copied image nodes.
+    const cards = selected.flatMap(node => node.type === 'image' ? attachedCards(node, current.nodes) : [])
+    const nodes = [...selected, ...cards.filter(card => !selectedIdsRef.current.has(card.id))]
     internalClipboard.current = {
-      nodes: current.nodes.filter(node => selectedIdsRef.current.has(node.id)).map(node => ({ ...node, metadata: { ...nodeMetadata(node) } })),
+      nodes: nodes.map(node => ({ ...node, metadata: { ...nodeMetadata(node) } })),
       connections: current.connections.filter(connection => selectedIdsRef.current.has(connection.fromNodeId) && selectedIdsRef.current.has(connection.toNodeId)).map(connection => ({ fromNodeId: connection.fromNodeId, toNodeId: connection.toNodeId })),
     }
   }, [])
@@ -746,11 +980,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const target = position ?? canvasCenter()
     const dx = target.x - (bounds.minX + (bounds.maxX - bounds.minX) / 2)
     const dy = target.y - (bounds.minY + (bounds.maxY - bounds.minY) / 2)
-    const idMap = new Map<string, string>()
-    const clones = clipboard.nodes.map(node => {
-      const id = newId('node'); idMap.set(node.id, id)
-      return { ...node, id, x: Math.round(node.x + dx), y: Math.round(node.y + dy), metadata: { ...nodeMetadata(node) } }
-    })
+    const { clones, idMap } = cloneNodesWithCards(clipboard.nodes, clipboard.nodes, dx, dy)
     const connections = clipboard.connections.map(connection => ({ id: newId('edge'), fromNodeId: idMap.get(connection.fromNodeId)!, toNodeId: idMap.get(connection.toNodeId)! }))
     mutate(previous => ({ ...previous, nodes: [...previous.nodes, ...clones], connections: [...previous.connections, ...connections] }))
     setSelectedIds(new Set(clones.map(node => node.id)))
@@ -850,6 +1080,258 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       .filter((node): node is CanvasNode => node !== undefined)
   }, [])
 
+  // --------------------------------------------------------- node tools
+
+  /** Run one long node-local operation while its toolbar shows a spinner. */
+  const withNodeBusy = useCallback(async (nodeId: string, label: string, task: () => Promise<void>): Promise<void> => {
+    setBusyNodes(previous => ({ ...previous, [nodeId]: label }))
+    try {
+      await task()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setBusyNodes(previous => {
+        const next = { ...previous }
+        delete next[nodeId]
+        return next
+      })
+    }
+  }, [])
+
+  /** Compose the 标注 edit reference: the source image plus numbered boxes,
+   *  together with the constraint text that pins the edit to those boxes. */
+  const annotatedReference = useCallback(async (
+    source: CanvasNode,
+    boxes: Array<{ rect: CanvasRect; text: string }>,
+  ): Promise<{ image: string; prompt: string } | undefined> => {
+    const asset = usableAsset(source)
+    if (asset === undefined || boxes.length === 0) return undefined
+    const raster = await loadRaster(asset.url)
+    const composite = drawAnnotation(raster, boxes.map((box, index) => ({ rect: box.rect, index })))
+    const percent = (value: number): string => `${Math.round(clamp01(value) * 100)}%`
+    const lines = boxes.map((box, index) => {
+      const rect = box.rect
+      return `- 框 ${index + 1}（左 ${percent(rect.x)}，上 ${percent(rect.y)}，右 ${percent(rect.x + rect.width)}，下 ${percent(rect.y + rect.height)}）：${box.text}`
+    })
+    return {
+      image: canvasToDataUrl(composite),
+      prompt: [
+        '【局部修改约束】只修改参考图中红色方框标记的区域，方框之外的内容必须与原图完全一致（构图、人物、文字、颜色与光影都不要变化）。',
+        '红色方框和编号只是给你定位用的标记：结果图片里绝对不能出现方框、边框、编号或任何标注痕迹。',
+        '标记区域说明：',
+        ...lines,
+      ].join('\n'),
+    }
+  }, [])
+
+  /** Annotation plan for one generation: read the boxes (and their attached
+   *  prompt cards) straight off the image nodes feeding the config node. The
+   *  cards are never wired into the graph, so the canvas stays readable. */
+  const annotationPlanOf = useCallback(async (
+    canvasDocument: CanvasDocument,
+    inputs: CanvasNode[],
+  ): Promise<{ image: string; prompt: string; sourceNodeId: string; texts: string[]; boxes: CanvasRect[] } | undefined> => {
+    for (const image of inputs) {
+      if (image.type !== 'image' || usableAsset(image) === undefined) continue
+      const boxes = liveAnnotations(image, canvasDocument.nodes).flatMap(annotation => {
+        const card = annotation.nodeId === undefined ? undefined : canvasDocument.nodes.find(node => node.id === annotation.nodeId)
+        const text = (card === undefined ? '' : nodeMetadata(card).text ?? '').trim()
+        return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
+      })
+      if (boxes.length === 0) continue
+      try {
+        const reference = await annotatedReference(image, boxes)
+        if (reference !== undefined) return { ...reference, sourceNodeId: image.id, texts: boxes.map(box => box.text), boxes: boxes.map(box => box.rect) }
+      } catch { /* unreadable source: fall back to the plain reference path */ }
+    }
+    return undefined
+  }, [annotatedReference])
+
+  /** 标注: hang a prompt card off one drawn box. The card is attached to the
+   *  image (recorded in `metadata.annotations`), not wired into the graph — the
+   *  generation step reads the boxes from the image node itself, so the canvas
+   *  stays free of annotation edges. */
+  const addAnnotationPrompt = useCallback((source: CanvasNode, rect: CanvasRect): void => {
+    const current = documentRef.current
+    if (current === null) return
+    const existing = liveAnnotations(source, current.nodes)
+    const draft: CanvasNode = {
+      id: newId('node'), type: 'text', title: tt('canvas.annotationNode'),
+      x: 0, y: 0, width: ANNOTATION_TEXT_SIZE.width, height: ANNOTATION_TEXT_SIZE.height,
+      metadata: { text: '', fontSize: 13, annotation: { sourceNodeId: source.id, rect } },
+    }
+    const y = Math.round(source.y + existing.length * (ANNOTATION_TEXT_SIZE.height + 24))
+    let x = source.x + source.width + NODE_GAP
+    for (let guard = 0; guard < 24; guard += 1) {
+      const clash = current.nodes.find(node => x < node.x + node.width + 24 && x + draft.width > node.x - 24
+        && y < node.y + node.height + 24 && y + draft.height > node.y - 24)
+      if (clash === undefined) break
+      x = clash.x + clash.width + 40
+    }
+    const node: CanvasNode = { ...draft, x: Math.round(x), y }
+    const annotation: CanvasAnnotation = { id: newId('ann'), ...rect, nodeId: node.id }
+    mutate(previous => ({
+      ...previous,
+      nodes: [
+        ...previous.nodes.map(item => item.id === source.id
+          ? { ...item, metadata: { ...nodeMetadata(item), annotations: [...(nodeMetadata(item).annotations ?? []), annotation] } }
+          : item),
+        node,
+      ],
+    }))
+    setSelectedIds(new Set([node.id]))
+    setSelectedConnectionId(null)
+    setFocusNodeId(node.id)
+    setError(null)
+  }, [mutate])
+
+  const toggleAnnotate = useCallback((node: CanvasNode): void => {
+    setAnnotateNodeId(previous => previous === node.id ? null : node.id)
+    setAnnotationDraft(null)
+    setColorPickerNodeId(null)
+    setSelectedConnectionId(null)
+  }, [])
+
+  /** Pointer handlers of the annotation overlay (client coords -> image space). */
+  const beginAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode): void => {
+    if (event.button !== 0) return
+    event.stopPropagation(); event.preventDefault()
+    const asset = assetOf(node)
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const box = containRect(bounds.width, bounds.height, asset?.width ?? 1, asset?.height ?? 1)
+    annotationDragRef.current = {
+      nodeId: node.id,
+      pointerId: event.pointerId,
+      start: { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      box,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setAnnotationDraft({ nodeId: node.id, rect: { x: 0, y: 0, width: 0, height: 0 } })
+  }, [])
+
+  const moveAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+    const drag = annotationDragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const current = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+    setAnnotationDraft({ nodeId: drag.nodeId, rect: rectBetween(drag.start, current, drag.box) })
+  }, [])
+
+  const endAnnotationDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode): void => {
+    const drag = annotationDragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    annotationDragRef.current = null
+    setAnnotationDraft(null)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const rect = rectBetween(drag.start, { x: event.clientX - bounds.left, y: event.clientY - bounds.top }, drag.box)
+    if (rect.width * rect.height < MIN_ANNOTATION_AREA) return
+    addAnnotationPrompt(node, rect)
+  }, [addAnnotationPrompt])
+
+  /** 移除背景: local alpha matting, no upstream call and no API cost. */
+  const removeNodeBackground = useCallback(async (node: CanvasNode): Promise<void> => {
+    const asset = usableAsset(node)
+    if (asset === undefined) return
+    setError(null)
+    await withNodeBusy(node.id, tt('canvas.removingBackground'), async () => {
+      const raster = await loadRaster(asset.url)
+      if (transparencyRatio(raster) > 0.05) {
+        setNotice(tt('canvas.alreadyTransparent'))
+        return
+      }
+      const result = autoRemoveBackground(raster)
+      if (result.removedRatio < 0.015) throw new Error(tt('canvas.removeBgFailed'))
+      const uploaded = await api.canvasUpload(canvasToDataUrl(result.canvas), result.canvas.width, result.canvas.height, { origin: 'upload', originId: `matte-${node.id}` })
+      const size = sizeForAsset(uploaded)
+      addConnectedNode(node.id, () => ({
+        id: newId('node'), type: 'image', title: tt('canvas.noBackgroundNode'),
+        x: 0, y: 0, width: size.width, height: size.height,
+        metadata: { asset: uploaded, status: 'success', transparent: true, sourceNodeId: node.id, model: nodeMetadata(node).model },
+      }))
+      setNotice(tt('canvas.removeBgDone', { percent: Math.round(result.removedRatio * 100) }))
+    })
+  }, [addConnectedNode, api, withNodeBusy])
+
+  /** 图层拆分: ask the host chat model for a layer plan, then materialize it as
+   *  editable canvas nodes (text cards, matted object stickers, background). */
+  const splitLayers = useCallback(async (node: CanvasNode): Promise<void> => {
+    const asset = usableAsset(node)
+    if (asset === undefined) return
+    if (!connected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
+    setError(null)
+    await withNodeBusy(node.id, tt('canvas.splittingLayers'), async () => {
+      const dataUrl = await assetToDataUrl(asset)
+      const plan = await api.canvasLayers(dataUrl)
+      const layers: CanvasLayerPlanItem[] = plan.layers
+      if (layers.length === 0) throw new Error(tt('canvas.layerSplitEmpty'))
+      const sourceRaster = await loadRaster(asset.url)
+      const created: CanvasNode[] = []
+      const connections: CanvasConnection[] = []
+      const connect = (id: string): void => { connections.push({ id: newId('edge'), fromNodeId: node.id, toNodeId: id }) }
+      const layerInfo = (layer: CanvasLayerPlanItem): CanvasLayerInfo => ({ kind: layer.kind, label: layer.label, sourceNodeId: node.id })
+      const sourceAspect = asset.width > 0 && asset.height > 0 ? asset.width / asset.height : 1
+      // Layers land in a tidy column beside the source: mirroring the original
+      // geometry stacked every layer on top of its neighbours inside one small
+      // footprint, which made them impossible to grab or delete one by one.
+      const planned = layers.map(layer => {
+        if (layer.kind === 'background') {
+          return { layer, width: LAYER_COLUMN_WIDTH, height: Math.max(120, Math.round(LAYER_COLUMN_WIDTH / sourceAspect)) }
+        }
+        const rect = layer.rect
+        if (rect === undefined) return { layer, width: 0, height: 0 }
+        const boxAspect = sourceAspect * (rect.width / Math.max(rect.height, 0.001))
+        if (layer.kind === 'text') {
+          const width = Math.max(180, Math.min(LAYER_COLUMN_WIDTH, Math.round(LAYER_COLUMN_WIDTH * rect.width)))
+          return { layer, width, height: Math.max(64, Math.round(Math.min(160, (width / Math.max(boxAspect, 0.05)) * 1.6))) }
+        }
+        const width = Math.max(96, Math.min(LAYER_COLUMN_WIDTH, Math.round(LAYER_COLUMN_WIDTH * Math.max(rect.width, 0.14))))
+        return { layer, width, height: Math.max(72, Math.round(width / Math.max(boxAspect, 0.05))) }
+      }).filter(item => item.width > 0)
+      const columnHeight = planned.reduce((sum, item) => sum + item.height + LAYER_COLUMN_GAP, 0)
+      const originX = freeColumnX(node, documentRef.current?.nodes ?? [], columnHeight, LAYER_COLUMN_WIDTH)
+      let cursorY = node.y
+      for (const item of planned) {
+        const layer = item.layer
+        const id = newId('node')
+        if (layer.kind === 'background') {
+          created.push({
+            id, type: 'image', title: tt('canvas.layerBackground', { label: layer.label }),
+            x: originX, y: cursorY, width: item.width, height: item.height,
+            metadata: { asset, status: 'success', layer: layerInfo(layer), model: nodeMetadata(node).model },
+          })
+          connect(id)
+        } else if (layer.kind === 'text') {
+          const fontSize = Math.max(10, Math.min(72, Math.round(item.height * 0.5)))
+          created.push({
+            id, type: 'text', title: tt('canvas.layerText', { label: layer.label }),
+            x: originX, y: cursorY, width: item.width, height: item.height,
+            metadata: {
+              text: layer.text ?? '', fontSize, layer: layerInfo(layer),
+              ...layer.color === undefined ? {} : { color: layer.color },
+            },
+          })
+          connect(id)
+        } else {
+          const crop = cropRaster(sourceRaster, layer.rect!)
+          const matted = autoRemoveBackground(crop)
+          const cut = matted.removedRatio >= 0.06 ? matted.canvas : crop
+          const uploaded = await api.canvasUpload(canvasToDataUrl(cut), cut.width, cut.height, { origin: 'upload', originId: `layer-${node.id}` })
+          created.push({
+            id, type: 'image', title: tt('canvas.layerObject', { label: layer.label }),
+            x: originX, y: cursorY, width: item.width, height: item.height,
+            metadata: { asset: uploaded, status: 'success', layer: layerInfo(layer), transparent: matted.removedRatio >= 0.06, model: nodeMetadata(node).model },
+          })
+          connect(id)
+        }
+        cursorY += item.height + LAYER_COLUMN_GAP
+      }
+      mutate(previous => ({ ...previous, nodes: [...previous.nodes, ...created], connections: [...previous.connections, ...connections] }))
+      setNotice(tt('canvas.layerSplitDone', { count: created.length }))
+    })
+  }, [api, connected, mutate, onOpenSettings, withNodeBusy])
+
+
   // ----------------------------------------------------------- generation
 
   const submitComposer = useCallback(async (target: CanvasNode | null): Promise<void> => {
@@ -858,19 +1340,30 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!connected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const inputs = target === null ? [] : upstreamNodes(current, target.id)
     const referenceImages = inputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined)
-    const upstreamText = inputs.filter(node => node.type === 'text' && (nodeMetadata(node).text ?? '').trim() !== '').map(node => nodeMetadata(node).text!.trim())
-    const prompt = (composerPrompt.trim() !== '' ? composerPrompt.trim() : upstreamText.join('\n').trim())
-    if (prompt === '') { setError(tt('canvas.needPrompt')); return }
-    const model = imageModels.includes(composerModel) ? composerModel : imageModels[0] ?? ''
-    if (model === '') { setError(tt('canvas.needModel')); return }
-    const count = Math.min(4, Math.max(1, Math.round(composerCount)))
-    const baseAsset = referenceImages[0] !== undefined ? usableAsset(referenceImages[0]!) : undefined
+    const upstreamText = inputs
+      .filter(node => node.type === 'text' && nodeMetadata(node).annotation === undefined && (nodeMetadata(node).text ?? '').trim() !== '')
+      .map(node => nodeMetadata(node).text!.trim())
     setComposerBusy(true)
     try {
+      // Attached 标注 cards supply both the boxed reference and, when the
+      // composer box is empty, the prompt itself.
+      const annotationPlan = await annotationPlanOf(current, inputs).catch(() => undefined)
+      const prompt = composerPrompt.trim() !== ''
+        ? composerPrompt.trim()
+        : (upstreamText.length > 0 ? upstreamText.join('\n') : (annotationPlan?.texts ?? []).join('\n'))
+      if (prompt === '') { setError(tt('canvas.needPrompt')); setComposerBusy(false); return }
+      const model = imageModels.includes(composerModel) ? composerModel : imageModels[0] ?? ''
+      if (model === '') { setError(tt('canvas.needModel')); setComposerBusy(false); return }
+      const count = Math.min(4, Math.max(1, Math.round(composerCount)))
+      const baseAsset = referenceImages[0] !== undefined ? usableAsset(referenceImages[0]!) : undefined
+      const finalPrompt = annotationPlan === undefined ? prompt : `${prompt}\n\n${annotationPlan.prompt}`
       let image: string | undefined
       let images: string[] | undefined
       let refName: string | undefined
-      if (baseAsset !== undefined) {
+      if (annotationPlan !== undefined) {
+        image = annotationPlan.image
+        refName = 'canvas-annotated.png'
+      } else if (baseAsset !== undefined) {
         image = await assetToDataUrl(baseAsset)
         refName = 'canvas-reference.png'
         const extras: string[] = []
@@ -883,13 +1376,17 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }
       const footprint = nodeSizeFromRatio(composerSize, IMAGE_NODE_SIZE)
       const request: GenerateRequest = {
-        mode: image === undefined ? 'text' : 'edit', model, prompt, size: composerSize, quality: composerQuality, n: count, detail: '',
+        mode: image === undefined ? 'text' : 'edit', model, prompt: finalPrompt, size: composerSize, quality: composerQuality, n: count, detail: '',
         ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
         canvas: {
           canvasId: current.id,
-          ...(target === null ? {} : { sourceNodeId: referenceImages[0]?.id ?? target.id, parentNodeId: target.id, placement: 'right' as const }),
+          ...(target === null ? {} : {
+            sourceNodeId: annotationPlan?.sourceNodeId ?? referenceImages[0]?.id ?? target.id,
+            parentNodeId: target.id,
+            placement: 'right' as const,
+          }),
         },
       }
       const task = await api.taskSubmit(request)
@@ -906,7 +1403,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             id, type: 'image', title: tt('canvas.imageNode'),
             x: Math.round(originX), y: Math.round(originY + index * (footprint.height + 48)),
             width: footprint.width, height: footprint.height,
-            metadata: { status: 'generating', taskId: task.id, ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}), prompt, model },
+            metadata: {
+              status: 'generating', taskId: task.id,
+              ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
+              ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
+              prompt: finalPrompt, model,
+            },
           })
           if (anchor !== undefined) connections.push({ id: newId('edge'), fromNodeId: anchor.id, toNodeId: id })
         }
@@ -919,7 +1421,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     } finally {
       setComposerBusy(false)
     }
-  }, [api, canvasCenter, composerBusy, composerCount, composerModel, composerPrompt, composerQuality, composerSize, connected, defaultChannelId, imageModels, mutate, onOpenSettings, upstreamNodes])
+  }, [annotationPlanOf, api, canvasCenter, composerBusy, composerCount, composerModel, composerPrompt, composerQuality, composerSize, connected, defaultChannelId, imageModels, mutate, onOpenSettings, upstreamNodes])
 
   // ---------------------------------------------------------- task intake
 
@@ -934,13 +1436,27 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const model = imageModels.includes(metadata.model ?? '') ? metadata.model! : imageModels[0] ?? ''
     if (model === '') { setError(tt('canvas.needModel')); return }
     const sourceId = metadata.sourceNodeId
+    const sourceNode = sourceId === undefined ? undefined : current.nodes.find(item => item.id === sourceId)
+    const directAsset = sourceNode !== undefined && sourceNode.type === 'image' ? usableAsset(sourceNode) : undefined
     const references = sourceId === undefined ? [] : upstreamNodes(current, sourceId).filter(item => item.type === 'image' && usableAsset(item) !== undefined)
-    const baseAsset = references[0] !== undefined ? usableAsset(references[0]!) : undefined
+    const baseAsset = directAsset ?? (references[0] !== undefined ? usableAsset(references[0]!) : undefined)
     try {
       let image: string | undefined
       let images: string[] | undefined
       let refName: string | undefined
-      if (baseAsset !== undefined) {
+      // A 标注 edit rebuilds its marked reference so the retry stays boxed.
+      const boxes = sourceNode === undefined || sourceNode.type !== 'image' ? [] : liveAnnotations(sourceNode, current.nodes).flatMap(annotation => {
+        const textNode = current.nodes.find(item => item.id === annotation.nodeId)
+        const text = (textNode === undefined ? '' : nodeMetadata(textNode).text ?? '').trim()
+        return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
+      })
+      const annotated = sourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
+        ? await annotatedReference(sourceNode, boxes).catch(() => undefined)
+        : undefined
+      if (annotated !== undefined) {
+        image = annotated.image
+        refName = 'canvas-annotated.png'
+      } else if (baseAsset !== undefined) {
         image = await assetToDataUrl(baseAsset)
         refName = 'canvas-reference.png'
         const extras: string[] = []
@@ -956,16 +1472,23 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
-        canvas: { canvasId: current.id, sourceNodeId: references[0]?.id ?? sourceId, parentNodeId: node.id, placement: 'right' as const },
+        canvas: { canvasId: current.id, sourceNodeId: sourceId ?? references[0]?.id, parentNodeId: node.id, placement: 'right' as const },
       }
       const task = await api.taskSubmit(request)
       localTaskIds.current.add(task.id)
-      patchNode(node.id, { status: 'generating', error: undefined, taskId: task.id })
+      patchNode(node.id, {
+        status: 'generating', error: undefined, taskId: task.id,
+        // Remember the boxes so the finished image can be composited back onto
+        // the clean original (the marker must not survive into the result).
+        ...(annotated !== undefined && sourceNode !== undefined
+          ? { annotationEdit: { sourceNodeId: sourceNode.id, boxes: boxes.map(box => box.rect) } }
+          : {}),
+      })
       setError(null)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     }
-  }, [api, connected, defaultChannelId, imageModels, onOpenSettings, patchNode, upstreamNodes])
+  }, [annotatedReference, api, connected, defaultChannelId, imageModels, onOpenSettings, patchNode, upstreamNodes])
 
   // Orphan reconciliation: a generating placeholder whose task no longer exists
   // in the host feed (e.g. the host restarted) can never complete on its own.
@@ -1009,8 +1532,23 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }
       void (async () => {
         const assets: CanvasAssetRef[] = []
+        const annotationEdit = nodeMetadata(targets[0]!).annotationEdit
+        const originalAsset = annotationEdit === undefined
+          ? undefined
+          : usableAsset(document.nodes.find(node => node.id === annotationEdit.sourceNodeId) ?? targets[0]!)
         for (const image of task.result!.images) {
-          const dataUrl = imageDataUrl(image)
+          let dataUrl = imageDataUrl(image)
+          // A 标注 edit: keep the generated pixels only inside the boxes and
+          // restore the clean original everywhere else, so the red marker the
+          // model may have echoed never reaches the finished image.
+          if (annotationEdit !== undefined && originalAsset !== undefined) {
+            try {
+              const result = await loadRaster(dataUrl, 4096)
+              const original = await loadRaster(originalAsset.url, 4096)
+              const inset = Math.max(2, Math.round(Math.min(result.width, result.height) * 0.01))
+              dataUrl = canvasToDataUrl(compositeAnnotatedResult(result, original, annotationEdit.boxes, inset))
+            } catch { /* keep the raw result if the composite cannot be built */ }
+          }
           const dimensions = await readImageSize(dataUrl)
           assets.push(await api.canvasUpload(dataUrl, dimensions.width, dimensions.height, { origin: 'generated', originId: task.id }))
         }
@@ -1137,13 +1675,29 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
 
   const singleSelectedId = selectedIds.size === 1 ? [...selectedIds][0]! : null
   const singleSelected = useMemo(() => document?.nodes.find(node => node.id === singleSelectedId) ?? null, [document, singleSelectedId])
-  const composerTarget = singleSelected !== null && singleSelected.type === 'config' ? singleSelected : null
+  // The composer follows the selected config node — including when other nodes
+  // are selected alongside it, so using an image node's tools no longer makes
+  // the generation bar vanish.
+  const composerTarget = useMemo(() => {
+    const selected = (document?.nodes ?? []).filter(node => selectedIds.has(node.id))
+    const configs = selected.filter(node => node.type === 'config')
+    return configs.length === 1 ? configs[0]! : null
+  }, [document, selectedIds])
   const composerInputs = useMemo(
     () => composerTarget === null || document === null ? [] : upstreamNodes(document, composerTarget.id),
     [composerTarget, document, upstreamNodes],
   )
   const composerReferenceCount = composerInputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined).length
   const composerTextCount = composerInputs.filter(node => node.type === 'text' && (nodeMetadata(node).text ?? '').trim() !== '').length
+  // Prompt cards hanging off the upstream images count as prompt input too, so
+  // the send button is live once a box carries a prompt (no graph edge needed).
+  const composerAnnotationTexts = useMemo(() => composerTarget === null || document === null
+    ? []
+    : composerInputs
+      .filter(node => node.type === 'image')
+      .flatMap(image => attachedCards(image, document.nodes))
+      .map(card => (nodeMetadata(card).text ?? '').trim())
+      .filter(text => text !== ''), [composerInputs, composerTarget, document])
   const composerVisible = composerTarget !== null
 
   // Prefill the prompt from connected text nodes whenever the target changes.
@@ -1152,19 +1706,49 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (targetId === composerTargetRef.current) return
     composerTargetRef.current = targetId
     if (composerTarget === null) return
-    const texts = (document?.connections ?? [])
+    const upstream = (document?.connections ?? [])
       .filter(connection => connection.toNodeId === composerTarget.id)
       .map(connection => document?.nodes.find(node => node.id === connection.fromNodeId))
-      .filter((node): node is CanvasNode => node !== undefined && node.type === 'text' && (nodeMetadata(node).text ?? '').trim() !== '')
+      .filter((node): node is CanvasNode => node !== undefined)
+    const texts = upstream
+      .filter(node => node.type === 'text' && nodeMetadata(node).annotation === undefined && (nodeMetadata(node).text ?? '').trim() !== '')
       .map(node => nodeMetadata(node).text!.trim())
     setComposerPrompt(texts.join('\n'))
-  }, [composerTarget, document])
+    // Adopt the model chosen on a connected image node, so the node-level model
+    // selector drives the generation it feeds.
+    const upstreamModel = upstream
+      .filter(node => node.type === 'image')
+      .map(node => nodeMetadata(node).model ?? '')
+      .find(model => imageModels.includes(model))
+    if (upstreamModel !== undefined) setComposerModel(upstreamModel)
+  }, [composerTarget, document, imageModels])
+
+  // Transient success notices (background removal / layer split).
+  useEffect(() => {
+    if (notice === null) return
+    const timer = window.setTimeout(() => setNotice(null), 4200)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  // The 标注 tool hands the keyboard to the prompt card it just created.
+  useEffect(() => {
+    if (focusNodeId === null) return
+    const element = rootRef.current?.querySelector<HTMLTextAreaElement>(`[data-node-id="${focusNodeId}"] textarea`)
+    element?.focus()
+    setFocusNodeId(null)
+  }, [focusNodeId])
 
   // ------------------------------------------------------------ keyboard
 
   useEffect(() => {
-    const isEditingTarget = (target: EventTarget | null): boolean => target instanceof Element
-      && (target.matches('input, textarea, select, [contenteditable="true"]'))
+    // Duck-typed (no `instanceof Element`): the same code must run inside the
+    // jsdom smoke sandbox, which has no DOM constructors on its global.
+    const matchesSelector = (target: EventTarget | null, selector: string): boolean => {
+      const element = target as { matches?: unknown } | null
+      if (element === null || typeof element !== 'object' || typeof element.matches !== 'function') return false
+      return (element.matches as (value: string) => boolean)(selector)
+    }
+    const isEditingTarget = (target: EventTarget | null): boolean => matchesSelector(target, 'input, textarea, select, [contenteditable="true"]')
 
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Control') setCtrlPressed(true)
@@ -1176,10 +1760,29 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const mod = event.ctrlKey || event.metaKey
       if (event.key === 'Escape') {
         setContextMenu(null); setCreateMenu(null); setBackgroundMenu(null); setImageMenu(null); setNodeAddMenu(null)
+        setColorPickerNodeId(null)
+        // Esc leaves the 标注 tool first, then clears the selection.
+        if (annotateNodeId !== null) { setAnnotateNodeId(null); setAnnotationDraft(null); return }
         if (!isEditingTarget(event.target)) { setSelectedIds(new Set()); setSelectedConnectionId(null) }
         return
       }
-      if (isEditingTarget(event.target)) return
+      if (isEditingTarget(event.target)) {
+        // An empty text card has nothing to erase, so Delete/Backspace means
+        // "remove this node" there — otherwise the key looks broken while the
+        // caret sits in a freshly created (empty) card.
+        const target = event.target as { tagName?: unknown; value?: unknown; closest?: unknown } | null
+        const editing = target !== null && typeof target === 'object' && target.tagName === 'TEXTAREA' ? target : null
+        const host = editing === null || typeof editing.closest !== 'function'
+          ? null
+          : (editing.closest as (selector: string) => { getAttribute(name: string): string | null } | null)('[data-node-id]')
+        const hostId = host === null ? null : host.getAttribute('data-node-id')
+        if (editing !== null && editing.value === '' && hostId !== null && selectedIdsRef.current.has(hostId)
+          && (event.key === 'Delete' || event.key === 'Backspace')) {
+          event.preventDefault()
+          deleteNode(hostId)
+        }
+        return
+      }
       if (mod && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         if (event.shiftKey) redo(); else undo()
@@ -1228,7 +1831,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('paste', onPaste)
     }
-  }, [addAssets, api, canvasCenter, copySelection, deleteSelection, duplicateSelection, pasteClipboard, redo, undo])
+  }, [addAssets, annotateNodeId, api, canvasCenter, copySelection, deleteNode, deleteSelection, duplicateSelection, pasteClipboard, redo, undo])
 
   // ------------------------------------------------------ viewport events
 
@@ -1368,16 +1971,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const resize = resizeRef.current
       if (resize !== null) {
         const scale = documentRef.current?.viewport.k ?? 1
-        const dx = (event.clientX - resize.startX) / scale
-        const dy = (event.clientY - resize.startY) / scale
-        const minWidth = 140
-        const minHeight = 100
-        let width = Math.max(minWidth, resize.width + (resize.corner === 'bottom-right' ? dx : -dx))
-        let height = Math.max(minHeight, resize.height + dy)
-        if (resize.ratio !== null) height = Math.max(minHeight, Math.round(width * resize.ratio))
-        updateNodes(nodes => nodes.map(node => node.id === resize.nodeId
-          ? { ...node, x: Math.round(resize.corner === 'bottom-right' ? resize.x : resize.x + (resize.width - width)), y: Math.round(resize.y), width: Math.round(width), height: Math.round(height) }
-          : node))
+        const next = resizedRect(resize, event.clientX - resize.startX, event.clientY - resize.startY, scale)
+        updateNodes(nodes => nodes.map(node => node.id === resize.nodeId ? { ...node, ...next } : node))
         return
       }
       const activeMarquee = marqueeRef.current
@@ -1488,6 +2083,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const item = current.nodes.find(candidate => candidate.id === id)
       if (item !== undefined) origins.set(id, { x: item.x, y: item.y })
     }
+    // Annotation prompt cards are attached to their image node: they ride along
+    // with it without joining the selection (which would hide the composer).
+    for (const id of nextSelection) {
+      const item = current.nodes.find(candidate => candidate.id === id)
+      if (item === undefined || item.type !== 'image') continue
+      for (const card of attachedCards(item, current.nodes)) origins.set(card.id, { x: card.x, y: card.y })
+    }
     dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false, snapshot: JSON.stringify(current), origins }
   }, [temporaryPanTool, tool])
 
@@ -1502,11 +2104,11 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     setSelectedConnectionId(null)
   }, [clearNodeAddMenuTimer, screenToWorld])
 
-  const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode, corner: 'bottom-right' | 'bottom-left'): void => {
+  const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode, corner: ResizeCorner): void => {
     if (event.button !== 0) return
     event.stopPropagation(); event.preventDefault()
     const asset = assetOf(node)
-    const ratio = node.type === 'image' && asset !== undefined && asset.width > 0 && asset.height > 0 ? asset.width / asset.height : null
+    const ratio = node.type === 'image' && asset !== undefined && asset.width > 0 && asset.height > 0 ? asset.height / asset.width : null
     resizeRef.current = { nodeId: node.id, corner, startX: event.clientX, startY: event.clientY, width: node.width, height: node.height, x: node.x, y: node.y, ratio }
     beginHistory()
   }, [beginHistory])
@@ -1653,9 +2255,21 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const isConfig = node.type === 'config'
     const isSketch = isSketchNode(node)
     const isTextual = node.type === 'text' || isConfig
+    const isTextNode = node.type === 'text'
+    const annotating = annotateNodeId === node.id && hasImage && !isSketch
+    const busyLabel = busyNodes[node.id]
+    const annotations = node.type === 'image' ? liveAnnotations(node, document?.nodes ?? []) : []
+    const draftRect = annotationDraft !== null && annotationDraft.nodeId === node.id ? annotationDraft.rect : null
+    const boxStyle = (rect: CanvasRect): CSSProperties => ({
+      left: `${rect.x * 100}%`,
+      top: `${rect.y * 100}%`,
+      width: `${rect.width * 100}%`,
+      height: `${rect.height * 100}%`,
+    })
     return <div
       key={node.id}
       data-node-id={node.id}
+      data-annotating={annotating ? '' : undefined}
       className={`${css.node} ${isSketch ? css.sketchNode : isConfig ? css.configNode : isTextual ? css.textNode : css.imageNode} ${isSelected ? css.nodeSelected : ''} ${isRelated ? css.nodeRelated : ''} ${isConnectTarget ? css.nodeConnectTarget : ''}`}
       style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
       onPointerDown={event => handleNodePointerDown(event, node.id)}
@@ -1669,7 +2283,54 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       <div className={css.nodeGlow} aria-hidden="true" />
       {isTextual || isSketch ? <header className={css.nodeHeader}>
         <span className={css.nodeTitle}>{node.title}</span>
+        {metadata.annotation !== undefined ? <span className={css.nodeTag}>{tt('canvas.annotationTag')}</span> : null}
+        {metadata.layer !== undefined ? <span className={css.nodeTag}>{layerKindLabel(metadata.layer.kind)}</span> : null}
+        {isTextNode && !isAnnotationCard(node) ? <div className={css.textTools} onPointerDown={event => event.stopPropagation()}>
+          <button
+            type="button"
+            className={css.textTool}
+            aria-label={tt('canvas.fontSmaller')}
+            title={tt('canvas.fontSmaller')}
+            onClick={() => patchNode(node.id, { fontSize: Math.max(8, (metadata.fontSize ?? 13) - 2) })}
+          >A-</button>
+          <span className={css.textToolValue}>{Math.round(metadata.fontSize ?? 13)}</span>
+          <button
+            type="button"
+            className={css.textTool}
+            aria-label={tt('canvas.fontLarger')}
+            title={tt('canvas.fontLarger')}
+            onClick={() => patchNode(node.id, { fontSize: Math.min(96, (metadata.fontSize ?? 13) + 2) })}
+          >A+</button>
+          <button
+            type="button"
+            className={css.textTool}
+            data-active={(metadata.bold ?? false) ? '' : undefined}
+            aria-label={tt('canvas.bold')}
+            title={tt('canvas.bold')}
+            onClick={() => patchNode(node.id, { bold: metadata.bold !== true })}
+          ><ToolbarIcon name="bold" size={13} /></button>
+          <button
+            type="button"
+            className={css.textTool}
+            data-active={colorPickerNodeId === node.id ? '' : undefined}
+            aria-label={tt('canvas.textColor')}
+            title={tt('canvas.textColor')}
+            onClick={() => setColorPickerNodeId(colorPickerNodeId === node.id ? null : node.id)}
+          ><span className={css.colorDot} style={{ background: metadata.color ?? 'currentColor' }} /></button>
+        </div> : null}
       </header> : null}
+      {isTextNode && !isAnnotationCard(node) && colorPickerNodeId === node.id ? <div className={css.colorRow} onPointerDown={event => event.stopPropagation()}>
+        {TEXT_COLORS.map(color => <button
+          key={color === '' ? 'default' : color}
+          type="button"
+          className={css.colorSwatch}
+          data-active={(metadata.color ?? '') === color ? '' : undefined}
+          style={color === '' ? undefined : { background: color }}
+          title={color === '' ? tt('canvas.colorDefault') : color}
+          aria-label={color === '' ? tt('canvas.colorDefault') : color}
+          onClick={() => { patchNode(node.id, { color: color === '' ? undefined : color }); setColorPickerNodeId(null) }}
+        >{color === '' ? <X size={11} strokeWidth={2.4} aria-hidden="true" /> : null}</button>)}
+      </div> : null}
       {isConfig ? <div className={css.configLinks} data-config-links={node.id}>
         <span className={css.composerChip}>{tt('canvas.composerLinked', { count: (document?.connections ?? []).filter(connection => connection.toNodeId === node.id).length })}</span>
       </div> : null}
@@ -1678,8 +2339,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         : isTextual
         ? <textarea
             className={css.textArea}
+            style={textStyleOf(node)}
             value={metadata.text ?? ''}
-            placeholder={tt('canvas.textPlaceholder')}
+            placeholder={metadata.annotation !== undefined ? tt('canvas.annotationPlaceholder') : tt('canvas.textPlaceholder')}
             onPointerDown={event => event.stopPropagation()}
             onChange={event => patchNode(node.id, { text: event.target.value })}
           />
@@ -1693,14 +2355,6 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             onAssetChange={asset => patchSketchAsset(node.id, asset)}
           />
         : <div className={css.nodeBody}>
-            {hasImage ? <div aria-hidden="true">
-              {metadata.model !== undefined && metadata.model !== ''
-                ? <span className={`${css.imageInfo} ${css.imageInfoLeft}`}>{metadata.model}</span>
-                : asset.origin === 'gallery' || asset.origin === 'history'
-                  ? <span className={`${css.imageInfo} ${css.imageInfoLeft}`}>{asset.origin === 'gallery' ? tt('canvas.fromGallery') : tt('canvas.fromHistory')}</span>
-                  : null}
-              {asset !== undefined && asset.width > 1 ? <span className={`${css.imageInfo} ${css.imageInfoRight}`}>{asset.width}×{asset.height}</span> : null}
-            </div> : null}
             {isGenerating
               ? <div className={css.nodeState}><span className={css.spinner} aria-hidden="true" /><span>{tt('canvas.generatingNode')}</span></div>
               : isError
@@ -1708,28 +2362,90 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
                 : hasImage
                   ? <img src={asset.url} alt={node.title} draggable={false} onDragStart={event => event.preventDefault()} />
                   : <button type="button" className={css.nodeEmpty} onClick={() => imageFileRef.current?.click()}><ToolbarIcon name="image" /><span>{tt('canvas.emptyImageNode')}</span></button>}
+            {hasImage && annotations.length > 0 ? <div className={css.annotationLayer} aria-hidden="true">
+              {annotations.map((annotation, index) => <div key={annotation.id} className={css.annotationBox} style={boxStyle(annotation)}>
+                <span className={css.annotationBadge}>{index + 1}</span>
+              </div>)}
+            </div> : null}
+            {annotating ? <div
+              className={css.annotationLayer}
+              data-active=""
+              title={tt('canvas.annotationDrawHint')}
+              onPointerDown={event => beginAnnotationDrag(event, node)}
+              onPointerMove={moveAnnotationDrag}
+              onPointerUp={event => endAnnotationDrag(event, node)}
+              onPointerCancel={() => { annotationDragRef.current = null; setAnnotationDraft(null) }}
+            >
+              {annotations.map((annotation, index) => <div key={annotation.id} className={css.annotationBox} style={boxStyle(annotation)}>
+                <span className={css.annotationBadge}>{index + 1}</span>
+              </div>)}
+              {draftRect !== null ? <div className={`${css.annotationBox} ${css.annotationDraft}`} style={boxStyle(draftRect)} /> : null}
+            </div> : null}
+            {busyLabel !== undefined ? <div className={css.nodeBusy}><span className={css.spinner} aria-hidden="true" /><span>{busyLabel}</span></div> : null}
           </div>}
+      {node.type === 'image' && !isSketch && hasImage ? <div className={css.imageFooter} data-image-footer="">
+        <span className={css.imageFooterLabel}>
+          {metadata.layer !== undefined
+            ? `${layerKindLabel(metadata.layer.kind)} · ${metadata.layer.label}`
+            : metadata.model !== undefined && metadata.model !== ''
+              ? metadata.model
+              : asset.origin === 'gallery' || asset.origin === 'history'
+                ? (asset.origin === 'gallery' ? tt('canvas.fromGallery') : tt('canvas.fromHistory'))
+                : ''}
+        </span>
+        {asset.width > 1 ? <span className={css.imageFooterSize}>{asset.width}×{asset.height}</span> : null}
+      </div> : null}
       {isSelected && !isSketch
-        ? <div className={css.resizeHandle} onPointerDown={event => handleResizeStart(event, node, 'bottom-right')} title={tt('canvas.resizeHint')} />
+        ? (['nw', 'ne', 'sw', 'se'] as const).map(corner => <div
+            key={corner}
+            className={css.resizeHandle}
+            data-corner={corner}
+            onPointerDown={event => handleResizeStart(event, node, corner)}
+            title={tt('canvas.resizeHint')}
+          />)
         : null}
-      <div className={`${css.handle} ${css.handleLeft}`} title={tt('canvas.connectHint')} onPointerDown={event => handleConnectStart(event, node.id, 'target')} />
-      <div
-        className={`${css.handle} ${css.handleRight}`}
-        title={tt('canvas.connectAddHint')}
-        onPointerDown={event => handleConnectStart(event, node.id, 'source')}
-        onMouseEnter={() => { window.setTimeout(() => { if (connectRef.current === null) openNodeAddMenu(node) }, 120) }}
-        onMouseLeave={scheduleNodeAddMenuClose}
-      />
-      <div className={css.hoverToolbar} onPointerDown={event => event.stopPropagation()}>
-        {node.type === 'image' && hasImage ? <IconButton name="download" label={tt('canvas.download')} onClick={() => downloadNode(node)} /> : null}
-        <IconButton name="duplicate" label={tt('canvas.duplicate')} onClick={duplicateSelection} />
-        <IconButton name="trash" label={tt('canvas.delete')} onClick={deleteSelection} />
+      {isAnnotationCard(node)
+        ? null
+        : <>
+            <div className={`${css.handle} ${css.handleLeft}`} title={tt('canvas.connectHint')} onPointerDown={event => handleConnectStart(event, node.id, 'target')} />
+            <div
+              className={`${css.handle} ${css.handleRight}`}
+              title={tt('canvas.connectAddHint')}
+              onPointerDown={event => handleConnectStart(event, node.id, 'source')}
+              onMouseEnter={() => { window.setTimeout(() => { if (connectRef.current === null) openNodeAddMenu(node) }, 120) }}
+              onMouseLeave={scheduleNodeAddMenuClose}
+            />
+          </>}      <div className={`${css.hoverToolbar} ${node.type === 'image' && hasImage ? css.hoverToolbarBottom : ''}`} data-toolbar={node.type === 'image' && hasImage ? 'bottom' : 'top'} onPointerDown={event => event.stopPropagation()}>
+        {node.type === 'image' && hasImage ? <>
+          <IconButton name="annotate" label={tt('canvas.annotate')} active={annotating} onClick={() => toggleAnnotate(node)} />
+          <IconButton name="removeBg" label={tt('canvas.removeBackground')} disabled={busyLabel !== undefined} onClick={() => { void removeNodeBackground(node) }} />
+          <IconButton name="layers" label={tt('canvas.splitLayers')} disabled={busyLabel !== undefined} onClick={() => { void splitLayers(node) }} />
+          <span className={css.toolbarDivider} aria-hidden="true" />
+          <ComposerSelect
+            variant="toolbar"
+            ariaLabel={tt('canvas.nodeModel')}
+            value={metadata.model ?? ''}
+            options={[{ value: '', label: tt('canvas.modelDefault') }, ...imageModels.map(item => ({ value: item, label: item }))]}
+            onChange={value => patchNode(node.id, { model: value === '' ? undefined : value })}
+          />
+          <span className={css.toolbarDivider} aria-hidden="true" />
+          <IconButton name="download" label={tt('canvas.download')} onClick={() => downloadNode(node)} />
+        </> : null}
+        {isAnnotationCard(node) ? null : <IconButton name="duplicate" label={tt('canvas.duplicate')} onClick={() => duplicateNode(node.id)} />}
+        <IconButton name="trash" label={tt('canvas.delete')} onClick={() => deleteNode(node.id)} />
       </div>
     </div>
   }
 
   const renderConnections = (): React.JSX.Element => {
-    const visible = (document?.connections ?? []).filter(connection => nodeById.has(connection.fromNodeId) && nodeById.has(connection.toNodeId))
+    // Legacy canvases wired annotation cards into the graph; those edges are
+    // implicit now (the card is attached to its image), so they are not drawn.
+    const visible = (document?.connections ?? []).filter(connection => {
+      const from = nodeById.get(connection.fromNodeId)
+      const to = nodeById.get(connection.toNodeId)
+      if (from === undefined || to === undefined) return false
+      return !isAnnotationCard(from) && !isAnnotationCard(to)
+    })
     const gradientOf = (connection: CanvasConnection): React.JSX.Element => {
       const from = nodeById.get(connection.fromNodeId)!
       const to = nodeById.get(connection.toNodeId)!
@@ -1808,6 +2524,33 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     </svg>
   }
 
+  /** Leader lines from each annotation box to the prompt card hanging off it.
+   *  Rendered in its own layer above the nodes so the line is visible where it
+   *  leaves the box, instead of disappearing under the picture. */
+  const renderAnnotationLinks = (): React.JSX.Element | null => {
+    if (document === null) return null
+    const links = document.nodes.flatMap(image => image.type !== 'image' ? [] : liveAnnotations(image, document.nodes).flatMap(annotation => {
+      const card = annotation.nodeId === undefined ? undefined : nodeById.get(annotation.nodeId)
+      return card === undefined ? [] : [{ id: annotation.id, from: annotationAnchor(image, annotation), to: nodeAnchor(card, 'left') }]
+    }))
+    if (links.length === 0) return null
+    return <svg
+      className={css.annotationLinkLayer}
+      data-annotation-links=""
+      width={WORLD_PAD * 2}
+      height={WORLD_PAD * 2}
+      style={{ left: -WORLD_PAD, top: -WORLD_PAD }}
+      aria-hidden="true"
+    >
+      <g transform={`translate(${WORLD_PAD},${WORLD_PAD})`}>
+        {links.map(link => <g key={link.id}>
+          <path data-annotation-link={link.id} d={bezierPath(link.from, link.to)} className={css.annotationLink} />
+          <circle cx={link.from.x} cy={link.from.y} r={4} className={css.annotationLinkDot} />
+        </g>)}
+      </g>
+    </svg>
+  }
+
   const renderComposer = (): ReactNode => {
     if (!composerVisible || document === null || composerTarget === null) return null
     const linkedCount = composerReferenceCount + composerTextCount
@@ -1878,7 +2621,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           className={css.composerSend}
           aria-label={tt('canvas.generate')}
           title={tt('canvas.generate')}
-          disabled={!connected || composerBusy || (composerPrompt.trim() === '' && composerTextCount === 0)}
+          disabled={!connected || composerBusy || (composerPrompt.trim() === '' && composerTextCount === 0 && composerAnnotationTexts.length === 0)}
           onClick={() => { void submitComposer(composerTarget) }}
         >{composerBusy ? <span className={css.spinner} aria-hidden="true" /> : <ToolbarIcon name="send" />}</button>
       </div>
@@ -1933,8 +2676,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       if (contextMenu.type === 'node') {
         const node = nodeById.get(contextMenu.nodeId)
         if (node !== undefined && node.type === 'image' && (assetOf(node)?.url.length ?? 0) > 0) items.push({ label: tt('canvas.download'), icon: 'download', action: () => downloadNode(node) })
-        items.push({ label: tt('canvas.duplicate'), icon: 'duplicate', action: duplicateSelection })
-        items.push({ label: tt('canvas.delete'), icon: 'trash', action: deleteSelection, danger: true })
+        if (node === undefined || !isAnnotationCard(node)) items.push({ label: tt('canvas.duplicate'), icon: 'duplicate', action: () => duplicateNode(contextMenu.nodeId) })
+        items.push({ label: tt('canvas.delete'), icon: 'trash', action: () => deleteNode(contextMenu.nodeId), danger: true })
       } else if (contextMenu.type === 'connection') {
         items.push({
           label: tt('canvas.deleteConnection'), icon: 'close', danger: true,
@@ -2048,6 +2791,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       <div className={css.world} style={{ transform: `translate(${document?.viewport.x ?? 0}px, ${document?.viewport.y ?? 0}px) scale(${document?.viewport.k ?? 1})` }}>
         {renderConnections()}
         {document?.nodes.map(renderNode)}
+        {renderAnnotationLinks()}
       </div>
       {marqueeRect !== null ? <div className={css.marquee} style={marqueeRect} aria-hidden="true" /> : null}
       {emptyState}
@@ -2223,6 +2967,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     {libraryOpen ? <TemplateLibrary api={api} onClose={() => setLibraryOpen(false)} onUse={applyTemplate} /> : null}
 
     {error !== null ? <div className={css.errorToast} role="status" data-canvas-no-zoom="">{error}<button type="button" aria-label={tt('canvas.dismiss')} onClick={() => setError(null)}><ToolbarIcon name="close" /></button></div> : null}
+    {notice !== null ? <div className={css.errorToast} data-variant="notice" role="status" data-canvas-no-zoom="">{notice}<button type="button" aria-label={tt('canvas.dismiss')} onClick={() => setNotice(null)}><ToolbarIcon name="close" /></button></div> : null}
 
     {pickerOpen ? <ImagePicker
       api={api}

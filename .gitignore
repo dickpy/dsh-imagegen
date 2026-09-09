@@ -12,6 +12,9 @@ lib/
 # Temp files
 .tmp-*
 
+# Local dev server logs and restart helper
+.local-*
+
 # OS files
 .DS_Store
 Thumbs.db

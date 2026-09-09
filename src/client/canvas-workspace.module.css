@@ -340,6 +340,8 @@
   align-items: center;
   justify-content: center;
   pointer-events: none;
+  /* Annotation overlays are positioned against the image frame. */
+  position: relative;
 }
 
 .nodeBody img {
@@ -374,6 +376,36 @@
   left: auto;
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
+}
+
+/* Image nodes keep their picture uncovered: model / layer / size live in a slim
+ * footer strip under the image instead of floating over it. */
+.imageFooter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 7px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-tertiary);
+  pointer-events: none;
+}
+
+.imageFooterLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.imageFooterSize {
+  margin-left: auto;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
 }
 
 .nodeState,
@@ -446,6 +478,159 @@
 }
 
 .textArea::placeholder { color: var(--dsw-alias-label-tertiary); }
+
+/* ------------------------------------------------- text node type tools */
+
+.nodeTag {
+  flex: none;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);
+}
+
+.textTools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  pointer-events: auto;
+}
+
+.textTool {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.textTool:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.textTool[data-active] { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent); color: var(--dsw-alias-brand-primary); }
+
+.textToolValue {
+  min-width: 18px;
+  text-align: center;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.colorDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent);
+  display: block;
+}
+
+.colorRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 10px 8px;
+  flex: none;
+  pointer-events: auto;
+}
+
+.colorSwatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+  color: var(--dsw-alias-label-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.colorSwatch:hover { transform: scale(1.12); }
+.colorSwatch[data-active] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent); }
+
+/* --------------------------------------------------- annotation overlay */
+
+/* The image being boxed stays highlighted while the 标注 tool is armed. */
+.node[data-annotating] {
+  border-color: #ff2d55;
+  box-shadow: 0 0 0 3px rgb(255 45 85 / 22%);
+}
+
+.annotationLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.annotationLayer[data-active] {
+  pointer-events: auto;
+  cursor: crosshair;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, transparent);
+}
+
+.annotationBox {
+  position: absolute;
+  border: 1.5px solid #ff2d55;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 55%) inset;
+  pointer-events: none;
+}
+
+.annotationDraft {
+  border-style: dashed;
+  background: rgb(255 45 85 / 14%);
+}
+
+.annotationBadge {
+  position: absolute;
+  top: -10px;
+  left: -8px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #ff2d55;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* In-flight node operation (抠图 / 图层拆分). */
+.nodeBusy {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 82%, transparent);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
 
 /* ------------------------------------------------- sketch board node */
 
@@ -911,18 +1096,32 @@
 
 .handleRight:hover { color: var(--dsw-alias-bg-layer-1); transform: translateY(-50%) scale(1.12); }
 
+/* Four generous corner grips: an image node is easy to enlarge before drawing
+ * annotation boxes on it. */
 .resizeHandle {
   position: absolute;
-  right: -5px;
-  bottom: -5px;
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
   background: var(--dsw-alias-brand-primary);
   border: 2px solid var(--dsw-alias-bg-layer-1);
-  cursor: nwse-resize;
+  box-shadow: 0 1px 4px rgb(15 23 42 / 22%);
   z-index: 3;
 }
+
+.resizeHandle::after {
+  /* Invisible extension so the grip is grabbable beyond its visible dot. */
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+
+.resizeHandle[data-corner='nw'] { left: -7px; top: -7px; cursor: nwse-resize; }
+.resizeHandle[data-corner='ne'] { right: -7px; top: -7px; cursor: nesw-resize; }
+.resizeHandle[data-corner='sw'] { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.resizeHandle[data-corner='se'] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+
+.resizeHandle:hover { transform: scale(1.15); }
 
 /* hover toolbar */
 
@@ -948,6 +1147,42 @@
 .nodeSelected .hoverToolbar {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Image nodes hang their toolbar below the frame: the top edge is where the
+ * resize/hover affordances of the node above live, and the picture stays clear. */
+.hoverToolbarBottom {
+  top: auto;
+  bottom: -38px;
+}
+
+/* Compact model selector inside a node's hover toolbar. */
+.toolbarSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  max-width: 118px;
+  padding: 0 5px 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.toolbarSelect:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.toolbarSelect[data-open] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.toolbarSelect svg { flex: none; opacity: 0.65; }
+.toolbarSelect .composerSelectValue { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.toolbarDivider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 3px;
+  background: var(--dsw-alias-border-l1);
 }
 
 /* -------------------------------------------------------- connections */
@@ -977,6 +1212,33 @@
   stroke: var(--dsw-alias-brand-primary);
   stroke-width: 2;
   stroke-dasharray: 5 5;
+  pointer-events: none;
+}
+
+/* Leader line from an annotation box to the prompt card attached to it. Drawn
+ * in a layer above the nodes, so it stays visible over the picture it marks. */
+.annotationLinkLayer {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.annotationLink {
+  fill: none;
+  stroke: #ff2d55;
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+  stroke-opacity: 0.85;
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px rgb(255 255 255 / 65%));
+}
+
+/* Anchor dot on the box edge: makes the line read as "coming out of the box". */
+.annotationLinkDot {
+  fill: #ff2d55;
+  stroke: #ffffff;
+  stroke-width: 1.6;
   pointer-events: none;
 }
 
@@ -1173,6 +1435,13 @@
   padding: 2px;
   display: inline-flex;
   flex: none;
+}
+
+/* Success variant of the same toast (background removal / layer split). */
+.errorToast[data-variant='notice'] {
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 38%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1));
+  color: var(--dsw-alias-label-primary);
 }
 
 /* ---------------------------------------------------------- picker modal */

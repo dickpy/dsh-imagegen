@@ -115,7 +115,7 @@ export async function listPromptModels(config: PromptModelConfig): Promise<strin
  *  OpenAI-compatible endpoints (MiniMax M3, DeepSeek R1, Qwen QVQ, …) inline
  *  these blocks in `message.content`; leaking them into the prompt box both
  *  pollutes the prompt and can push it past image models' length limits. */
-function stripReasoning(text: string): string {
+export function stripReasoning(text: string): string {
   const withoutClosed = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
   const dangling = /<think>/i.exec(withoutClosed)
   return (dangling === null ? withoutClosed : withoutClosed.slice(0, dangling.index)).trim()

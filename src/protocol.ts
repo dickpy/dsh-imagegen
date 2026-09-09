@@ -106,6 +106,8 @@ export const CANVAS_API = {
   assetUpload: '/api/dsh-imagegen/canvas/asset/upload',
   assetImport: '/api/dsh-imagegen/canvas/asset/import',
   asset: '/api/dsh-imagegen/canvas/asset',
+  /** Vision-model layer decomposition for the canvas layer-split tool. */
+  layers: '/api/dsh-imagegen/canvas/layers',
 } as const
 
 /** Maximum number of history entries retained host-side (oldest evicted). */
@@ -272,6 +274,48 @@ export interface CanvasAssetRef {
 
 export type CanvasNodeType = 'image' | 'text' | 'config'
 
+/** Normalized (0..1) rectangle inside an image asset: origin top-left. */
+export interface CanvasRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** One annotation box drawn on an image node by the 标注 tool. */
+export interface CanvasAnnotation extends CanvasRect {
+  id: string
+  /** Text node holding the prompt for this box (absent once deleted). */
+  nodeId?: string
+}
+
+/** Layer kinds produced by the canvas layer-split tool. */
+export type CanvasLayerKind = 'background' | 'object' | 'text'
+
+/** One layer in a vision-model decomposition of an image. */
+export interface CanvasLayerPlanItem {
+  kind: CanvasLayerKind
+  label: string
+  /** Object/text layers: the normalized box the layer occupies. */
+  rect?: CanvasRect
+  /** Text layers: the recognized string. */
+  text?: string
+  /** Text layers: recognized color as a hex string. */
+  color?: string
+}
+
+/** Result of the host-mediated layer decomposition. */
+export interface CanvasLayerPlan {
+  layers: CanvasLayerPlanItem[]
+}
+
+/** Provenance kept on nodes produced by the layer-split tool. */
+export interface CanvasLayerInfo {
+  kind: CanvasLayerKind
+  label: string
+  sourceNodeId: string
+}
+
 /** One free-hand stroke on a sketch board. Points are normalized to the board
  *  rect (0..1 on both axes) so the drawing survives resize and raster export. */
 export interface CanvasSketchStroke {
@@ -314,6 +358,22 @@ export interface CanvasNodeMetadata {
   /** Text nodes. */
   text?: string
   fontSize?: number
+  /** Text nodes: CSS color for the text (absent = theme label color). */
+  color?: string
+  /** Text nodes: bold weight toggle. */
+  bold?: boolean
+  /** Text nodes created by the 标注 tool: the box this prompt describes. */
+  annotation?: { sourceNodeId: string; rect: CanvasRect }
+  /** Image nodes: annotation boxes drawn on this image. */
+  annotations?: CanvasAnnotation[]
+  /** Generated nodes: the 标注 edit behind them. The result is composited back
+   *  onto the clean original outside these boxes, so the red marker that the
+   *  model may echo never reaches the finished image. */
+  annotationEdit?: { sourceNodeId: string; boxes: CanvasRect[] }
+  /** Image nodes: layer-split provenance (label/kind of the extracted layer). */
+  layer?: CanvasLayerInfo
+  /** Image nodes: the asset carries real transparency (local matting). */
+  transparent?: boolean
   /** Sketch boards: the live drawing behind an image node. */
   sketch?: CanvasSketchDrawing
 }
