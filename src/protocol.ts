@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.5.11'
+export const PLUGIN_VERSION = '1.6.1'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -108,6 +108,20 @@ export const CANVAS_API = {
   asset: '/api/dsh-imagegen/canvas/asset',
   /** Vision-model layer decomposition for the canvas layer-split tool. */
   layers: '/api/dsh-imagegen/canvas/layers',
+  /** Raw-binary upload for arbitrary canvas file nodes (no base64 inflation). */
+  fileUpload: '/api/dsh-imagegen/canvas/file/upload',
+} as const
+
+/** Same-origin route family for canvas skills (catalog + run control). */
+export const CANVAS_SKILL_API = {
+  list: '/api/dsh-imagegen/canvas/skills/list',
+  run: '/api/dsh-imagegen/canvas/skills/run',
+  task: '/api/dsh-imagegen/canvas/skills/task',
+  cancel: '/api/dsh-imagegen/canvas/skills/cancel',
+  /** Local skill library (`~/.dsh/skills`): inspect, install, remove. */
+  library: '/api/dsh-imagegen/canvas/skills/library',
+  install: '/api/dsh-imagegen/canvas/skills/install',
+  remove: '/api/dsh-imagegen/canvas/skills/remove',
 } as const
 
 /** Maximum number of history entries retained host-side (oldest evicted). */
@@ -258,7 +272,8 @@ export interface CanvasTaskMeta {
   placement?: 'right' | 'below'
 }
 
-/** One image asset referenced by a canvas node. */
+/** One image or file asset referenced by a canvas node. Image assets always
+ *  carry real dimensions; file assets may report `0` (nothing to preview). */
 export interface CanvasAssetRef {
   assetId: string
   url: string
@@ -270,9 +285,171 @@ export interface CanvasAssetRef {
   originId?: string
   entryId?: string
   imageIndex?: number
+  /** Discriminator for nodes that carry arbitrary files; absent = image. */
+  kind?: 'image' | 'file'
+  /** Original (upload) or produced (skill run) file name, without a path. */
+  name?: string
+  /** Extracted text head for inline preview of text-like files. */
+  textPreview?: string
 }
 
-export type CanvasNodeType = 'image' | 'text' | 'config'
+export type CanvasNodeType = 'image' | 'text' | 'file' | 'config'
+
+/** Coarse bucket driving the file node's icon and preview branch. */
+export type CanvasFileKind = 'text' | 'pdf' | 'image' | 'office' | 'archive' | 'audio' | 'video' | 'other'
+
+/** Provenance stamped on nodes produced by a canvas skill run. */
+export interface CanvasSkillProvenance {
+  id: string
+  label: string
+  sourceNodeIds: string[]
+  createdAt: number
+  /** Wall-clock duration of the producing run in ms (absent for instant runs). */
+  durationMs?: number
+}
+
+/**
+ * One skill offered to canvas nodes. `builtin` entries are implemented by this
+ * plugin (prompt actions, extraction, PPT conversion); `external` entries come
+ * from the host skill registry (`ctx.skills`) and run through their own body.
+ */
+export interface CanvasSkillDescriptor {
+  id: string
+  name: string
+  description: string
+  whenToUse?: string
+  origin: 'builtin' | 'external'
+  /** light = one chat completion; heavy = a headless DSH agent run. */
+  tier: 'light' | 'heavy'
+  accepts: CanvasNodeType[]
+  output: 'text' | 'image' | 'file' | 'nodes'
+  /** Human-readable cost/time hint shown before a heavy run. */
+  costHint?: string
+  /** Extra preconditions the run reports as actionable errors. */
+  requires?: string[]
+  /** Built-in parameter vocabulary, e.g. polish styles. */
+  params?: Array<{ id: string; label: string; placeholder?: string }>
+  /** Host-skill name backing this entry (built-in deck conversion included). */
+  skillName?: string
+  /** Canonical home of the backing skill, offered as a one-click install. */
+  installUrl?: string
+}
+
+export type CanvasSkillTier = CanvasSkillDescriptor['tier']
+
+export type CanvasSkillRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+/** Node/connection drafts a finished run hands back to the browser. The client
+ *  is the single writer: it merges these into the document through its own
+ *  mutation path so undo, autosave and revision checks keep working. */
+export interface CanvasSkillOutput {
+  nodes: CanvasNode[]
+  connections: CanvasConnection[]
+  warnings: string[]
+}
+
+export interface CanvasSkillTask {
+  id: string
+  canvasId: string
+  skillId: string
+  label: string
+  tier: CanvasSkillTier
+  status: CanvasSkillRunStatus
+  /** Coarse progress stage for the UI (queued / preparing / running / collecting). */
+  stage?: string
+  startedAt: number
+  finishedAt?: number
+  /** Copy language of the run, so polled stages stay in the caller's language. */
+  language?: string
+  output?: CanvasSkillOutput
+  error?: string
+}
+
+export interface CanvasSkillRunRequest {
+  canvasId: string
+  skillId: string
+  /** Nodes whose content feeds the run (the selected/acting node first). */
+  nodeIds: string[]
+  /** Free-form instruction (custom polish, extra requirements). */
+  instruction?: string
+  /** Built-in parameter selection, e.g. `{ style: 'formal' }`. */
+  params?: Record<string, string>
+  /** New-node placement hint, mirroring the generation workflow. */
+  placement?: 'right' | 'below'
+  /** UI language for host-rendered copy (pool copy, errors, stage labels). */
+  language?: string
+}
+
+/** Polls and cancels carry the same language hint so stages stay translated. */
+export interface CanvasSkillTasksRequest {
+  taskId: string
+  language?: string
+}
+
+export interface CanvasSkillCatalog {
+  skills: CanvasSkillDescriptor[]
+  /** Whether the host agent runtime is available for heavy skills. */
+  agentAvailable: boolean
+  /** Whether the host skill registry answered. */
+  registryAvailable: boolean
+  /** Names of host skills the registry actually exposes (install affordance). */
+  installed: string[]
+  /** Why the catalog is partial, when it is. */
+  reason?: string
+}
+
+/** One skill inside the local skill library (`~/.dsh/skills`). */
+export interface CanvasSkillLibraryEntry {
+  name: string
+  description: string
+  /** Registry path of the skill's `SKILL.md`, when the registry reports one. */
+  path?: string
+  sizeBytes: number
+  updatedAt: number
+  /** Browsable upstream home, when this plugin knows one for the name. */
+  installUrl?: string
+}
+
+export interface CanvasSkillLibrary {
+  /** Root the host writes installs into. */
+  root: string
+  entries: CanvasSkillLibraryEntry[]
+  /** Names a source install is available for, so the UI can offer one click. */
+  catalog: Array<{ name: string; url: string }>
+  /** Whether the host can fetch sources at all (git / network availability). */
+  networkAvailable: boolean
+}
+
+export interface CanvasSkillInstallRequest {
+  /** One or more sources: a git URL, an archive URL, or a raw `SKILL.md` URL. */
+  sources?: string[]
+  /** Previously uploaded archive asset (from the canvas file upload route). */
+  asset?: CanvasAssetRef
+  /** Target folder name override for archive installs that carry no name. */
+  name?: string
+  /** Replace an already installed skill of the same name. */
+  force?: boolean
+  language?: string
+}
+
+export interface CanvasSkillInstallResult {
+  ok: boolean
+  installed: string[]
+  failed: Array<{ source: string; message: string }>
+  library: CanvasSkillLibrary
+  message?: string
+}
+
+export interface CanvasSkillRemoveRequest {
+  name: string
+  language?: string
+}
+
+export interface CanvasSkillRemoveResult {
+  ok: boolean
+  library: CanvasSkillLibrary
+  message?: string
+}
 
 /** Normalized (0..1) rectangle inside an image asset: origin top-left. */
 export interface CanvasRect {
@@ -376,6 +553,10 @@ export interface CanvasNodeMetadata {
   transparent?: boolean
   /** Sketch boards: the live drawing behind an image node. */
   sketch?: CanvasSketchDrawing
+  /** File nodes: coarse bucket driving the icon and preview branch. */
+  fileKind?: CanvasFileKind
+  /** Skill-produced nodes: which skill produced this and from what. */
+  skill?: CanvasSkillProvenance
 }
 
 export interface CanvasNode {

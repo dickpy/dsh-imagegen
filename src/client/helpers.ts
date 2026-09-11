@@ -4,17 +4,15 @@
  * (bridged in client/index.ts from ctx.locale — the plugin ships zh / en / ru
  * and registers itself as a DSH language pack for Русский), plus a small
  * error-message extractor. All copy stays in the locale dictionaries.
+ *
+ * The dictionaries themselves live in ../locale-tables.ts so the host half can
+ * render the same copy without duplicating the tables.
  */
 
-import { en, ru, zh, type ImageGenKey } from './locales.ts'
+import { imageGenLanguageOf, interpolate, type ImageGenLanguage, type TranslateValues } from '../locale-tables.ts'
+import type { ImageGenKey } from './locales.ts'
 
-/** Template values accepted by the interpolator. */
-export type TranslateValues = Record<string, string | number>
-
-/** Languages with a shipped dictionary. */
-export type ImageGenLanguage = 'zh' | 'en' | 'ru'
-
-const DICTIONARIES: Record<ImageGenLanguage, Record<string, string>> = { zh, en, ru }
+export type { ImageGenLanguage, TranslateValues }
 
 /** The active DSH locale mapped onto our dictionary (module-level, one value per app). */
 let activeLocale: ImageGenLanguage = 'zh'
@@ -30,7 +28,7 @@ const languageListeners = new Set<() => void>()
  * chain uses.
  */
 export function applyHostLocale(id: unknown): void {
-  const next: ImageGenLanguage = id === 'zh' || id === 'ru' ? id : 'en'
+  const next = imageGenLanguageOf(id)
   if (next === activeLocale) return
   activeLocale = next
   languageVersion += 1
@@ -48,20 +46,14 @@ export function subscribeImageGenLanguage(listener: () => void): () => void {
   return () => { languageListeners.delete(listener) }
 }
 
-/** Active dictionary for the current DSH language. */
-export function dictionary(): Record<string, string> {
-  return DICTIONARIES[activeLocale]
+/** The active shipped language (also used to translate host-sent copy). */
+export function activeImageGenLanguage(): ImageGenLanguage {
+  return activeLocale
 }
 
 /** Translate a key with optional {name} template params (current language). */
 export function tt(key: ImageGenKey, values?: TranslateValues): string {
-  const text = dictionary()[key] ?? key
-  if (values === undefined) return text
-  let rendered = text
-  for (const [name, value] of Object.entries(values)) {
-    rendered = rendered.replaceAll(`{${name}}`, String(value))
-  }
-  return rendered
+  return interpolate(key, values, activeLocale)
 }
 
 /** Human-readable error text from an unknown thrown value. */

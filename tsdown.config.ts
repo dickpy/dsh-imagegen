@@ -43,7 +43,9 @@ const CSS_VIRTUAL_SUFFIX = '.mjs'
  *  duplicate cordis Services and the settings seam). */
 const nodeConfig: UserConfig = {
   name: ID,
-  entry: ['src/index.ts'],
+  // `locale-tables` is a second entry so the host-side copy resolver can be
+  // exercised (and reused) without creating a cycle back through index.
+  entry: { index: 'src/index.ts', 'locale-tables': 'src/locale-tables.ts' },
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',
@@ -51,6 +53,9 @@ const nodeConfig: UserConfig = {
   fixedExtension: false,
   dts: false,
   clean: false,
+  outputOptions: {
+    entryFileNames: '[name].js',
+  },
   deps: {
     neverBundle: [
       '@deepseek-ai/cordis',

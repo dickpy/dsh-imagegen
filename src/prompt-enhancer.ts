@@ -121,31 +121,81 @@ export function stripReasoning(text: string): string {
   return (dangling === null ? withoutClosed : withoutClosed.slice(0, dangling.index)).trim()
 }
 
-/** Expand a concise image request into a production-ready image prompt. */
-export async function enhancePrompt(config: PromptModelConfig, prompt: string): Promise<string> {
-  if (config.apiUrl.trim() === '' || config.model.trim() === '') throw new Error('prompt enhancement model is not configured')
+/** One OpenAI-style multimodal user part (`text` or an `image_url` data URL). */
+export type ChatPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+
+/** One chat-completion request over the configured OpenAI-compatible endpoint. */
+export interface ChatOptions {
+  system: string
+  /** Either a plain string or multimodal parts. */
+  content: string | ChatPart[]
+  temperature?: number
+  maxTokens?: number
+  signal?: AbortSignal
+}
+
+/**
+ * Run one chat completion and return the cleaned visible answer.
+ *
+ * Shared by prompt enhancement, the canvas light-tier skill runner and the
+ * layer analyzer: it owns the endpoint, auth, error shaping (an upstream
+ * `error.message` is surfaced verbatim) and the reasoning-strip step, so every
+ * caller sees the same behaviour.
+ * @param config - endpoint, secret and model.
+ * @param options - prompt parts plus optional sampling controls.
+ * @returns the model's visible answer, with reasoning artifacts removed.
+ */
+export async function chatComplete(config: PromptModelConfig, options: ChatOptions): Promise<string> {
+  if (config.apiUrl.trim() === '' || config.model.trim() === '') {
+    throw new Error('chat model is not configured (Settings > Plugins > AI Image > Prompt enhancement)')
+  }
   const response = await fetch(endpoint(config.apiUrl, '/chat/completions'), {
     method: 'POST',
     headers: headers(config.apiKey),
     body: JSON.stringify({
       model: config.model.trim(),
-      temperature: 0.7,
+      temperature: options.temperature ?? 0.4,
+      ...options.maxTokens === undefined ? {} : { max_tokens: options.maxTokens },
       messages: [
+        { role: 'system', content: options.system },
         {
-          role: 'system',
-          content: 'You are an expert image-prompt editor. Expand the user request into one vivid, specific image-generation prompt. Preserve intent and language. Add only useful visual detail: subject, composition, lighting, materials, color, camera/style and quality. Return only the finished prompt, with no preface or markdown.',
+          role: 'user',
+          content: typeof options.content === 'string' ? options.content : options.content,
         },
-        { role: 'user', content: prompt },
       ],
     }),
+    ...options.signal === undefined ? {} : { signal: options.signal },
   })
   const body = await responseJson(response)
   const choices = Array.isArray(body.choices) ? body.choices : []
   const content = choices[0] !== null && typeof choices[0] === 'object'
     ? (choices[0] as { message?: { content?: unknown } }).message?.content
     : undefined
-  if (typeof content !== 'string' || content.trim() === '') throw new Error('chat model returned an empty prompt')
-  const enhanced = stripReasoning(content)
-  if (enhanced === '') throw new Error('chat model returned only reasoning content (empty <think> payload)')
-  return enhanced
+  if (typeof content !== 'string' || content.trim() === '') throw new Error('chat model returned an empty answer')
+  const answer = stripReasoning(content)
+  if (answer === '') throw new Error('chat model returned only reasoning content (empty <think> payload)')
+  return answer
+}
+
+/** Strip a fenced code block and pull the outermost JSON object/array out. */
+export function jsonPayload(content: string): unknown {
+  const cleaned = stripReasoning(content).replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  const objectStart = cleaned.indexOf('{')
+  const objectEnd = cleaned.lastIndexOf('}')
+  const arrayStart = cleaned.indexOf('[')
+  const arrayEnd = cleaned.lastIndexOf(']')
+  const useArray = arrayStart >= 0 && arrayEnd > arrayStart && (objectStart < 0 || arrayStart < objectStart)
+  const start = useArray ? arrayStart : objectStart
+  const end = useArray ? arrayEnd : objectEnd
+  if (start < 0 || end <= start) return undefined
+  try { return JSON.parse(cleaned.slice(start, end + 1)) as unknown } catch { return undefined }
+}
+
+/** Expand a concise image request into a production-ready image prompt. */
+export async function enhancePrompt(config: PromptModelConfig, prompt: string): Promise<string> {
+  return chatComplete(config, {
+    temperature: 0.7,
+    system: 'You are an expert image-prompt editor. Expand the user request into one vivid, specific image-generation prompt. Preserve intent and language. Add only useful visual detail: subject, composition, lighting, materials, color, camera/style and quality. Return only the finished prompt, with no preface or markdown.',
+    content: prompt,
+  })
 }

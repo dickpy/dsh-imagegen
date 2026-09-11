@@ -21,13 +21,13 @@ import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
-import { canvasStore, CanvasConflictError, type CanvasImageInput, type CanvasStore } from './canvas-store.ts'
+import { canvasStore, CanvasConflictError, MAX_CANVAS_FILE_BYTES, mimeFromFileName, safeFileName, type CanvasFileInput, type CanvasImageInput, type CanvasStore } from './canvas-store.ts'
 import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
 import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
 import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, CANVAS_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type CanvasDocument, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -99,6 +99,26 @@ export interface ImageGenRoutesDeps {
   resolveStorage?: () => StorageSyncConfig
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
+  /**
+   * Canvas skill runner. Absent when the host skill registry or agent runtime
+   * never mounted (deployments without them): the canvas then offers its
+   * built-in text actions only and says why.
+   */
+  skills?: {
+    list: (language?: string) => Promise<CanvasSkillCatalog>
+    run: (request: CanvasSkillRunRequest) => Promise<CanvasSkillTask>
+    task: (id: string) => CanvasSkillTask | undefined
+    cancel: (id: string) => Promise<boolean>
+  }
+  /**
+   * Local skill library (`~/.dsh/skills`). Absent on hosts that cannot write to
+   * the user's skill root: the browser then hides the install affordances.
+   */
+  skillLibrary?: {
+    list: (options?: { language?: string }) => Promise<CanvasSkillLibrary>
+    install: (request: CanvasSkillInstallRequest) => Promise<CanvasSkillInstallResult>
+    remove: (name: string, options?: { language?: string }) => Promise<CanvasSkillRemoveResult>
+  }
 }
 
 /** Minimal canvas store contract so hosts can inject an isolated test backend. */
@@ -110,6 +130,12 @@ export interface CanvasBackend {
   remove: (id: string) => Promise<Awaited<ReturnType<CanvasStore['remove']>>>
   putImage: (input: CanvasImageInput) => Promise<Awaited<ReturnType<CanvasStore['putImage']>>>
   readAsset: (file: string) => Promise<Awaited<ReturnType<CanvasStore['readAsset']>>>
+  /** File assets (the canvas file node). Optional so older test backends work. */
+  putFile?: (input: CanvasFileInput) => Promise<Awaited<ReturnType<CanvasStore['putFile']>>>
+  /** Batch asset read, used by skill runs. Optional for the same reason. */
+  readAssets?: (refs: readonly CanvasAssetRef[]) => Promise<Map<string, { data: Buffer; mime: string }>>
+  /** Copy one asset to a real path for a heavy skill run. */
+  materialize?: (ref: CanvasAssetRef, targetPath: string) => Promise<void>
 }
 
 /** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
@@ -160,6 +186,19 @@ async function readJsonBody(req: IncomingMessage, maxBytes = MAX_JSON_BODY_BYTES
   }
 }
 
+/** Read a raw request body (the canvas file upload path; no base64 inflation). */
+async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | undefined> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.length
+    if (size > maxBytes) return undefined
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
+}
+
 /** Human-readable text from an unknown thrown value. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -170,6 +209,64 @@ function templateSourceOf(body: Record<string, unknown> | undefined): string | u
   const raw = body?.source
   if (raw === undefined || raw === '') return DEFAULT_TEMPLATE_SOURCE_ID
   return typeof raw === 'string' && isTemplateSourceId(raw) ? raw : undefined
+}
+
+/** Validate the body of a canvas skill run (projected from the browser). */
+function parseSkillRunRequest(body: Record<string, unknown> | undefined): CanvasSkillRunRequest | undefined {
+  const canvasId = typeof body?.canvasId === 'string' ? body.canvasId.trim() : ''
+  const skillId = typeof body?.skillId === 'string' ? body.skillId.trim() : ''
+  if (canvasId === '' || skillId === '') return undefined
+  const nodeIds = Array.isArray(body?.nodeIds)
+    ? [...new Set(body.nodeIds.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(item => item !== ''))]
+    : []
+  const instruction = typeof body?.instruction === 'string' ? body.instruction : undefined
+  const params: Record<string, string> = {}
+  if (body?.params !== null && typeof body?.params === 'object' && !Array.isArray(body.params)) {
+    for (const [key, value] of Object.entries(body.params as Record<string, unknown>)) {
+      if (typeof value === 'string') params[key] = value
+    }
+  }
+  return {
+    canvasId,
+    skillId,
+    nodeIds,
+    ...instruction === undefined ? {} : { instruction },
+    ...Object.keys(params).length === 0 ? {} : { params },
+    placement: body?.placement === 'below' ? 'below' : 'right',
+    ...parseSkillLanguage(body),
+  }
+}
+
+/** The UI language hint every skill route accepts (copy stays translated). */
+function parseSkillLanguage(body: Record<string, unknown> | undefined): { language?: string } {
+  const raw = typeof body?.language === 'string' ? body.language.trim().toLowerCase() : ''
+  // Only the shipped dictionaries are accepted: the value reaches a lookup.
+  return raw === 'zh' || raw === 'en' || raw === 'ru' ? { language: raw } : {}
+}
+
+/**
+ * Normalize one skill-library install request: sources are trimmed, de-duped
+ * URLs, and the uploaded archive is taken from an asset reference the canvas
+ * upload route already stored (the host never sees raw browser bytes twice).
+ */
+function parseSkillInstallRequest(body: Record<string, unknown> | undefined): CanvasSkillInstallRequest | undefined {
+  const raw = Array.isArray(body?.sources) ? body.sources : []
+  const sources = [...new Set(raw
+    .filter((item): item is string => typeof item === 'string')
+    .map(item => item.trim())
+    .filter(item => item !== ''))].slice(0, 10)
+  const asset = body?.asset !== null && typeof body?.asset === 'object' && !Array.isArray(body.asset)
+    ? body.asset as CanvasAssetRef
+    : undefined
+  if (sources.length === 0 && asset === undefined) return undefined
+  const name = typeof body?.name === 'string' ? body.name.trim() : ''
+  return {
+    ...sources.length === 0 ? {} : { sources },
+    ...asset === undefined ? {} : { asset },
+    ...name === '' ? {} : { name },
+    force: body?.force === true,
+    ...parseSkillLanguage(body),
+  }
 }
 
 function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | undefined {
@@ -1130,8 +1227,178 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         const file = imageFileFrom(req.url, CANVAS_API.asset)
         const found = file === undefined ? undefined : await canvas.readAsset(file)
         if (found === undefined) { writeJson(res, 404, { error: 'not found' }); return }
-        res.writeHead(200, { 'content-type': found.mime, 'content-length': found.data.length, 'cache-control': 'private, max-age=3600' })
+        // Image assets stay inline (the canvas renders them). Arbitrary file
+        // types are forced into a download with a neutral content type, so a
+        // stored HTML/SVG-shaped payload can never execute in the app's origin.
+        const image = /^image\/(png|jpeg|webp|gif)$/.test(found.mime)
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const download = url.searchParams.get('download') !== '0'
+        res.writeHead(200, {
+          'content-type': image ? found.mime : 'application/octet-stream',
+          'content-length': found.data.length,
+          'cache-control': image ? 'private, max-age=3600' : 'private, no-store',
+          'x-content-type-options': 'nosniff',
+          ...image && !download ? {} : { 'content-disposition': `attachment; filename="${file ?? 'asset'}"` },
+        })
         res.end(found.data)
+      },
+    },
+    // ------------------------------------------------- canvas file upload
+    // Raw binary (the browser sends the File object directly), so large files
+    // never pay the base64 + JSON round trip the image path uses. Note that
+    // this path also prefix-matches CANVAS_API.asset; the host router resolves
+    // exact routes first, exactly as it already does for `/canvas/layers`.
+    {
+      kind: 'exact',
+      path: CANVAS_API.fileUpload,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        if (canvas.putFile === undefined) {
+          writeJson(res, 200, { ok: false, code: 'canvas-files-unsupported', message: '当前画布后端不支持文件资产' })
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const name = safeFileName(url.searchParams.get('name') ?? 'file')
+        const header = req.headers['content-type']
+        const declared = typeof header === 'string' ? header : ''
+        const mime = declared.trim() === '' ? mimeFromFileName(name) : declared
+        const data = await readRawBody(req, MAX_CANVAS_FILE_BYTES)
+        if (data === undefined || data.byteLength === 0) {
+          writeJson(res, 200, { ok: false, code: 'file-too-large', message: `文件为空或超过 ${Math.round(MAX_CANVAS_FILE_BYTES / (1024 * 1024))}MB 上限` })
+          return
+        }
+        try {
+          const asset = await canvas.putFile({ data, mime, name, origin: 'upload' })
+          writeJson(res, 200, { ok: true, asset })
+        } catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-file-failed', message: messageOf(error) }) }
+      },
+    },
+    // --------------------------------------------------- canvas skills list
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.list,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (deps.skills === undefined) {
+          writeJson(res, 200, {
+            ok: true,
+            skills: [],
+            agentAvailable: false,
+            registryAvailable: false,
+            reason: '本宿主未挂载技能注册表（ctx.skills），画布技能不可用。',
+          })
+          return
+        }
+        try { writeJson(res, 200, { ok: true, ...await deps.skills.list(parseSkillLanguage(body).language) }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'skills-failed', message: messageOf(error) }) }
+      },
+    },
+    // ---------------------------------------------------- canvas skills run
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.run,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const request = parseSkillRunRequest(body)
+        if (request === undefined) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'canvasId、skillId 与 nodeIds 是必填项' })
+          return
+        }
+        if (deps.skills === undefined) {
+          writeJson(res, 200, { ok: false, code: 'skills-unavailable', message: '本宿主未挂载技能运行时，画布技能不可用。' })
+          return
+        }
+        try { writeJson(res, 200, { ok: true, task: await deps.skills.run(request) }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'skill-run-failed', message: messageOf(error) }) }
+      },
+    },
+    // --------------------------------------------------- canvas skills task
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.task,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const id = typeof body?.taskId === 'string' ? body.taskId.trim() : ''
+        if (id === '' || deps.skills === undefined) {
+          writeJson(res, 200, { ok: false, code: 'not-found', message: '任务不存在' })
+          return
+        }
+        const task = deps.skills.task(id)
+        if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: '任务不存在' }); return }
+        writeJson(res, 200, { ok: true, task })
+      },
+    },
+    // ------------------------------------------------- canvas skills cancel
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.cancel,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const id = typeof body?.taskId === 'string' ? body.taskId.trim() : ''
+        if (id === '' || deps.skills === undefined) {
+          writeJson(res, 200, { ok: false, code: 'not-found', message: '任务不存在' })
+          return
+        }
+        try { writeJson(res, 200, { ok: true, cancelled: await deps.skills.cancel(id) }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'skill-cancel-failed', message: messageOf(error) }) }
+      },
+    },
+    // -------------------------------------------------- skill library (local)
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.library,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (deps.skillLibrary === undefined) {
+          writeJson(res, 200, { ok: false, code: 'library-unavailable', message: '本宿主不支持管理本机技能库。' })
+          return
+        }
+        try {
+          writeJson(res, 200, { ok: true, library: await deps.skillLibrary.list(parseSkillLanguage(body)) })
+        } catch (error) { writeJson(res, 200, { ok: false, code: 'library-failed', message: messageOf(error) }) }
+      },
+    },
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.install,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (deps.skillLibrary === undefined) {
+          writeJson(res, 200, { ok: false, code: 'library-unavailable', message: '本宿主不支持安装技能。' })
+          return
+        }
+        const request = parseSkillInstallRequest(body)
+        if (request === undefined) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: '请提供技能来源链接或上传压缩包。' })
+          return
+        }
+        try { writeJson(res, 200, await deps.skillLibrary.install(request)) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'install-failed', message: messageOf(error) }) }
+      },
+    },
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.remove,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (deps.skillLibrary === undefined) {
+          writeJson(res, 200, { ok: false, code: 'library-unavailable', message: '本宿主不支持卸载技能。' })
+          return
+        }
+        const name = typeof body?.name === 'string' ? body.name.trim() : ''
+        if (name === '') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: '缺少技能名。' })
+          return
+        }
+        try { writeJson(res, 200, await deps.skillLibrary.remove(name, parseSkillLanguage(body))) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'remove-failed', message: messageOf(error) }) }
       },
     },
     // --------------------------------------------------- templates list

@@ -13,7 +13,9 @@
 import { createServer, request as httpRequest } from 'node:http'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const root = new URL('../', import.meta.url)
 const results = []
@@ -49,6 +51,12 @@ async function waitForSelectorCount(root, selector, count, timeout = 1200) {
 
 // ---------------------------------------------------------------- A. host half
 const host = await import(new URL('lib/index.js', root).href)
+const hostLocale = await import(new URL('lib/locale-tables.js', root).href)
+// The host half renders skill copy through the same dictionaries the browser
+// bundle ships; wire that resolver here so the copy assertions see real text.
+host.setSkillTranslate((key, params, language) => hostLocale.interpolate(key, params, hostLocale.imageGenLanguageOf(language)))
+host.setSkillLanguage(() => 'zh')
+
 await check('A1 host exports the plugin contract', () => {
   assert.equal(typeof host.apply, 'function')
   assert.equal(host.name, 'imagegen')
@@ -857,6 +865,106 @@ const attachments = {
 }
 const pendingConversationImages = new Map()
 let storageProbeEndpoint = ''
+let heavySkillAllowed = true
+const skillRunRoot = join(tmpdir(), `dsh-imagegen-smoke-${process.pid}`)
+mkdirSync(skillRunRoot, { recursive: true })
+/** ---------------------------------------------------------------- canvas ---
+ * In-memory canvas + file store standing in for CanvasStore, plus a scripted
+ * chat model and skill registry so the skill runner can run end to end. */
+const canvasDocuments = new Map()
+const canvasFiles = new Map()
+const canvasBlobs = new Map()
+let canvasFileSeq = 0
+let chatCalls = 0
+let chatReply = 'polished text by model'
+const skillRegistrySkills = []
+const recordCanvasFile = (data, mime, name) => {
+  canvasFileSeq += 1
+  const assetId = `file${canvasFileSeq.toString().padStart(4, '0')}`
+  const extension = name.includes('.') ? name.split('.').pop() : 'bin'
+  const fileName = `${assetId}.${extension}`
+  canvasFiles.set(assetId, { name, mime })
+  canvasBlobs.set(fileName, { data: Buffer.from(data), mime })
+  return {
+    assetId,
+    url: `/api/dsh-imagegen/canvas/asset/${fileName}`,
+    mime,
+    bytes: data.length,
+    width: 0,
+    height: 0,
+    origin: 'upload',
+    kind: 'file',
+    name,
+  }
+}
+const canvasBackend = {
+  async read(id) { return canvasDocuments.get(id) },
+  async readAsset(file) { return canvasBlobs.get(file) },
+  async readAssets(refs) {
+    const found = new Map()
+    for (const ref of refs) {
+      const extension = (ref.name ?? '').includes('.') ? ref.name.split('.').pop() : 'bin'
+      const blob = canvasBlobs.get(`${ref.assetId}.${extension}`)
+      if (blob !== undefined) found.set(ref.assetId, blob)
+    }
+    return found
+  },
+  async materialize(ref, targetPath) {
+    const found = await canvasBackend.readAssets([ref])
+    const blob = found.get(ref.assetId)
+    if (blob === undefined) throw new Error(`missing asset ${ref.assetId}`)
+    writeFileSync(targetPath, blob.data)
+  },
+  async putFile(input) { return recordCanvasFile(input.data, input.mime, input.name) },
+}
+let heavyRunsStarted = 0
+/** Isolated skill library root for the install/remove cases. */
+const skillLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-imagegen-smoke-skills-'))
+const canvasSkillRunner = new host.SkillRunner({
+  backend: {
+    canvas: canvasBackend,
+    chat: {
+      async complete() {
+        chatCalls += 1
+        return chatReply
+      },
+    },
+  },
+  enabled: () => true,
+  heavyEnabled: () => heavySkillAllowed,
+  allowlist: () => [],
+  runRoot: () => skillRunRoot,
+  heavyTimeoutMs: () => 30_000,
+  dataRoot: () => skillRunRoot,
+})
+canvasSkillRunner.attach({
+  registry: {
+    async list() { return skillRegistrySkills },
+    async get(name) {
+      const found = skillRegistrySkills.find(skill => skill.name === name)
+      return found === undefined ? undefined : { name, content: `# ${name}\nDo the thing.` }
+    },
+  },
+  agents: {
+    available: () => true,
+    async create(options) {
+      heavyRunsStarted += 1
+      return {
+        session: { deriveMessages: () => [{ role: 'assistant', content: [{ type: 'text', text: 'heavy done' }] }] },
+        followup() {},
+        async whenIdle() {
+          // Publish the artifact the way a real skill would: into the run's
+          // output directory the runner handed the agent.
+          const outputDir = join(options.cwd, 'output')
+          mkdirSync(outputDir, { recursive: true })
+          writeFileSync(join(outputDir, 'deck.pptx'), Buffer.from('pptx-bytes'))
+        },
+        cancel() {},
+        async dispose() {},
+      }
+    },
+  },
+})
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
@@ -867,6 +975,48 @@ const routes = host.makeRoutes({
   resolveStorage: () => ({ endpoint: storageProbeEndpoint, region: 'ap-guangzhou', accessKey: 'AKID-test', secretKey: 'secret-test', prefix: 'dsh-imagegen' }),
   attachments,
   pendingConversationImages,
+  skills: canvasSkillRunner,
+  skillLibrary: {
+    async list() {
+      return await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false })
+    },
+    async install(request) {
+      const installed = []
+      const failed = []
+      let message
+      for (const source of request.sources ?? []) {
+        try { installed.push(host.classifySource(source).kind) }
+        catch (error) { failed.push({ source, message: String(error.message) }) }
+      }
+      if (request.asset !== undefined) {
+        // The upload route stores into the real canvas store, so read it back
+        // the same way the plugin does.
+        const found = await host.canvasStore.readAssets([request.asset])
+        const blob = found.get(request.asset.assetId)
+        if (blob === undefined) message = 'missing upload'
+        else {
+          try {
+            installed.push(await host.installFromArchive(blob.data, skillLibraryRoot, request.name ?? 'skill', request.force === true))
+          } catch (error) { message = String(error.message) }
+        }
+      }
+      return {
+        ok: installed.length > 0,
+        installed,
+        failed,
+        library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }),
+        ...message === undefined ? {} : { message },
+      }
+    },
+    async remove(name) {
+      try {
+        await host.removeSkill(name, skillLibraryRoot)
+        return { ok: true, library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }) }
+      } catch (error) {
+        return { ok: false, library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }), message: String(error.message) }
+      }
+    },
+  },
 })
 const server = createServer((req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://x').pathname
@@ -1381,6 +1531,397 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
   }
 })
 
+await check('C10 canvas file upload accepts arbitrary bytes and serves them as an attachment', async () => {
+  const bytes = Buffer.from('name,role\nalice,admin\n', 'utf8')
+  const response = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=people.csv`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/csv' },
+    body: bytes,
+  })
+  const body = await response.json()
+  assert.equal(response.status, 200, JSON.stringify(body))
+  assert.equal(body.ok, true)
+  assert.equal(body.asset.kind, 'file')
+  assert.equal(body.asset.name, 'people.csv')
+  assert.equal(body.asset.bytes, bytes.length)
+  assert.equal(body.asset.mime, 'text/csv')
+  assert.match(body.asset.url, /^\/api\/dsh-imagegen\/canvas\/asset\/[a-f0-9]{64}\.csv$/)
+
+  // Non-image assets download rather than render inline.
+  const served = await fetch(`http://127.0.0.1:${port}${body.asset.url}`)
+  assert.equal(served.status, 200)
+  assert.equal(served.headers.get('content-type'), 'application/octet-stream')
+  assert.equal(served.headers.get('x-content-type-options'), 'nosniff')
+  assert.match(served.headers.get('content-disposition') ?? '', /^attachment/)
+  assert.equal(await served.text(), bytes.toString('utf8'))
+})
+
+await check('C10b canvas file upload refuses executable extensions with an actionable message', async () => {
+  const response = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=payload.exe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: Buffer.from('MZ'),
+  })
+  const body = await response.json()
+  assert.equal(body.ok, false)
+  assert.match(String(body.message), /不支持|not supported|\.exe/i)
+
+  // Uploads carry no byte limit inside the raw-body reader other than the cap:
+  // a name that sanitizes to nothing still lands under a safe fallback.
+  const odd = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=${encodeURIComponent('../..\\evil.txt')}`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain' },
+    body: Buffer.from('ok'),
+  })
+  const oddBody = await odd.json()
+  assert.equal(oddBody.ok, true, JSON.stringify(oddBody))
+  assert.equal(oddBody.asset.name.includes('/'), false)
+  assert.equal(oddBody.asset.name.includes('\\'), false)
+})
+
+await check('C10c a file node round-trips through canvas save with its asset intact', async () => {
+  const asset = recordCanvasFile(Buffer.from('报告正文\n', 'utf8'), 'text/plain', 'report.txt')
+  const created = await post('/api/dsh-imagegen/canvas/create', { title: 'files' })
+  const document = created.body.document
+  const fileNode = {
+    id: 'node-file-1',
+    type: 'file',
+    title: 'report.txt',
+    x: 40,
+    y: 60,
+    width: 300,
+    height: 170,
+    metadata: { asset, fileKind: 'text' },
+  }
+  const saved = await post('/api/dsh-imagegen/canvas/save', {
+    document: { ...document, nodes: [...document.nodes, fileNode] },
+    expectedRevision: document.revision,
+  })
+  assert.equal(saved.body.ok, true, JSON.stringify(saved.body))
+  const storedNode = saved.body.document.nodes.find(node => node.id === 'node-file-1')
+  assert.equal(storedNode.type, 'file')
+  assert.equal(storedNode.metadata.asset.assetId, asset.assetId)
+  assert.equal(storedNode.metadata.fileKind, 'text')
+})
+
+await check('C11 the skill catalog merges built-ins with local skills and tiers external ones', async () => {
+  skillRegistrySkills.length = 0
+  skillRegistrySkills.push(
+    { name: 'image-to-editable-ppt', description: 'Rebuild slides as an editable deck', path: 'C:/skills/ppt/SKILL.md' },
+    { name: 'summarize-notes', description: 'Turn notes into a short brief', metadata: { tier: 'light' } },
+  )
+  const listed = await post('/api/dsh-imagegen/canvas/skills/list', {})
+  assert.equal(listed.body.ok, true, JSON.stringify(listed.body))
+  const ids = listed.body.skills.map(skill => skill.id)
+  assert.ok(ids.includes('polish.text'), `missing polish.text in ${JSON.stringify(ids)}`)
+  assert.ok(ids.includes('ppt.fromImages'), `missing ppt.fromImages in ${JSON.stringify(ids)}`)
+  assert.ok(ids.includes('skill:image-to-editable-ppt'), `missing ppt skill in ${JSON.stringify(ids)}`)
+  assert.ok(ids.includes('skill:summarize-notes'), `missing summarize-notes in ${JSON.stringify(ids)}`)
+  const ppt = listed.body.skills.find(skill => skill.id === 'skill:image-to-editable-ppt')
+  assert.equal(ppt.tier, 'heavy', JSON.stringify(ppt))
+  assert.equal(ppt.origin, 'external', JSON.stringify(ppt))
+  const notes = listed.body.skills.find(skill => skill.id === 'skill:summarize-notes')
+  assert.equal(notes.tier, 'light', JSON.stringify(notes))
+  assert.equal(listed.body.agentAvailable, true, JSON.stringify(listed.body))
+  assert.equal(listed.body.registryAvailable, true, JSON.stringify(listed.body))
+})
+
+await check('C11a the host registry adapter hides user-only skills and narrows summaries', async () => {
+  const adapter = host.createSkillRegistryBackend({
+    async list() {
+      return [
+        { name: 'visible', description: 'a model-invocable skill', invocation: { modelInvocable: true, userInvocable: true }, metadata: { tier: 'heavy' }, path: 'C:/s/visible/SKILL.md' },
+        { name: 'user-only', description: 'slash command only', invocation: { modelInvocable: false, userInvocable: true } },
+        { name: 'undeclared', description: 'provider omitted the policy', extra: 'dropped' },
+      ]
+    },
+    async get(name) {
+      return name === 'visible' ? { name, content: '# visible', metadata: { canvasTier: 'light' } } : undefined
+    },
+  })
+  const listed = await adapter.list()
+  assert.deepEqual(listed.map(skill => skill.name), ['visible', 'undeclared'])
+  assert.equal(listed[0].path, 'C:/s/visible/SKILL.md')
+  assert.deepEqual(listed[0].metadata, { tier: 'heavy' })
+  assert.equal('extra' in listed[1], false)
+  const body = await adapter.get('visible')
+  assert.equal(body.content, '# visible')
+  assert.deepEqual(body.metadata, { canvasTier: 'light' })
+  assert.equal(await adapter.get('user-only'), undefined)
+})
+
+await check('C11b a lightweight skill run answers through the chat model and drafts a text node', async () => {
+  const created = await post('/api/dsh-imagegen/canvas/create', { title: 'polish' })
+  const document = created.body.document
+  const textNode = {
+    id: 'node-text-1', type: 'text', title: 'draft', x: 0, y: 0, width: 280, height: 150,
+    metadata: { text: 'hello world', fontSize: 14 },
+  }
+  canvasDocuments.set(document.id, { ...document, nodes: [textNode] })
+  const before = chatCalls
+  chatReply = 'Hello, world.'
+  const run = await post('/api/dsh-imagegen/canvas/skills/run', {
+    canvasId: document.id,
+    skillId: 'polish.text',
+    nodeIds: ['node-text-1'],
+    params: { style: 'formal' },
+  })
+  assert.equal(run.body.ok, true, JSON.stringify(run.body))
+  const taskId = run.body.task.id
+  let snapshot = run.body.task
+  for (let attempt = 0; attempt < 80 && snapshot.status !== 'completed'; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+    snapshot = (await post('/api/dsh-imagegen/canvas/skills/task', { taskId })).body.task
+  }
+  assert.equal(snapshot.status, 'completed', JSON.stringify(snapshot))
+  assert.equal(chatCalls, before + 1)
+  const produced = snapshot.output.nodes[0]
+  assert.equal(produced.type, 'text')
+  assert.equal(produced.metadata.text, 'Hello, world.')
+  assert.deepEqual(produced.metadata.skill.sourceNodeIds, ['node-text-1'])
+  assert.equal(snapshot.output.connections[0].fromNodeId, 'node-text-1')
+  assert.equal(snapshot.output.connections[0].toNodeId, produced.id)
+})
+
+await check('C11c extract.content reads an uploaded text file without spending a chat call', async () => {
+  const created = await post('/api/dsh-imagegen/canvas/create', { title: 'extract' })
+  const document = created.body.document
+  const asset = recordCanvasFile(Buffer.from('第一行\n第二行\n', 'utf8'), 'text/plain', 'notes.txt')
+  const fileNode = {
+    id: 'node-file-2', type: 'file', title: 'notes.txt', x: 0, y: 0, width: 300, height: 170,
+    metadata: { asset, fileKind: 'text' },
+  }
+  canvasDocuments.set(document.id, { ...document, nodes: [fileNode] })
+  const before = chatCalls
+  const run = await post('/api/dsh-imagegen/canvas/skills/run', {
+    canvasId: document.id,
+    skillId: 'extract.content',
+    nodeIds: ['node-file-2'],
+  })
+  assert.equal(run.body.ok, true, JSON.stringify(run.body))
+  const taskId = run.body.task.id
+  let snapshot = run.body.task
+  for (let attempt = 0; attempt < 80 && snapshot.status !== 'completed'; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+    snapshot = (await post('/api/dsh-imagegen/canvas/skills/task', { taskId })).body.task
+  }
+  assert.equal(snapshot.status, 'completed', JSON.stringify(snapshot))
+  assert.equal(chatCalls, before)
+  assert.equal(snapshot.output.nodes[0].type, 'text')
+  assert.match(snapshot.output.nodes[0].metadata.text, /第一行/)
+})
+
+await check('C11d heavy skills refuse to start without the agent runtime, then produce a file node', async () => {  const created = await post('/api/dsh-imagegen/canvas/create', { title: 'deck' })
+  const document = created.body.document
+  const imageNode = {
+    id: 'node-image-1', type: 'image', title: 'slide-1', x: 0, y: 0, width: 240, height: 240,
+    metadata: {
+      asset: { assetId: 'img-1', url: '/api/dsh-imagegen/canvas/asset/' + 'a'.repeat(64) + '.png', mime: 'image/png', bytes: pngBytes.length, width: 1, height: 1, origin: 'upload', kind: 'image', name: 'img-1.png' },
+      status: 'success',
+    },
+  }
+  canvasDocuments.set(document.id, { ...document, nodes: [imageNode] })
+
+  // The built-in deck conversion disappears from the catalog when the agent
+  // runtime is not available, so the run fails instead of silently no-oping.
+  heavySkillAllowed = false
+  const disabled = await post('/api/dsh-imagegen/canvas/skills/list', {})
+  assert.equal(disabled.body.agentAvailable, false)
+  heavySkillAllowed = true
+
+  const before = heavyRunsStarted
+  // The run materializes its input images on disk, so the stub store needs the
+  // bytes the node's asset points at.
+  // The run materializes its input images on disk, so the stub store needs the
+  // bytes the node's asset points at (`<assetId>.<extension>`).
+  canvasBlobs.set('img-1.png', { data: pngBytes, mime: 'image/png' })
+  const run = await post('/api/dsh-imagegen/canvas/skills/run', {
+    canvasId: document.id,
+    skillId: 'ppt.fromImages',
+    nodeIds: ['node-image-1'],
+  })
+  assert.equal(run.body.ok, true, JSON.stringify(run.body))
+  const taskId = run.body.task.id
+  let snapshot = run.body.task
+  for (let attempt = 0; attempt < 200 && snapshot.status !== 'completed' && snapshot.status !== 'failed'; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+    snapshot = (await post('/api/dsh-imagegen/canvas/skills/task', { taskId })).body.task
+  }
+  assert.equal(snapshot.status, 'completed', JSON.stringify(snapshot))
+  assert.equal(heavyRunsStarted, before + 1)
+  const produced = snapshot.output.nodes.find(node => node.type === 'file')
+  assert.ok(produced !== undefined, 'the deck artifact became a file node')
+  assert.match(String(produced.metadata.asset.name), /\.pptx$/)
+})
+
+await check('C11e an unknown skill id and a missing canvas fail with copy, not a crash', async () => {
+  const unknown = await post('/api/dsh-imagegen/canvas/skills/run', {
+    canvasId: 'nope', skillId: 'skill:does-not-exist', nodeIds: [],
+  })
+  assert.equal(unknown.body.ok, false)
+  const created = await post('/api/dsh-imagegen/canvas/create', { title: 'gone' })
+  const missing = await post('/api/dsh-imagegen/canvas/skills/run', {
+    canvasId: `missing-${created.body.document.id}`, skillId: 'polish.text', nodeIds: ['x'],
+  })
+  assert.equal(missing.body.ok, false)
+  assert.ok(typeof missing.body.message === 'string' && missing.body.message.length > 0)
+})
+
+await check('C11f skill routes answer in the caller language and reject unknown hints', async () => {
+  const zh = await post('/api/dsh-imagegen/canvas/skills/list', { language: 'zh' })
+  const en = await post('/api/dsh-imagegen/canvas/skills/list', { language: 'en' })
+  const bogus = await post('/api/dsh-imagegen/canvas/skills/list', { language: 'not-a-locale' })
+  const nameOf = (body, id) => body.skills.find(skill => skill.id === id).name
+  assert.equal(nameOf(zh.body, 'polish.text'), '文本润色')
+  assert.equal(nameOf(en.body, 'polish.text'), 'Polish text')
+  // An unknown/absent hint falls back to the host resolver, never a raw key.
+  assert.equal(nameOf(bogus.body, 'polish.text'), '文本润色')
+  assert.ok(zh.body.reason === undefined || !String(zh.body.reason).includes('canvas.skills.'))
+})
+
+// ------------------------------------------- C12. local skill library
+
+/** Minimal stored-method ZIP writer (the reader validates structure, not CRC). */
+function buildZip(entries) {
+  const locals = []
+  const central = []
+  let offset = 0
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8')
+    const body = Buffer.from(entry.body, 'utf8')
+    const local = Buffer.alloc(30 + name.length)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0, 6)
+    local.writeUInt16LE(0, 8) // stored
+    local.writeUInt32LE(0, 14) // crc (unused by the reader)
+    local.writeUInt32LE(body.length, 18)
+    local.writeUInt32LE(body.length, 22)
+    local.writeUInt16LE(name.length, 26)
+    local.writeUInt16LE(0, 28)
+    name.copy(local, 30)
+    locals.push(local, body)
+    const head = Buffer.alloc(46 + name.length)
+    head.writeUInt32LE(0x02014b50, 0)
+    head.writeUInt16LE(20, 4)
+    head.writeUInt16LE(20, 6)
+    head.writeUInt16LE(0, 8)
+    head.writeUInt16LE(0, 10) // stored
+    head.writeUInt32LE(0, 16)
+    head.writeUInt32LE(body.length, 20)
+    head.writeUInt32LE(body.length, 24)
+    head.writeUInt16LE(name.length, 28)
+    head.writeUInt32LE(0, 38)
+    head.writeUInt32LE(offset, 42)
+    name.copy(head, 46)
+    central.push(head)
+    offset += local.length + body.length
+  }
+  const centralBuffer = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(centralBuffer.length, 12)
+  end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, centralBuffer, end])
+}
+
+await check('C12 install sources are classified without touching the network', () => {
+  assert.deepEqual({ ...host.classifySource('https://github.com/ningzimu/image-to-editable-ppt-skill') }, {
+    kind: 'github', owner: 'ningzimu', repo: 'image-to-editable-ppt-skill', ref: '', subpath: '',
+  })
+  // A blob/tree URL keeps its ref and subfolder so the bundle (not the file) installs.
+  assert.deepEqual({ ...host.classifySource('https://github.com/o/r/tree/main/skills/deck') }, {
+    kind: 'github', owner: 'o', repo: 'r', ref: 'main', subpath: 'skills/deck',
+  })
+  const raw = host.classifySource('https://raw.githubusercontent.com/o/r/main/SKILL.md')
+  assert.equal(raw.kind, 'raw')
+  assert.equal(raw.name, 'SKILL')
+  assert.equal(host.classifySource('https://example.com/bundle.zip').kind, 'archive')
+  assert.equal(host.classifySource('https://git.example.com/team/skill.git').kind, 'git')
+  // Names are folder names: anything path-like is refused.
+  assert.equal(host.isValidSkillName('image-to-editable-ppt'), true)
+  assert.equal(host.isValidSkillName('../escape'), false)
+  assert.equal(host.isValidSkillName(''), false)
+})
+
+await check('C12a the library lists, installs from an archive, replaces and removes', async () => {
+  // A flat `<name>.md` skill and a bundle folder both count as installed.
+  writeFileSync(join(skillLibraryRoot, 'flat-skill.md'), '---\nname: flat-skill\ndescription: A flat one\n---\n\n# Flat\n')
+  mkdirSync(join(skillLibraryRoot, 'bundle-skill'), { recursive: true })
+  writeFileSync(join(skillLibraryRoot, 'bundle-skill', 'SKILL.md'), '---\nname: bundle-skill\ndescription: A bundled one\n---\n\n# Bundle\n')
+
+  const listed = await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false })
+  assert.equal(listed.networkAvailable, false)
+  assert.deepEqual(listed.entries.map(entry => entry.name).sort(), ['bundle-skill', 'flat-skill'])
+  assert.equal(listed.entries.find(entry => entry.name === 'bundle-skill').description, 'A bundled one')
+  assert.ok(listed.catalog.some(source => source.name === 'image-to-editable-ppt'))
+
+  // GitHub-shaped archive: one wrapper folder, bundle a level deeper.
+  const archive = buildZip([
+    { name: 'repo-main/', body: '' },
+    { name: 'repo-main/SKILL.md', body: '---\nname: deck-maker\ndescription: Makes decks\n---\n\n# Deck\n' },
+    { name: 'repo-main/scripts/run.py', body: 'print(1)\n' },
+  ])
+  assert.equal(host.readZipDirectory(archive).length, 3)
+  const installed = await host.installFromArchive(archive, skillLibraryRoot, 'repo', false)
+  assert.equal(installed, 'deck-maker')
+  assert.equal(readFileSync(join(skillLibraryRoot, 'deck-maker', 'scripts', 'run.py'), 'utf8'), 'print(1)\n')
+  // Without force a second install refuses instead of clobbering.
+  await assert.rejects(
+    () => host.installFromArchive(archive, skillLibraryRoot, 'repo', false),
+    /已经安装/,
+  )
+  assert.equal(await host.installFromArchive(archive, skillLibraryRoot, 'repo', true), 'deck-maker')
+
+  // An archive with no SKILL.md anywhere is rejected, not half-installed.
+  const empty = buildZip([{ name: 'repo-main/README.md', body: 'nothing here\n' }])
+  await assert.rejects(() => host.installFromArchive(empty, skillLibraryRoot, 'nope', true), /SKILL\.md/)
+
+  assert.equal(await host.removeSkill('flat-skill', skillLibraryRoot), 'flat-skill')
+  await assert.rejects(() => host.removeSkill('flat-skill', skillLibraryRoot), /没有找到/)
+  await assert.rejects(() => host.removeSkill('../escape', skillLibraryRoot), /不合法/)
+  const after = await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false })
+  assert.deepEqual(after.entries.map(entry => entry.name).sort(), ['bundle-skill', 'deck-maker'])
+})
+
+await check('C12b the library routes list, install from an upload, and remove', async () => {
+  const initial = await post('/api/dsh-imagegen/canvas/skills/library', { language: 'zh' })
+  assert.equal(initial.status, 200)
+  assert.equal(initial.body.ok, true)
+  assert.equal(initial.body.library.root, skillLibraryRoot)
+
+  // The browser uploads the archive first (same route as a file node), then
+  // installs it by asset reference.
+  const archive = buildZip([{ name: 'bundle/SKILL.md', body: '---\nname: routed-skill\ndescription: From a route\n---\n\n# Routed\n' }])
+  const uploaded = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=routed.zip`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/zip' },
+    body: archive,
+  })
+  const upload = await uploaded.json()
+  assert.equal(upload.ok, true, JSON.stringify(upload))
+
+  const install = await post('/api/dsh-imagegen/canvas/skills/install', {
+    asset: upload.asset, name: 'routed', force: true, language: 'zh',
+  })
+  assert.equal(install.body.ok, true, JSON.stringify(install.body))
+  assert.deepEqual(install.body.installed, ['routed-skill'])
+  assert.ok(install.body.library.entries.some(entry => entry.name === 'routed-skill'))
+
+  // An empty install request is a bad request, not a crash.
+  const empty = await post('/api/dsh-imagegen/canvas/skills/install', {})
+  assert.equal(empty.body.ok, false)
+  assert.equal(empty.body.code, 'bad-request')
+
+  const removed = await post('/api/dsh-imagegen/canvas/skills/remove', { name: 'routed-skill' })
+  assert.equal(removed.body.ok, true, JSON.stringify(removed.body))
+  assert.ok(!removed.body.library.entries.some(entry => entry.name === 'routed-skill'))
+  const missing = await post('/api/dsh-imagegen/canvas/skills/remove', { name: 'never-installed' })
+  assert.equal(missing.body.ok, false)
+})
+
 await new Promise(resolve => server.close(resolve))
 
 // -------------------------------------------------- D. client bundle shape
@@ -1584,6 +2125,39 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
   } finally {
     delete sandbox.document
   }
+})
+
+await check('D2 the client bundle ships the canvas skill + file-node surface', () => {
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  // Copy: the skill picker, the polish menu and the file-node strings all ride
+  // the same dictionary as every other panel label.
+  for (const needle of [
+    'canvas.skills.pickerTitle',
+    'canvas.skills.fileNode',
+    'canvas.skills.pptDesc',
+    'canvas.skills.libraryTitle',
+    'canvas.skills.installNow',
+    'canvas.polish.formal',
+    'settings.skillsEnabled',
+  ]) {
+    assert.ok(source.includes(needle), `client bundle is missing ${needle}`)
+  }
+  // Endpoints: the browser half must call the exact routes the host registers.
+  for (const route of [
+    '/api/dsh-imagegen/canvas/file/upload',
+    '/api/dsh-imagegen/canvas/skills/list',
+    '/api/dsh-imagegen/canvas/skills/run',
+    '/api/dsh-imagegen/canvas/skills/task',
+    '/api/dsh-imagegen/canvas/skills/cancel',
+    '/api/dsh-imagegen/canvas/skills/library',
+    '/api/dsh-imagegen/canvas/skills/install',
+    '/api/dsh-imagegen/canvas/skills/remove',
+  ]) {
+    assert.ok(source.includes(route), `client bundle is missing route ${route}`)
+  }
+  // The heavy-tier confirmation and the batch cap are UI-side gates.
+  assert.ok(source.includes('canvas.skills.confirmBody'))
+  assert.ok(source.includes('canvas.skills.batchTooMany'))
 })
 
 // --------------- E. full client apply in jsdom (mounts the sidebar entry)

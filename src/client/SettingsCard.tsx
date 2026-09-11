@@ -19,7 +19,7 @@ import { CardForm, booleanField, secretField, textField, type CardActions, type 
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
-import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
+import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -42,6 +42,12 @@ export interface ImageGenSettings {
   storageSecretKey?: string
   storageSyncGallery?: boolean
   storageSyncHistory?: boolean
+  skillsEnabled?: boolean
+  allowHeavySkills?: boolean
+  skillAllowlist?: string
+  skillOutputDir?: string
+  skillHeavyTimeoutMinutes?: number
+  skillAgentPreset?: string
 }
 
 /** What the card renders. */
@@ -65,6 +71,12 @@ export interface ImageGenSettingsCardState extends CardShell {
   storageSecretKey: CardFieldState
   storageSyncGallery: CardFieldState
   storageSyncHistory: CardFieldState
+  skillsEnabled: CardFieldState
+  allowHeavySkills: CardFieldState
+  skillAllowlist: CardFieldState
+  skillOutputDir: CardFieldState
+  skillHeavyTimeoutMinutes: CardFieldState
+  skillAgentPreset: CardFieldState
 }
 
 /** Result of probing the configured object storage from the card. */
@@ -109,6 +121,12 @@ export class ImageGenSettingsCardController {
       secretField('storageSecretKey'),
       booleanField('storageSyncGallery'),
       booleanField('storageSyncHistory'),
+      booleanField('skillsEnabled'),
+      booleanField('allowHeavySkills'),
+      textField('skillAllowlist'),
+      textField('skillOutputDir'),
+      textField('skillHeavyTimeoutMinutes'),
+      textField('skillAgentPreset'),
     ], {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
@@ -136,6 +154,12 @@ export class ImageGenSettingsCardController {
       storageSecretKey: this.form.field('storageSecretKey'),
       storageSyncGallery: this.form.field('storageSyncGallery'),
       storageSyncHistory: this.form.field('storageSyncHistory'),
+      skillsEnabled: this.form.field('skillsEnabled'),
+      allowHeavySkills: this.form.field('allowHeavySkills'),
+      skillAllowlist: this.form.field('skillAllowlist'),
+      skillOutputDir: this.form.field('skillOutputDir'),
+      skillHeavyTimeoutMinutes: this.form.field('skillHeavyTimeoutMinutes'),
+      skillAgentPreset: this.form.field('skillAgentPreset'),
     }
   }
 
@@ -205,6 +229,8 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const [storageOpen, setStorageOpen] = useState(false)
   const [storageTesting, setStorageTesting] = useState(false)
   const [storageTestResult, setStorageTestResult] = useState<string | null>(null)
+  const [skillProbing, setSkillProbing] = useState(false)
+  const [skillProbeResult, setSkillProbeResult] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   // Channel list local states.
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -598,6 +624,98 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
             </div>
             <p className={css.hint}>{t('settings.storageKeyHint')}</p>
             </div> : null}
+
+            {/* ---------- infinite-canvas skills ---------- */}
+            <BooleanField
+              id="dsh-imagegen-settings-skills-enabled"
+              label={t('settings.skillsEnabled')}
+              hint={t('settings.skillsEnabledHint')}
+              inheritLabel={t('settings.inherit')}
+              onLabel={t('settings.on')}
+              offLabel={t('settings.off')}
+              {...fieldProps}
+              {...state.skillsEnabled}
+              onEdit={(text) => { props.edit('skillsEnabled', text) }}
+              onReset={() => { props.resetField('skillsEnabled') }}
+            />
+            <BooleanField
+              id="dsh-imagegen-settings-skills-heavy"
+              label={t('settings.allowHeavySkills')}
+              hint={t('settings.allowHeavySkillsHint')}
+              inheritLabel={t('settings.inherit')}
+              onLabel={t('settings.on')}
+              offLabel={t('settings.off')}
+              {...fieldProps}
+              {...state.allowHeavySkills}
+              onEdit={(text) => { props.edit('allowHeavySkills', text) }}
+              onReset={() => { props.resetField('allowHeavySkills') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-skills-allowlist"
+              label={t('settings.skillAllowlist')}
+              hint={t('settings.skillAllowlistHint')}
+              placeholder="extract-content, image-to-editable-ppt"
+              {...fieldProps}
+              {...state.skillAllowlist}
+              onEdit={(text) => { props.edit('skillAllowlist', text) }}
+              onReset={() => { props.resetField('skillAllowlist') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-skills-output"
+              label={t('settings.skillOutputDir')}
+              hint={t('settings.skillOutputDirHint')}
+              placeholder=""
+              {...fieldProps}
+              {...state.skillOutputDir}
+              onEdit={(text) => { props.edit('skillOutputDir', text) }}
+              onReset={() => { props.resetField('skillOutputDir') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-skills-timeout"
+              label={t('settings.skillHeavyTimeout')}
+              hint={t('settings.skillHeavyTimeoutHint')}
+              placeholder="20"
+              {...fieldProps}
+              {...state.skillHeavyTimeoutMinutes}
+              onEdit={(text) => { props.edit('skillHeavyTimeoutMinutes', text) }}
+              onReset={() => { props.resetField('skillHeavyTimeoutMinutes') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-skills-preset"
+              label={t('settings.skillAgentPreset')}
+              hint={t('settings.skillAgentPresetHint')}
+              placeholder=""
+              {...fieldProps}
+              {...state.skillAgentPreset}
+              onEdit={(text) => { props.edit('skillAgentPreset', text) }}
+              onReset={() => { props.resetField('skillAgentPreset') }}
+            />
+            <div className={css.modelSummary}>
+              <button
+                type="button"
+                className={css.addModel}
+                disabled={disabled || skillProbing}
+                onClick={() => {
+                  setSkillProbing(true)
+                  setSkillProbeResult(null)
+                  void fetch(CANVAS_SKILL_API.list, { method: 'POST' })
+                    .then(async response => await response.json() as { ok?: boolean; skills?: unknown[]; agentAvailable?: boolean; registryAvailable?: boolean })
+                    .then(body => {
+                      const total = Array.isArray(body.skills) ? body.skills.length : 0
+                      setSkillProbeResult(t('settings.skillProbeOk', {
+                        count: total,
+                        agent: body.agentAvailable === true ? t('settings.skillProbeAgentOn') : t('settings.skillProbeAgentOff'),
+                      }))
+                    })
+                    .catch(caught => { setSkillProbeResult(t('settings.storageTestFailed', { error: caught instanceof Error ? caught.message : String(caught) })) })
+                    .finally(() => { setSkillProbing(false) })
+                }}
+              >
+                {skillProbing ? t('settings.skillProbing') : t('settings.skillProbe')}
+              </button>
+              {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
+            </div>
+            <p className={css.hint}>{t('settings.skillsHint')}</p>
 
             <button type="button" className={css.disclosure} aria-expanded={moreOpen} onClick={() => { setMoreOpen(open => !open) }}>
               <span>{t('settings.moreOptions')}</span>

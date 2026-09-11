@@ -3,7 +3,8 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { CANVAS_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasLayerPlan, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
+import { CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
+import { activeImageGenLanguage } from './helpers.ts'
 
 /** Error carrying the route's JSON error message. */
 export class ImageGenApiError extends Error {
@@ -220,6 +221,97 @@ export class ImageGenApi {
   async canvasLayers(image: string): Promise<CanvasLayerPlan> {
     const response = await fetch(CANVAS_API.layers, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image }) })
     return (await readEnvelope<{ ok: true; plan: CanvasLayerPlan }>(response)).plan
+  }
+
+  /**
+   * Upload one arbitrary file for a canvas file node. The File object travels
+   * as the raw request body (no base64 inflation) with its name in the query
+   * and its type in the content-type header.
+   */
+  async canvasFileUpload(file: File): Promise<CanvasAssetRef> {
+    const response = await fetch(`${CANVAS_API.fileUpload}?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'content-type': file.type === '' ? 'application/octet-stream' : file.type },
+      body: file,
+    })
+    return (await readEnvelope<{ ok: true; asset: CanvasAssetRef }>(response)).asset
+  }
+
+  /** Read the skill catalog offered to canvas nodes. */
+  async canvasSkillsList(): Promise<CanvasSkillCatalog> {
+    const response = await fetch(CANVAS_SKILL_API.list, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ language: activeImageGenLanguage() }),
+    })
+    const body = await readEnvelope<{ ok: true } & CanvasSkillCatalog>(response)
+    return {
+      skills: body.skills,
+      agentAvailable: body.agentAvailable,
+      registryAvailable: body.registryAvailable,
+      installed: body.installed ?? [],
+      ...body.reason === undefined ? {} : { reason: body.reason },
+    }
+  }
+
+  /** Inspect the local skill library (`~/.dsh/skills`). */
+  async canvasSkillLibrary(): Promise<CanvasSkillLibrary> {
+    const response = await fetch(CANVAS_SKILL_API.library, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ language: activeImageGenLanguage() }),
+    })
+    return (await readEnvelope<{ ok: true; library: CanvasSkillLibrary }>(response)).library
+  }
+
+  /** Install skills from URLs and/or an archive asset uploaded to the canvas. */
+  async canvasSkillInstall(request: CanvasSkillInstallRequest): Promise<CanvasSkillInstallResult> {
+    const response = await fetch(CANVAS_SKILL_API.install, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...request, language: activeImageGenLanguage() }),
+    })
+    return await readEnvelope<CanvasSkillInstallResult>(response)
+  }
+
+  /** Remove one installed skill. */
+  async canvasSkillRemove(name: string): Promise<CanvasSkillRemoveResult> {
+    const response = await fetch(CANVAS_SKILL_API.remove, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, language: activeImageGenLanguage() }),
+    })
+    return await readEnvelope<CanvasSkillRemoveResult>(response)
+  }
+
+  /** Queue one skill run; the task is polled through {@link canvasSkillTask}. */
+  async canvasSkillRun(request: CanvasSkillRunRequest): Promise<CanvasSkillTask> {
+    const response = await fetch(CANVAS_SKILL_API.run, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...request, language: activeImageGenLanguage() }),
+    })
+    return (await readEnvelope<{ ok: true; task: CanvasSkillTask }>(response)).task
+  }
+
+  /** One skill-run snapshot. */
+  async canvasSkillTask(taskId: string): Promise<CanvasSkillTask> {
+    const response = await fetch(CANVAS_SKILL_API.task, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId, language: activeImageGenLanguage() }),
+    })
+    return (await readEnvelope<{ ok: true; task: CanvasSkillTask }>(response)).task
+  }
+
+  /** Ask the host to cancel a queued or running skill run. */
+  async canvasSkillCancel(taskId: string): Promise<boolean> {
+    const response = await fetch(CANVAS_SKILL_API.cancel, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId, language: activeImageGenLanguage() }),
+    })
+    return (await readEnvelope<{ ok: true; cancelled: boolean }>(response)).cancelled
   }
 
   /** Fetch one template source's list (bundled snapshot or refreshed copy). */
