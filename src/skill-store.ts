@@ -70,6 +70,23 @@ export function isValidSkillName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name) && name !== '.' && name !== '..'
 }
 
+/**
+ * The public DSH skill-name grammar: lowercase kebab-case.
+ *
+ * This is stricter than {@link isValidSkillName} on purpose. The folder-name
+ * check only keeps a destination path safe, while the host skill registry
+ * publishes a bundle under its frontmatter `name` and *drops the whole skill*
+ * when that name is not kebab-case — silently, with nothing but a host log line.
+ * Every install and every locally discovered skill is checked against this
+ * grammar so the canvas can never offer something the host would ignore.
+ */
+const DSH_SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** Whether a name is the kebab-case name the host skill registry loads. */
+export function isDshSkillName(name: string): boolean {
+  return DSH_SKILL_NAME.test(name)
+}
+
 /** Directory size in bytes (bounded walk), or 0 when it cannot be read. */
 async function directorySize(root: string, depth = 0): Promise<number> {
   if (depth > 6) return 0
@@ -88,34 +105,98 @@ async function directorySize(root: string, depth = 0): Promise<number> {
 
 /** Parsed frontmatter of one `SKILL.md` (only the fields the library needs). */
 interface SkillFrontmatter {
+  /** Whether the file opens with a `---` fence at all. */
+  present: boolean
   name?: string
   description?: string
+  whenToUse?: string
+  /** `disable-model-invocation`, when it parsed. */
+  disableModelInvocation?: boolean
+  /** `user-invocable`, when it parsed. */
+  userInvocable?: boolean
+  /** A present-but-unparsable invocation spelling: the host drops the skill. */
+  invalidInvocation: boolean
+}
+
+/** The opening fence of a `SKILL.md` head, body excluded. */
+const FRONTMATTER_HEAD = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/
+
+/** The same fence as a whole match, for stripping a body out of a file. */
+const FRONTMATTER_WHOLE = /^---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/
+
+/** The boolean spellings the host's frontmatter reader accepts. */
+function booleanOf(raw: string): boolean | undefined {
+  switch (raw.trim().toLowerCase()) {
+    case 'true': case 'yes': case 'on': case '1': return true
+    case 'false': case 'no': case 'off': case '0': return false
+    default: return undefined
+  }
+}
+
+/** Strip one matching pair of surrounding quotes from a scalar value. */
+function unquote(value: string): string {
+  const text = value.trim()
+  const quote = text[0]
+  if ((quote === '"' || quote === "'") && text.length > 1 && text.endsWith(quote)) return text.slice(1, -1).trim()
+  return text
 }
 
 /**
  * Read a skill bundle's frontmatter. The DSH skill format uses a YAML head
- * between `---` fences; a bundle without frontmatter still installs (the folder
- * name becomes the skill name) but is reported as anonymous.
+ * between `---` fences and wants `name` plus `description`; this reader covers
+ * the scalar and block-scalar spellings real bundles use (a folded
+ * `description: >-` must not surface as the literal text `>-`).
  * @param markdown - the `SKILL.md` contents.
  */
 export function parseSkillFrontmatter(markdown: string): SkillFrontmatter {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(markdown)
-  if (match === null) return {}
-  const head = match[1]!
-  const read = (key: string): string | undefined => {
-    const line = new RegExp(`^${key}\\s*:\\s*(.+)$`, 'm').exec(head)
-    if (line === null) return undefined
-    return line[1]!.trim().replace(/^["']|["']$/g, '').trim() || undefined
+  const match = FRONTMATTER_HEAD.exec(markdown)
+  if (match === null) return { present: false, invalidInvocation: false }
+  const lines = match[1]!.split(/\r?\n/)
+  const fields = new Map<string, string>()
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
+    // Indented lines belong to the key above; a document marker ends the head.
+    if (line.trim() === '' || line.trim().startsWith('#') || /^\s/.test(line)) continue
+    const entry = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line)
+    if (entry === null) continue
+    const key = entry[1]!
+    let value = entry[2]!.trim()
+    const block = /^([|>])[+-]?\d*\s*$/.exec(value)
+    if (block !== null) {
+      const collected: string[] = []
+      while (index + 1 < lines.length && (lines[index + 1]!.trim() === '' || /^\s/.test(lines[index + 1]!))) {
+        index += 1
+        collected.push(lines[index]!.trim())
+      }
+      value = block[1] === '>' ? collected.join(' ').replace(/\s+/g, ' ').trim() : collected.join('\n').trim()
+    } else {
+      value = unquote(value)
+    }
+    if (!fields.has(key)) fields.set(key, value)
   }
+  const read = (key: string): string | undefined => {
+    const value = fields.get(key)
+    return value === undefined || value === '' ? undefined : value
+  }
+  const disable = read('disable-model-invocation')
+  const user = read('user-invocable')
+  const disableValue = disable === undefined ? undefined : booleanOf(disable)
+  const userValue = user === undefined ? undefined : booleanOf(user)
   return {
-    ...read('name') === undefined ? {} : { name: read('name') },
-    ...read('description') === undefined ? {} : { description: read('description') },
+    present: true,
+    ...read('name') === undefined ? {} : { name: read('name')! },
+    ...read('description') === undefined ? {} : { description: read('description')! },
+    ...read('whenToUse') === undefined ? {} : { whenToUse: read('whenToUse')! },
+    ...disableValue === undefined ? {} : { disableModelInvocation: disableValue },
+    ...userValue === undefined ? {} : { userInvocable: userValue },
+    invalidInvocation: (disable !== undefined && disableValue === undefined)
+      || (user !== undefined && userValue === undefined),
   }
 }
 
 /** First meaningful line of a skill body, used when frontmatter has no blurb. */
 function firstHeading(markdown: string): string {
-  const withoutHead = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---/, '')
+  const withoutHead = markdown.replace(FRONTMATTER_WHOLE, '')
   for (const raw of withoutHead.split(/\r?\n/)) {
     const line = raw.trim()
     if (line === '') continue
@@ -124,38 +205,159 @@ function firstHeading(markdown: string): string {
   return ''
 }
 
-/** One installed skill folder as the library reports it. */
-async function entryOf(root: string, name: string): Promise<CanvasSkillLibraryEntry | undefined> {
-  const dir = path.join(root, name)
-  const markdown = path.join(dir, 'SKILL.md')
-  const known = knownSkillUrl(name)
-  if (!existsSync(markdown)) {
-    // A flat `<name>.md` skill is also valid in the DSH layout.
-    const flat = path.join(root, `${name}.md`)
-    if (!existsSync(flat)) return undefined
-    const text = await readFile(flat, 'utf8').catch(() => '')
-    const front = parseSkillFrontmatter(text)
-    const info = await stat(flat).catch(() => undefined)
-    return {
-      name: front.name ?? name,
-      description: front.description ?? firstHeading(text),
-      sizeBytes: info?.size ?? text.length,
-      updatedAt: info?.mtimeMs ?? Date.now(),
-      ...known === undefined ? {} : { installUrl: known },
+/** Why the host skill registry would refuse to load one local bundle. */
+export type LocalSkillIssue = 'no-frontmatter' | 'bad-name' | 'no-description' | 'bad-invocation' | 'user-only'
+
+/** One `SKILL.md` judged by the host registry's load rules. */
+export interface LocalSkillInspection {
+  /** Name the host registry publishes (the frontmatter `name`), else `''`. */
+  name: string
+  /** Blurb for the UI: the frontmatter description, else the first body line. */
+  description: string
+  whenToUse?: string
+  /** Whether the host registry loads it, i.e. the canvas may offer it. */
+  loadable: boolean
+  issue?: LocalSkillIssue
+}
+
+/**
+ * Judge one bundle against the host registry's rules: a kebab-case frontmatter
+ * `name`, a frontmatter `description`, a parseable invocation spelling, and
+ * model invocation left permitted. Anything else is invisible to every agent,
+ * which is exactly what the canvas must not pretend to offer.
+ * @param markdown - the `SKILL.md` contents.
+ */
+export function inspectSkillMarkdown(markdown: string): LocalSkillInspection {
+  const front = parseSkillFrontmatter(markdown)
+  const name = front.name?.trim() ?? ''
+  const blurb = (front.description ?? firstHeading(markdown)).trim()
+  const base = {
+    name,
+    description: blurb,
+    ...front.whenToUse === undefined ? {} : { whenToUse: front.whenToUse },
+  }
+  if (!front.present) return { ...base, loadable: false, issue: 'no-frontmatter' }
+  if (!isDshSkillName(name)) return { ...base, loadable: false, issue: 'bad-name' }
+  if ((front.description ?? '').trim() === '') return { ...base, loadable: false, issue: 'no-description' }
+  if (front.invalidInvocation) return { ...base, loadable: false, issue: 'bad-invocation' }
+  if (front.disableModelInvocation === true) return { ...base, loadable: false, issue: 'user-only' }
+  return { ...base, loadable: true }
+}
+
+/** One local skill the canvas can offer, with its body already read. */
+export interface LocalSkill {
+  /** Name the host registry publishes. */
+  name: string
+  description: string
+  whenToUse?: string
+  /** Absolute path of the `SKILL.md` (or of the flat `<name>.md`). */
+  path: string
+  /** Instruction body, frontmatter removed. */
+  content: string
+}
+
+/** Candidate skill files directly under `root` (the host scans one level). */
+async function scanSkillFiles(root: string): Promise<Array<{ folder: string; path: string }>> {
+  let children: Dirent[]
+  try { children = await readdir(root, { withFileTypes: true }) } catch { return [] }
+  const files: Array<{ folder: string; path: string }> = []
+  for (const child of children) {
+    // `.system` is the host's own bundled-skill seat, never a user install.
+    if (child.isDirectory()) {
+      if (child.name.startsWith('.')) continue
+      const markdown = path.join(root, child.name, 'SKILL.md')
+      if (existsSync(markdown)) files.push({ folder: child.name, path: markdown })
+      continue
+    }
+    // A flat `<name>.md` skill is equally valid in the DSH layout.
+    if (child.isFile() && child.name.toLowerCase().endsWith('.md')) {
+      files.push({ folder: child.name.slice(0, -3), path: path.join(root, child.name) })
     }
   }
-  const text = await readFile(markdown, 'utf8').catch(() => '')
-  const front = parseSkillFrontmatter(text)
-  const info = await stat(markdown).catch(() => undefined)
+  return files
+}
+
+/** Read one candidate `SKILL.md`, bounded like a downloaded one. */
+async function readSkillText(candidatePath: string): Promise<string | undefined> {
+  const info = await stat(candidatePath).catch(() => undefined)
+  if (info === undefined || !info.isFile() || info.size > MAX_SKILL_MARKDOWN_BYTES) return undefined
+  return await readFile(candidatePath, 'utf8').catch(() => undefined)
+}
+
+/** The instruction body of one `SKILL.md` (frontmatter removed). */
+function skillBody(markdown: string): string {
+  return markdown.replace(FRONTMATTER_WHOLE, '').trim()
+}
+
+/**
+ * Every skill under `root` the host registry would load, with its body.
+ *
+ * The canvas is a host surface with no session scope, so it cannot read the
+ * per-preset layer of `ctx.skills` (see `createSkillRegistryBackend`). Scanning
+ * the library directly is what lets the node skill menu agree with the skill
+ * library panel the user installed from.
+ * @param root - resolved skills root.
+ */
+export async function listLocalSkills(root: string): Promise<LocalSkill[]> {
+  const skills: LocalSkill[] = []
+  for (const candidate of await scanSkillFiles(root)) {
+    const markdown = await readSkillText(candidate.path)
+    if (markdown === undefined) continue
+    const inspection = inspectSkillMarkdown(markdown)
+    if (!inspection.loadable) continue
+    skills.push({
+      name: inspection.name,
+      description: inspection.description,
+      ...inspection.whenToUse === undefined ? {} : { whenToUse: inspection.whenToUse },
+      path: candidate.path,
+      content: skillBody(markdown),
+    })
+  }
+  return skills.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Resolve one loadable local skill by the name the host registry publishes.
+ * @param root - resolved skills root.
+ * @param name - published skill name.
+ */
+export async function readLocalSkill(root: string, name: string): Promise<LocalSkill | undefined> {
+  const wanted = name.trim()
+  if (wanted === '') return undefined
+  return (await listLocalSkills(root)).find(skill => skill.name === wanted)
+}
+
+/** One installed skill folder as the library reports it. */
+async function entryOf(
+  root: string,
+  candidate: { folder: string; path: string },
+  options: { known?: ReadonlyArray<{ name: string; path?: string }>; issueText?: IssueText },
+): Promise<CanvasSkillLibraryEntry> {
+  const markdown = (await readSkillText(candidate.path)) ?? ''
+  const inspection = inspectSkillMarkdown(markdown)
+  const name = inspection.name !== '' ? inspection.name : candidate.folder
+  const known = knownSkillUrl(name)
+  const registryPath = options.known?.find(item => item.name === name || item.name === candidate.folder)?.path
+  const info = await stat(candidate.path).catch(() => undefined)
+  const issue = inspection.issue !== undefined && options.issueText !== undefined
+    ? options.issueText(inspection.issue, name)
+    : undefined
   return {
-    name: front.name ?? name,
-    description: front.description ?? firstHeading(text),
-    path: markdown,
-    sizeBytes: await directorySize(dir),
+    name,
+    description: inspection.description,
+    path: registryPath ?? candidate.path,
+    // A bundle's own size is what an uninstall reclaims; a flat file's is itself.
+    sizeBytes: path.basename(candidate.path).toLowerCase() === 'skill.md'
+      ? await directorySize(path.dirname(candidate.path))
+      : info?.size ?? 0,
     updatedAt: info?.mtimeMs ?? Date.now(),
     ...known === undefined ? {} : { installUrl: known },
+    ...issue === undefined ? {} : { issue },
   }
 }
+
+/** Renders one issue code into display copy (the host owns the words). */
+export type IssueText = (issue: LocalSkillIssue, name: string) => string
 
 /**
  * Inspect the library.
@@ -164,29 +366,22 @@ async function entryOf(root: string, name: string): Promise<CanvasSkillLibraryEn
  * @param options.root - resolved skills root.
  * @param options.known - registry summaries, when the registry answered.
  * @param options.networkAvailable - whether installs can be attempted at all.
+ * @param options.issueText - localizes "why the node menu cannot offer this"
+ *   for entries the host registry would ignore; omitted leaves it unsaid.
  */
 export async function listLibrary(options: {
   root: string
   known?: ReadonlyArray<{ name: string; path?: string }>
   networkAvailable: boolean
+  issueText?: IssueText
 }): Promise<CanvasSkillLibrary> {
-  const { root } = options
-  const names = new Set<string>()
-  let children: Dirent[] = []
-  try { children = await readdir(root, { withFileTypes: true }) } catch { children = [] }
-  for (const child of children) {
-    if (child.isDirectory() && isValidSkillName(child.name)) names.add(child.name)
-    else if (child.isFile() && child.name.toLowerCase().endsWith('.md')) names.add(child.name.slice(0, -3))
-  }
   const entries: CanvasSkillLibraryEntry[] = []
-  for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
-    const entry = await entryOf(root, name)
-    if (entry === undefined) continue
-    const registryPath = options.known?.find(item => item.name === entry.name || item.name === name)?.path
-    entries.push(registryPath === undefined ? entry : { ...entry, path: registryPath })
+  for (const candidate of await scanSkillFiles(options.root)) {
+    entries.push(await entryOf(options.root, candidate, options))
   }
+  entries.sort((a, b) => a.name.localeCompare(b.name))
   return {
-    root,
+    root: options.root,
     entries,
     catalog: KNOWN_SKILL_SOURCES.map(source => ({ ...source })),
     networkAvailable: options.networkAvailable,
@@ -338,16 +533,42 @@ async function moveInto(from: string, to: string): Promise<void> {
   }
 }
 
-/** Move a staged skill bundle into the library under a safe name. */
-async function promote(staged: string, root: string, fallbackName: string, force: boolean): Promise<string> {
+/**
+ * The name one staged bundle installs under, or an actionable refusal.
+ *
+ * A bundle the host registry cannot load is never worth installing: its
+ * frontmatter name must be kebab-case, its description present, and its
+ * invocation spellings parseable. The folder fallback is only a *label* — the
+ * host publishes the frontmatter name, so a fallback cannot rescue a bundle
+ * whose own frontmatter is unusable.
+ * @param markdown - the staged `SKILL.md` contents.
+ */
+export function installableSkillName(markdown: string): string {
+  const inspection = inspectSkillMarkdown(markdown)
+  switch (inspection.issue) {
+    case 'no-frontmatter':
+      throw new SkillStoreError('SKILL.md 缺少 YAML frontmatter（--- 开头的 name / description），本机技能注册表不会加载它')
+    case 'bad-name':
+      throw new SkillStoreError(`SKILL.md 的 frontmatter name「${inspection.name}」不是 kebab-case（只能小写字母、数字和连字符），本机技能注册表会忽略它`)
+    case 'no-description':
+      throw new SkillStoreError('SKILL.md 的 frontmatter 缺少 description（必填），本机技能注册表不会加载它')
+    case 'bad-invocation':
+      throw new SkillStoreError('SKILL.md 的 disable-model-invocation / user-invocable 写法无法解析，本机技能注册表会忽略它')
+    default:
+      return inspection.name
+  }
+}
+
+/** Move a staged skill bundle into the library under its published name. */
+async function promote(staged: string, root: string, force: boolean): Promise<string> {
   const skillRoot = await findSkillRoot(staged)
   if (skillRoot === undefined) throw new SkillStoreError('该来源里没有找到 SKILL.md')
   const markdown = await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8').catch(() => '')
   if (markdown.trim() === '') throw new SkillStoreError('SKILL.md 是空文件')
-  const front = parseSkillFrontmatter(markdown)
-  const rawName = (front.name ?? fallbackName).trim().replace(/\.git$/i, '')
-  const name = isValidSkillName(rawName) ? rawName : isValidSkillName(fallbackName) ? fallbackName : ''
-  if (name === '') throw new SkillStoreError('无法确定技能名：SKILL.md 的 frontmatter 缺少合法的 name')
+  // A user-only skill (`disable-model-invocation: true`) still installs: the
+  // canvas cannot run it, but the host's own slash commands can.
+  const name = installableSkillName(markdown)
+  if (!isValidSkillName(name)) throw new SkillStoreError(`技能名「${name}」不能用作目录名，请改名后重新安装`)
   const destination = path.resolve(root, name)
   if (path.relative(root, destination).startsWith('..')) throw new SkillStoreError('技能名不合法')
   if (existsSync(destination) && !force) throw new SkillStoreError(`技能「${name}」已经安装（可勾选覆盖安装）`)
@@ -361,14 +582,16 @@ async function promote(staged: string, root: string, fallbackName: string, force
  * Install one skill from an uploaded archive, or from a folder of files.
  * @param data - archive bytes.
  * @param root - skills root.
- * @param fallbackName - folder name to use when the bundle has no frontmatter.
+ * @param _fallbackName - accepted for signature compatibility only: the
+ *   frontmatter `name` is authoritative, because that is the name the host
+ *   registry publishes (a bundle without one is refused, not renamed).
  * @param force - replace an existing skill of the same name.
  */
-export async function installFromArchive(data: Buffer, root: string, fallbackName: string, force: boolean): Promise<string> {
+export async function installFromArchive(data: Buffer, root: string, _fallbackName: string, force: boolean): Promise<string> {
   const staging = await mkdtemp(path.join(tmpdir(), 'dsh-imagegen-skill-'))
   try {
     await extractArchive(data, staging)
-    return await promote(staging, root, fallbackName, force)
+    return await promote(staging, root, force)
   } finally {
     await rm(staging, { recursive: true, force: true }).catch(() => { /* best effort */ })
   }
@@ -380,6 +603,8 @@ export async function installFromArchive(data: Buffer, root: string, fallbackNam
  * @param source - the URL the user supplied.
  * @param root - skills root.
  * @param options - `force` replaces an existing install; `signal` aborts.
+ *   `fallbackName` only names a *diagnostic* for a source with no bundle; the
+ *   frontmatter name is what the host registry publishes.
  */
 export async function installFromUrl(
   source: string,
@@ -389,9 +614,9 @@ export async function installFromUrl(
   const kind = classifySource(source)
   if (kind.kind === 'raw') {
     const data = await download(kind.url, MAX_SKILL_MARKDOWN_BYTES, options.signal)
-    const front = parseSkillFrontmatter(data.toString('utf8'))
-    const name = (front.name ?? options.fallbackName ?? kind.name).trim()
-    if (!isValidSkillName(name)) throw new SkillStoreError('无法从该链接确定技能名，请改用仓库地址')
+    const text = data.toString('utf8')
+    const name = installableSkillName(text)
+    if (!isValidSkillName(name)) throw new SkillStoreError(`技能名「${name}」不能用作目录名，请改用仓库地址安装`)
     const destination = path.resolve(root, name)
     if (path.relative(root, destination).startsWith('..')) throw new SkillStoreError('技能名不合法')
     if (existsSync(destination) && !options.force) throw new SkillStoreError(`技能「${name}」已经安装（可勾选覆盖安装）`)
@@ -411,7 +636,7 @@ export async function installFromUrl(
       await extractArchive(data, staging)
       const wanted = kind.subpath === '' ? staging : path.resolve(staging, kind.subpath)
       const scoped = existsSync(wanted) ? wanted : staging
-      return await promote(scoped, root, options.fallbackName ?? kind.repo, options.force)
+      return await promote(scoped, root, options.force)
     } finally {
       await rm(staging, { recursive: true, force: true }).catch(() => { /* best effort */ })
     }
@@ -435,27 +660,44 @@ export async function installFromUrl(
       throw new SkillStoreError(`git clone 失败：${detail}`)
     }
     await rm(path.join(staging, 'repo', '.git'), { recursive: true, force: true })
-    return await promote(path.join(staging, 'repo'), root, options.fallbackName ?? kind.name, options.force)
+    return await promote(path.join(staging, 'repo'), root, options.force)
   } finally {
     await rm(staging, { recursive: true, force: true }).catch(() => { /* best effort */ })
   }
 }
 
+/** One local candidate whose published name matches, for a remove by name. */
+async function publishedSkillFile(root: string, name: string): Promise<string | undefined> {
+  for (const candidate of await scanSkillFiles(root)) {
+    const markdown = await readSkillText(candidate.path)
+    if (markdown === undefined) continue
+    if (inspectSkillMarkdown(markdown).name === name) return candidate.path
+  }
+  return undefined
+}
+
 /**
- * Remove one installed skill.
- * @param name - the skill's folder name inside the library.
+ * Remove one installed skill. The name may be the folder name or the
+ * frontmatter name the panel listed (they differ whenever an author renamed
+ * their skill after the first release).
+ * @param name - the skill's published or folder name inside the library.
  * @param root - skills root.
  */
 export async function removeSkill(name: string, root: string): Promise<string> {
   const trimmed = name.trim()
-  if (!isValidSkillName(trimmed)) throw new SkillStoreError('技能名不合法')
+  // Path-shaped input is refused before it is resolved, scan path included.
+  if (trimmed === '' || trimmed === '.' || trimmed === '..' || /[\\/]/.test(trimmed)) {
+    throw new SkillStoreError('技能名不合法')
+  }
   const dir = path.resolve(root, trimmed)
   if (path.relative(root, dir).startsWith('..')) throw new SkillStoreError('技能名不合法')
   const flat = path.resolve(root, `${trimmed}.md`)
-  const hasDir = existsSync(dir)
-  const hasFlat = existsSync(flat)
-  if (!hasDir && !hasFlat) throw new SkillStoreError(`没有找到技能「${trimmed}」`)
-  if (hasDir) await rm(dir, { recursive: true, force: true })
-  if (hasFlat) await rm(flat, { force: true })
+  if (existsSync(dir)) { await rm(dir, { recursive: true, force: true }); return trimmed }
+  if (existsSync(flat)) { await rm(flat, { force: true }); return trimmed }
+  const published = await publishedSkillFile(root, trimmed)
+  if (published === undefined) throw new SkillStoreError(`没有找到技能「${trimmed}」`)
+  // A bundle is removed whole; a flat `<name>.md` skill is one file.
+  if (path.basename(published).toLowerCase() === 'skill.md') await rm(path.dirname(published), { recursive: true, force: true })
+  else await rm(published, { force: true })
   return trimmed
 }

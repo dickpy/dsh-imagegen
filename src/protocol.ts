@@ -110,6 +110,8 @@ export const CANVAS_API = {
   layers: '/api/dsh-imagegen/canvas/layers',
   /** Raw-binary upload for arbitrary canvas file nodes (no base64 inflation). */
   fileUpload: '/api/dsh-imagegen/canvas/file/upload',
+  /** Structured content preview (text / table / office / archive) of one asset. */
+  filePreview: '/api/dsh-imagegen/canvas/file/preview',
 } as const
 
 /** Same-origin route family for canvas skills (catalog + run control). */
@@ -122,6 +124,10 @@ export const CANVAS_SKILL_API = {
   library: '/api/dsh-imagegen/canvas/skills/library',
   install: '/api/dsh-imagegen/canvas/skills/install',
   remove: '/api/dsh-imagegen/canvas/skills/remove',
+  /** Per-skill configuration values declared by `skill.config.json` (or a recipe). */
+  configSave: '/api/dsh-imagegen/canvas/skills/config/save',
+  /** Run a declaration's `apply` steps (commands / files) with the saved values. */
+  configApply: '/api/dsh-imagegen/canvas/skills/config/apply',
 } as const
 
 /** Maximum number of history entries retained host-side (oldest evicted). */
@@ -298,6 +304,95 @@ export type CanvasNodeType = 'image' | 'text' | 'file' | 'config'
 /** Coarse bucket driving the file node's icon and preview branch. */
 export type CanvasFileKind = 'text' | 'pdf' | 'image' | 'office' | 'archive' | 'audio' | 'video' | 'other'
 
+/**
+ * One structured file preview built host-side for a canvas file node. Media
+ * types that the browser can already render (image / pdf / audio / video) are
+ * handed back as an inline URL; everything else arrives decoded, bounded, and
+ * shaped for one of the renderers below.
+ */
+export type CanvasFilePreview =
+  /** The asset itself renders in the browser (image, pdf, audio, video). */
+  | {
+    kind: 'media'
+    media: 'image' | 'pdf' | 'audio' | 'video'
+    /** Same-origin URL that serves the asset inline. */
+    url: string
+    width: number
+    height: number
+  }
+  /** Decoded plain text (text files, extracted office documents, PDF fallback). */
+  | {
+    kind: 'text'
+    /** Format bucket used in the UI, e.g. `md` / `docx` / `pdf`. */
+    format: string
+    text: string
+    /** True when the file is longer than the preview cap. */
+    truncated: boolean
+    /** Total line count of the returned text. */
+    lines: number
+    /** Non-fatal extraction note (heuristics, partial reads). */
+    warning?: string
+  }
+  /** HTML document rendered in a sandboxed iframe (scripts disabled). */
+  | { kind: 'html'; format: 'html'; html: string; truncated: boolean }
+  /** Markdown source, rendered to rich text by the client. */
+  | { kind: 'markdown'; format: 'markdown'; markdown: string; truncated: boolean }
+  /** SVG source, rendered as a browser image (scripts never run in `<img>`). */
+  | { kind: 'svg'; format: 'svg'; svg: string; truncated: boolean }
+  /** Rectangular data (CSV / TSV / XLSX) rendered as a grid. */
+  | {
+    kind: 'table'
+    format: string
+    rows: string[][]
+    /** Row count in the source file (may exceed `rows.length`). */
+    totalRows: number
+    truncated: boolean
+  }
+  /** ZIP central directory listing. */
+  | {
+    kind: 'archive'
+    entries: Array<{ name: string; size: number; dir: boolean }>
+    /** Total entries in the archive (may exceed `entries.length`). */
+    totalEntries: number
+    truncated: boolean
+  }
+  /** Structured document preview (DOCX): headings, runs, lists, tables. */
+  | { kind: 'document'; format: string; blocks: CanvasDocBlock[]; truncated: boolean }
+  /** Slide-deck preview (PPTX): one card per slide with text and pictures. */
+  | { kind: 'slides'; format: string; slides: CanvasSlidePreview[]; truncated: boolean }
+  /** Nothing readable: the node shows the reason plus a download action. */
+  | {
+    kind: 'none'
+    format: string
+    /** Machine-readable reason so the browser can localize its own copy. */
+    reason: 'unsupported' | 'unreadable'
+    /** Host-side detail; used as a tooltip fallback, never as primary copy. */
+    message?: string
+  }
+
+/** One styled run of rich document text (bold / italic fragments). */
+export interface CanvasDocRun {
+  text: string
+  bold?: true
+  italic?: true
+}
+
+/** One block of a structured document preview. Lists arrive pre-grouped so the
+ *  renderer only walks a flat sequence. */
+export type CanvasDocBlock =
+  | { type: 'heading'; level: 1 | 2 | 3; runs: CanvasDocRun[] }
+  | { type: 'paragraph'; runs: CanvasDocRun[] }
+  | { type: 'list'; ordered: boolean; items: CanvasDocRun[][] }
+  | { type: 'table'; rows: string[][] }
+
+/** One slide of a PPTX preview: title, body lines and embedded pictures as
+ *  data URLs (bounded: raster formats only, capped count and total bytes). */
+export interface CanvasSlidePreview {
+  title?: string
+  lines: string[]
+  images: Array<{ mime: string; data: string }>
+}
+
 /** Provenance stamped on nodes produced by a canvas skill run. */
 export interface CanvasSkillProvenance {
   id: string
@@ -333,6 +428,12 @@ export interface CanvasSkillDescriptor {
   skillName?: string
   /** Canonical home of the backing skill, offered as a one-click install. */
   installUrl?: string
+  /**
+   * Labels of required configuration fields that still have no value. The
+   * picker shows them with a "go configure" affordance; it does not disable the
+   * action, because a skill may still run without the value.
+   */
+  configMissing?: string[]
 }
 
 export type CanvasSkillTier = CanvasSkillDescriptor['tier']
@@ -357,6 +458,10 @@ export interface CanvasSkillTask {
   status: CanvasSkillRunStatus
   /** Coarse progress stage for the UI (queued / preparing / running / collecting). */
   stage?: string
+  /** Machine-readable phase that drives the run card's step indicator. */
+  phase?: 'queued' | 'preparing' | 'running' | 'collecting'
+  /** Input node ids the run was queued with (the client rebuilds its run cards). */
+  nodeIds?: string[]
   startedAt: number
   finishedAt?: number
   /** Copy language of the run, so polled stages stay in the caller's language. */
@@ -380,9 +485,12 @@ export interface CanvasSkillRunRequest {
   language?: string
 }
 
-/** Polls and cancels carry the same language hint so stages stay translated. */
+/** Polls and cancels carry the same language hint so stages stay translated.
+ *  A `canvasId` without a `taskId` lists that canvas's unfinished runs, which
+ *  is how a reopened canvas rebuilds its live run cards. */
 export interface CanvasSkillTasksRequest {
   taskId: string
+  canvasId?: string
   language?: string
 }
 
@@ -392,10 +500,87 @@ export interface CanvasSkillCatalog {
   agentAvailable: boolean
   /** Whether the host skill registry answered. */
   registryAvailable: boolean
-  /** Names of host skills the registry actually exposes (install affordance). */
+  /**
+   * Names of the external skills the canvas can actually offer: whatever the
+   * host registry exposes plus everything loadable under the local skill root
+   * (`~/.dsh/skills`). Drives the install affordance on entries whose backing
+   * skill is missing.
+   */
   installed: string[]
   /** Why the catalog is partial, when it is. */
   reason?: string
+}
+
+/** One configuration field a skill declares (see `docs/skill-config.md`). */
+export interface CanvasSkillConfigField {
+  id: string
+  label: string
+  description?: string
+  type: 'string' | 'secret' | 'boolean' | 'number' | 'select'
+  required?: boolean
+  default?: string
+  /** `select` only. */
+  options?: Array<{ value: string; label: string }>
+  /**
+   * Whether the value may ride the run prompt as a "configured" context block.
+   * Secrets are never exposable, whatever the declaration says.
+   */
+  expose?: boolean
+}
+
+/**
+ * One skill's configuration as the panel sees it. Values are never secrets: a
+ * secret field reports only whether the host holds one.
+ */
+export interface CanvasSkillConfigView {
+  fields: CanvasSkillConfigField[]
+  values: Array<{ id: string; set: boolean; value?: string }>
+  /** Where the declaration came from: the skill bundle, or this plugin. */
+  source: 'skill' | 'plugin'
+  /** Whether `apply` declares steps "save and apply" can run. */
+  applicable: boolean
+  /** Labels of required fields that still have no value. */
+  missing: string[]
+  /** Author note rendered above the form. */
+  note?: string
+  /** Why the declaration was ignored, when it was (host-rendered copy). */
+  issue?: string
+}
+
+/** Save request: only the fields the user edited are sent. */
+export interface CanvasSkillConfigSaveRequest {
+  name: string
+  /** Edited values; an empty string clears that field. */
+  values?: Array<{ id: string; value: string }>
+  language?: string
+}
+
+export interface CanvasSkillConfigSaveResult {
+  ok: boolean
+  library: CanvasSkillLibrary
+  message?: string
+}
+
+/** One executed `apply` step, as reported back to the panel. */
+export interface CanvasSkillConfigStep {
+  kind: 'command' | 'file'
+  /** Human-readable summary of what was executed or written (secrets masked). */
+  detail: string
+  ok: boolean
+  /** Tail of the command output, secrets masked. */
+  output?: string
+}
+
+export interface CanvasSkillConfigApplyRequest {
+  name: string
+  language?: string
+}
+
+export interface CanvasSkillConfigApplyResult {
+  ok: boolean
+  library: CanvasSkillLibrary
+  steps: CanvasSkillConfigStep[]
+  message?: string
 }
 
 /** One skill inside the local skill library (`~/.dsh/skills`). */
@@ -408,6 +593,16 @@ export interface CanvasSkillLibraryEntry {
   updatedAt: number
   /** Browsable upstream home, when this plugin knows one for the name. */
   installUrl?: string
+  /**
+   * Why the node skill menu cannot offer this entry, in the caller's language.
+   * Present when the host skill registry would ignore the bundle (a
+   * non-kebab-case frontmatter name, a missing description, a user-only
+   * invocation policy), so an install that "succeeded" is never silently
+   * unusable.
+   */
+  issue?: string
+  /** The skill's declared configuration, when it has one. */
+  config?: CanvasSkillConfigView
 }
 
 export interface CanvasSkillLibrary {

@@ -80,7 +80,7 @@ export interface SkillAgentHandle {
   session: SkillAgentSession
   followup: (text: string) => void
   whenIdle: () => Promise<void>
-  cancel: (reason?: string) => void
+  cancel: () => void
   dispose: () => Promise<void>
 }
 
@@ -93,6 +93,8 @@ export interface SkillAgentBackend {
     cwd: string
     systemPrompt: string
     signal?: AbortSignal
+    /** Resolve one copy key in the run's language, for a composition failure. */
+    fail: (key: string) => string
   }) => Promise<SkillAgentHandle | undefined>
 }
 
@@ -111,11 +113,25 @@ export interface SkillCanvasBackend {
   }) => Promise<CanvasAssetRef>
 }
 
+/**
+ * Skill-configuration seam. The host owns declarations and values
+ * (`docs/skill-config.md`); the runner only needs to know which required fields
+ * are still unset, and what an exposable value set looks like in a prompt.
+ */
+export interface SkillConfigBackend {
+  /** Labels of unset required fields, per skill name (absent = configured). */
+  missing: (names: readonly string[]) => Promise<Map<string, string[]>>
+  /** Non-secret "configured values" block for one skill, when it exposes any. */
+  note: (name: string) => Promise<string | undefined>
+}
+
 /** Everything one runner needs, injected so tests can replace any layer. */
 export interface SkillRunnerBackend {
   chat?: SkillChatBackend
   registry?: SkillRegistryBackend
   agents?: SkillAgentBackend
+  /** Per-skill configuration, when the host has a declaration store. */
+  skillConfig?: SkillConfigBackend
   canvas: SkillCanvasBackend
 }
 
@@ -370,9 +386,10 @@ export class SkillRunner {
    * replaced here.
    * @param parts - the seams to adopt; omitted keys are cleared.
    */
-  attach(parts: { registry?: SkillRegistryBackend; agents?: SkillAgentBackend }): void {
+  attach(parts: { registry?: SkillRegistryBackend; agents?: SkillAgentBackend; skillConfig?: SkillConfigBackend }): void {
     this.backend.registry = parts.registry
     this.backend.agents = parts.agents
+    this.backend.skillConfig = parts.skillConfig
   }
 
   /**
@@ -402,10 +419,16 @@ export class SkillRunner {
         reason = t('canvas.skills.registryFailed', { message: messageOf(error) })
       }
     }
+    // Required configuration that is still unset: the picker shows it with a
+    // "go configure" affordance instead of letting the run fail halfway.
+    const missing = this.backend.skillConfig === undefined
+      ? undefined
+      : await this.backend.skillConfig.missing(external.map(skill => skill.name)).catch(() => undefined)
     return {
       skills: canvasSkillCatalog(external, t, {
         agentAvailable,
         ...this.options.pptInstallUrl === undefined ? {} : { pptInstallUrl: this.options.pptInstallUrl },
+        ...missing === undefined ? {} : { configMissing: name => missing.get(name) },
       }),
       agentAvailable,
       registryAvailable,
@@ -446,6 +469,8 @@ export class SkillRunner {
       tier: skill.tier,
       status: 'queued',
       stage: this.translate(language)('canvas.skills.stageQueued'),
+      phase: 'queued',
+      nodeIds: [...request.nodeIds],
       startedAt: Date.now(),
       ...language === undefined || language === '' ? {} : { language },
     }
@@ -464,6 +489,13 @@ export class SkillRunner {
   /** One task snapshot, or undefined once evicted. */
   task(id: string): CanvasSkillTask | undefined {
     return this.tasks.get(id)
+  }
+
+  /** Unfinished runs of one canvas, so a reopened canvas can rebuild its live
+   *  run cards after a reload (the browser holds no run state itself). */
+  tasksOfCanvas(canvasId: string): CanvasSkillTask[] {
+    return [...this.tasks.values()].filter(task => task.canvasId === canvasId
+      && (task.status === 'queued' || task.status === 'running'))
   }
 
   /** Cancel a queued or running task. */
@@ -485,6 +517,7 @@ export class SkillRunner {
     const run = async (): Promise<void> => {
       if (cancelled()) return
       task.status = 'running'
+      task.phase = 'running'
       try {
         task.output = skill.tier === 'heavy'
           ? await this.runHeavy(task, skill, inputs, request)
@@ -492,11 +525,13 @@ export class SkillRunner {
         if (!cancelled()) {
           task.status = 'completed'
           task.stage = this.translate(task.language)('canvas.skills.stageDone')
+          task.phase = undefined
         }
       } catch (error) {
         if (!cancelled()) {
           task.status = 'failed'
           task.error = messageOf(error)
+          task.phase = undefined
         }
       } finally {
         task.finishedAt = Date.now()
@@ -528,6 +563,7 @@ export class SkillRunner {
     const chat = this.backend.chat
     if (chat === undefined) throw new Error(t('canvas.skills.noChat'))
     task.stage = t('canvas.skills.stageReading')
+    task.phase = 'running'
     await this.loadAssets(inputs)
     const target = inputs.find(input => request.nodeIds.includes(input.node.id)) ?? inputs[0]!
     // Extraction reads the file itself; every other built-in asks the model.
@@ -669,6 +705,10 @@ export class SkillRunner {
     const warnings: string[] = []
     const sections: string[] = []
     if (definition !== undefined && definition.content.trim() !== '') sections.push(definition.content.trim())
+    // Values the skill's declaration marks exposable ride the prompt; secrets
+    // never do (the host filters them out before handing the block over).
+    const configNote = await this.backend.skillConfig?.note(name).catch(() => undefined)
+    if (configNote !== undefined && configNote !== '') sections.push(`${t('canvas.skills.configHeader')}\n${configNote}`)
     for (const input of inputs) {
       const text = nodeText(input.node)
       if (text !== '') {
@@ -736,6 +776,7 @@ export class SkillRunner {
     await fs.mkdir(outputDir, { recursive: true })
 
     task.stage = t('canvas.skills.stagePreparing')
+    task.phase = 'preparing'
     // Materialize every input that resolves to a real asset, so the agent works
     // on ordinary files (its tools read paths, not canvas asset ids).
     const fileLines: string[] = []
@@ -761,14 +802,19 @@ export class SkillRunner {
       fileLines.push(`- ${target2}`)
     }
     if (fileLines.length === 0) throw new Error(t('canvas.skills.noInput'))
+    task.stage = t('canvas.skills.stagePrepared', { count: fileLines.length })
 
     const skillName = this.heavySkillName(skill)
     const body = await this.loadSkillBody(skillName)
     // A heavy built-in without its host skill cannot run at all: fail with an
     // actionable message instead of starting an agent that has nothing to do.
     if (body === undefined) throw new Error(t('canvas.skills.skillMissing', { name: skillName }))
-    const systemPrompt = this.heavySystemPrompt(skill, body, fileLines, outputDir, t)
+    // Exposable declared values (secrets filtered host-side) tell the agent what
+    // is already configured, so it does not hunt for settings it already has.
+    const configNote = await this.backend.skillConfig?.note(skillName).catch(() => undefined)
+    const systemPrompt = this.heavySystemPrompt(skill, body, fileLines, outputDir, t, configNote)
     task.stage = t('canvas.skills.stageRunning')
+    task.phase = 'running'
     const controller = new AbortController()
     const timeout = this.options.heavyTimeoutMs()
     const timer = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : undefined
@@ -780,24 +826,49 @@ export class SkillRunner {
         cwd: runDir,
         systemPrompt,
         signal: controller.signal,
+        fail: key => t(key),
       })
       if (handle === undefined) throw new Error(t('canvas.skills.agentFailed'))
       this.cancellers.set(task.id, {
         dispose: async () => {
           controller.abort()
-          handle?.cancel('canvas-skill-cancelled')
+          handle?.cancel()
           await handle?.dispose().catch(() => { /* best effort */ })
         },
       })
       handle.followup(this.heavyUserPrompt(skill, skillName, inputDir, outputDir, body !== undefined, t))
-      await handle.whenIdle()
+      // The agent thinks for minutes on a deck pipeline; the only honest live
+      // signal is what it has already written into the output directory.
+      const watch = this.watchOutputDir(task, outputDir, t)
+      try {
+        await handle.whenIdle()
+      } finally {
+        watch.stop()
+      }
       task.stage = t('canvas.skills.stageCollecting')
+      task.phase = 'collecting'
       const answer = lastAssistantText(handle.session.deriveMessages())
       return await this.collectHeavyOutput(task, skill, target, outputDir, answer, warnings, t)
     } finally {
       if (timer !== undefined) clearTimeout(timer)
       await handle?.dispose().catch(() => { /* best effort */ })
     }
+  }
+
+  /** Report newly produced output files on the task while the agent works, so
+   *  the canvas run card shows "已产出 N 个文件" instead of a silent spinner. */
+  private watchOutputDir(task: CanvasSkillTask, outputDir: string, t: CatalogTranslate): { stop: () => void } {
+    let seen = -1
+    const timer = setInterval(() => {
+      void fs.readdir(outputDir, { recursive: true, withFileTypes: true }).then(entries => {
+        const count = entries.filter(entry => entry.isFile()).length
+        if (count === 0 || count === seen) return
+        seen = count
+        task.stage = t('canvas.skills.stageArtifacts', { count })
+      }).catch(() => { /* the directory outlives the run; nothing to report */ })
+    }, 2_000)
+    timer.unref?.()
+    return { stop: () => clearInterval(timer) }
   }
 
   /** The host skill name a heavy built-in maps to (the deck pipeline). */
@@ -821,10 +892,12 @@ export class SkillRunner {
     fileLines: string[],
     outputDir: string,
     t: CatalogTranslate,
+    configNote?: string,
   ): string {
     return [
       t('canvas.skills.heavyIntro', { name: skill.name }),
       ...body === undefined ? [] : ['', t('canvas.skills.heavyBodyHeader'), body],
+      ...configNote === undefined || configNote === '' ? [] : ['', t('canvas.skills.configHeader'), configNote],
       '',
       t('canvas.skills.heavyInputsHeader'),
       ...fileLines,
@@ -913,8 +986,7 @@ export class SkillRunner {
    * @param language - the caller's UI language, when it sent one.
    */
   private translate(language?: string): CatalogTranslate {
-    const preferred = language !== undefined && language !== '' ? language : undefined
-    return (key, params) => translateCanvasSkill(key, params, preferred ?? currentSkillLanguage())
+    return canvasSkillCopy(language)
   }
 }
 
@@ -961,6 +1033,17 @@ export function setSkillLanguage(hook: () => string): void {
 }
 function currentSkillLanguage(): string {
   try { return languageHook() } catch { return 'zh' }
+}
+
+/**
+ * Copy resolver for host-rendered canvas copy outside a run (the skill library
+ * panel): the caller's language wins, the installed language resolver backs it
+ * up, exactly as {@link SkillRunner.translate} does for runs.
+ * @param language - the caller's UI language, when it sent one.
+ */
+export function canvasSkillCopy(language?: string): CatalogTranslate {
+  const preferred = language !== undefined && language !== '' ? language : undefined
+  return (key, params) => translateCanvasSkill(key, params, preferred ?? currentSkillLanguage())
 }
 
 export { isEditablePptSkill }

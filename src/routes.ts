@@ -21,19 +21,57 @@ import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
 import { appendHistory, clearHistory, listHistory, readHistoryImage, removeHistory } from './history-store.ts'
 import { appendGallery, clearGallery, listGallery, readGalleryImage, removeGallery, updateGalleryTags } from './gallery-store.ts'
-import { canvasStore, CanvasConflictError, MAX_CANVAS_FILE_BYTES, mimeFromFileName, safeFileName, type CanvasFileInput, type CanvasImageInput, type CanvasStore } from './canvas-store.ts'
+import { baseMime, canvasStore, CanvasConflictError, MAX_CANVAS_FILE_BYTES, mimeFromFileName, safeFileName, type CanvasFileInput, type CanvasImageInput, type CanvasStore } from './canvas-store.ts'
+import { buildFilePreview } from './file-preview.ts'
 import { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates } from './templates-store.ts'
 import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
 import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
 
 /** Cap on history append bodies (base64 result images can be much larger). */
 const MAX_HISTORY_BODY_BYTES = 64 * 1024 * 1024
+
+/** Image types the asset route always serves inline (they cannot execute). */
+const CANVAS_INLINE_IMAGE_MIME = /^image\/(png|jpeg|webp|gif|bmp)$/
+
+/**
+ * The only non-image types `?inline=1` will serve with their real content type:
+ * the browser's own renderers for documents and media. Anything not listed here
+ * (HTML, SVG, XML, unknown binaries) keeps coming back as an attachment.
+ */
+const CANVAS_INLINE_MIME = /^(application\/pdf|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+)$/
+
+/** Parse one `bytes=a-b` range header; undefined when absent or unsatisfiable. */
+function parseByteRange(header: string | string[] | undefined, size: number): { start: number; end: number } | undefined {
+  const value = Array.isArray(header) ? header[0] : header
+  if (typeof value !== 'string' || size <= 0) return undefined
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim())
+  if (match === null) return undefined
+  const [, rawStart = '', rawEnd = ''] = match
+  if (rawStart === '' && rawEnd === '') return undefined
+  let start: number
+  let end: number
+  if (rawStart === '') {
+    // Suffix range: the last N bytes.
+    const length = Number(rawEnd)
+    if (!Number.isSafeInteger(length) || length <= 0) return undefined
+    start = Math.max(0, size - length)
+    end = size - 1
+  } else {
+    start = Number(rawStart)
+    end = rawEnd === '' ? size - 1 : Number(rawEnd)
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return undefined
+    if (start >= size) return undefined
+    end = Math.min(end, size - 1)
+  }
+  if (end < start) return undefined
+  return { start, end }
+}
 
 /** Settings seam face the bridge needs (the host settings provider). */
 export interface SettingsSeam {
@@ -108,6 +146,7 @@ export interface ImageGenRoutesDeps {
     list: (language?: string) => Promise<CanvasSkillCatalog>
     run: (request: CanvasSkillRunRequest) => Promise<CanvasSkillTask>
     task: (id: string) => CanvasSkillTask | undefined
+    tasksOfCanvas: (canvasId: string) => CanvasSkillTask[]
     cancel: (id: string) => Promise<boolean>
   }
   /**
@@ -118,6 +157,10 @@ export interface ImageGenRoutesDeps {
     list: (options?: { language?: string }) => Promise<CanvasSkillLibrary>
     install: (request: CanvasSkillInstallRequest) => Promise<CanvasSkillInstallResult>
     remove: (name: string, options?: { language?: string }) => Promise<CanvasSkillRemoveResult>
+    /** Save the values a skill's own declaration asked for. */
+    configSave?: (request: CanvasSkillConfigSaveRequest) => Promise<CanvasSkillConfigSaveResult>
+    /** Run the declaration's `apply` steps (commands / files). */
+    configApply?: (request: CanvasSkillConfigApplyRequest) => Promise<CanvasSkillConfigApplyResult>
   }
 }
 
@@ -1227,19 +1270,49 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         const file = imageFileFrom(req.url, CANVAS_API.asset)
         const found = file === undefined ? undefined : await canvas.readAsset(file)
         if (found === undefined) { writeJson(res, 404, { error: 'not found' }); return }
-        // Image assets stay inline (the canvas renders them). Arbitrary file
-        // types are forced into a download with a neutral content type, so a
-        // stored HTML/SVG-shaped payload can never execute in the app's origin.
-        const image = /^image\/(png|jpeg|webp|gif)$/.test(found.mime)
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-        const download = url.searchParams.get('download') !== '0'
-        res.writeHead(200, {
-          'content-type': image ? found.mime : 'application/octet-stream',
-          'content-length': found.data.length,
-          'cache-control': image ? 'private, max-age=3600' : 'private, no-store',
+        // Image assets stay inline (the canvas renders them). Only an explicit
+        // `?inline=1` unlocks the other previewable types (pdf / audio / video),
+        // and only from a fixed allow-list: everything else — including any
+        // HTML/SVG-shaped payload that slipped past the upload name check — is
+        // forced into a download with a neutral content type, so it can never
+        // execute in the app's origin.
+        const image = CANVAS_INLINE_IMAGE_MIME.test(found.mime)
+        const wantsInline = url.searchParams.get('inline') === '1'
+        const downloadRequested = url.searchParams.get('download') === '0'
+        const inline = (image && !downloadRequested) || (wantsInline && CANVAS_INLINE_MIME.test(found.mime))
+        if (!inline) {
+          res.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': found.data.length,
+            'cache-control': 'private, no-store',
+            'x-content-type-options': 'nosniff',
+            'content-disposition': `attachment; filename="${file ?? 'asset'}"`,
+          })
+          res.end(found.data)
+          return
+        }
+        const headers: Record<string, string | number> = {
+          'content-type': found.mime,
+          'cache-control': 'private, max-age=3600',
           'x-content-type-options': 'nosniff',
-          ...image && !download ? {} : { 'content-disposition': `attachment; filename="${file ?? 'asset'}"` },
-        })
+          'content-disposition': `inline; filename="${file ?? 'asset'}"`,
+          'accept-ranges': 'bytes',
+        }
+        // Media elements ask for byte ranges; answering 200 for every request
+        // would break seeking in audio/video previews.
+        const range = parseByteRange(req.headers.range, found.data.length)
+        if (range !== undefined) {
+          const slice = found.data.subarray(range.start, range.end + 1)
+          res.writeHead(206, {
+            ...headers,
+            'content-range': `bytes ${range.start}-${range.end}/${found.data.length}`,
+            'content-length': slice.length,
+          })
+          res.end(slice)
+          return
+        }
+        res.writeHead(200, { ...headers, 'content-length': found.data.length })
         res.end(found.data)
       },
     },
@@ -1271,6 +1344,46 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           const asset = await canvas.putFile({ data, mime, name, origin: 'upload' })
           writeJson(res, 200, { ok: true, asset })
         } catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-file-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------------------ canvas file preview
+    // One canvas file node asks for its readable content: text / table /
+    // office text / archive listing / inline-media descriptor. The bytes stay
+    // host-side; the browser only ever receives decoded, bounded content.
+    {
+      kind: 'exact',
+      path: CANVAS_API.filePreview,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const assetId = typeof body?.assetId === 'string' ? body.assetId : ''
+        if (assetId === '') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: 'assetId 是必填项' })
+          return
+        }
+        const found = await canvas.readAsset(assetId)
+        if (found === undefined) {
+          writeJson(res, 200, { ok: false, code: 'not-found', message: '画布资产不存在，可能已被清理。' })
+          return
+        }
+        try {
+          // The browser's node metadata knows the original file name and MIME
+          // type; the content-addressed store only kept an extension-derived
+          // pair, so the hints make the format decision more accurate. They are
+          // hints only: the bytes always come from the host-side asset.
+          const hintName = typeof body?.name === 'string' ? safeFileName(body.name) : ''
+          const rawMime = typeof body?.mime === 'string' && body.mime.length <= 160 ? baseMime(body.mime) : ''
+          const mime = rawMime === '' || rawMime === 'application/octet-stream' ? found.mime : rawMime
+          writeJson(res, 200, {
+            ok: true,
+            preview: buildFilePreview({
+              data: found.data,
+              mime,
+              name: hintName === '' ? assetId : hintName,
+              url: `${CANVAS_API.asset}/${encodeURIComponent(assetId)}?inline=1`,
+            }),
+          })
+        } catch (error) { writeJson(res, 200, { ok: false, code: 'preview-failed', message: messageOf(error) }) }
       },
     },
     // --------------------------------------------------- canvas skills list
@@ -1321,8 +1434,19 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
+        if (deps.skills === undefined) {
+          writeJson(res, 200, { ok: false, code: 'not-found', message: '任务不存在' })
+          return
+        }
+        // A canvas id without a task id lists the canvas's unfinished runs:
+        // a reopened canvas rebuilds its live run cards from this.
+        const canvasId = typeof body?.canvasId === 'string' ? body.canvasId.trim() : ''
+        if (canvasId !== '') {
+          writeJson(res, 200, { ok: true, tasks: deps.skills.tasksOfCanvas(canvasId) })
+          return
+        }
         const id = typeof body?.taskId === 'string' ? body.taskId.trim() : ''
-        if (id === '' || deps.skills === undefined) {
+        if (id === '') {
           writeJson(res, 200, { ok: false, code: 'not-found', message: '任务不存在' })
           return
         }
@@ -1399,6 +1523,61 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         }
         try { writeJson(res, 200, await deps.skillLibrary.remove(name, parseSkillLanguage(body))) }
         catch (error) { writeJson(res, 200, { ok: false, code: 'remove-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------ skill configuration (declared per skill)
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.configSave,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (deps.skillLibrary?.configSave === undefined) {
+          writeJson(res, 200, { ok: false, code: 'library-unavailable', message: '本宿主不支持保存技能配置。' })
+          return
+        }
+        const name = typeof body?.name === 'string' ? body.name.trim() : ''
+        if (name === '') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: '缺少技能名。' })
+          return
+        }
+        const values = (Array.isArray(body?.values) ? body.values : [])
+          .map(item => {
+            if (item === null || typeof item !== 'object') return undefined
+            const record = item as Record<string, unknown>
+            const id = typeof record.id === 'string' ? record.id.trim() : ''
+            if (id === '' || typeof record.value !== 'string') return undefined
+            return { id, value: record.value }
+          })
+          .filter((item): item is { id: string; value: string } => item !== undefined)
+          .slice(0, 64)
+        try {
+          writeJson(res, 200, await deps.skillLibrary.configSave({ name, values, ...parseSkillLanguage(body) }))
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'config-save-failed', message: messageOf(error) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: CANVAS_SKILL_API.configApply,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (deps.skillLibrary?.configApply === undefined) {
+          writeJson(res, 200, { ok: false, code: 'library-unavailable', message: '本宿主不支持应用技能配置。' })
+          return
+        }
+        const name = typeof body?.name === 'string' ? body.name.trim() : ''
+        if (name === '') {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: '缺少技能名。' })
+          return
+        }
+        try {
+          writeJson(res, 200, await deps.skillLibrary.configApply({ name, ...parseSkillLanguage(body) }))
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'config-apply-failed', message: messageOf(error) })
+        }
       },
     },
     // --------------------------------------------------- templates list

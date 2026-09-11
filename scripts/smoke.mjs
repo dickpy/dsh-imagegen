@@ -14,7 +14,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const root = new URL('../', import.meta.url)
@@ -920,6 +920,8 @@ const canvasBackend = {
 let heavyRunsStarted = 0
 /** Isolated skill library root for the install/remove cases. */
 const skillLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-imagegen-smoke-skills-'))
+/** Isolated local skill root the canvas registry adapter falls back to. */
+const skillRegistryRoot = mkdtempSync(join(tmpdir(), 'dsh-imagegen-smoke-registry-'))
 const canvasSkillRunner = new host.SkillRunner({
   backend: {
     canvas: canvasBackend,
@@ -937,14 +939,17 @@ const canvasSkillRunner = new host.SkillRunner({
   heavyTimeoutMs: () => 30_000,
   dataRoot: () => skillRunRoot,
 })
+// The canvas reads the local library beside the host registry: on the Web
+// surface a preset owns local discovery, so an unscoped `ctx.skills.list()` sees
+// no installed skill at all. The fake above stands in for that empty answer.
 canvasSkillRunner.attach({
-  registry: {
+  registry: host.createSkillRegistryBackend({
     async list() { return skillRegistrySkills },
     async get(name) {
       const found = skillRegistrySkills.find(skill => skill.name === name)
       return found === undefined ? undefined : { name, content: `# ${name}\nDo the thing.` }
     },
-  },
+  }, { root: () => skillRegistryRoot }),
   agents: {
     available: () => true,
     async create(options) {
@@ -965,6 +970,49 @@ canvasSkillRunner.attach({
     },
   },
 })
+/** The skill-library backend the route family sees (kept by name so the config
+ *  routes can be exercised with a scripted backend). */
+const skillLibraryFake = {
+  async list() {
+    return await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false })
+  },
+  async install(request) {
+    const installed = []
+    const failed = []
+    let message
+    for (const source of request.sources ?? []) {
+      try { installed.push(host.classifySource(source).kind) }
+      catch (error) { failed.push({ source, message: String(error.message) }) }
+    }
+    if (request.asset !== undefined) {
+      // The upload route stores into the real canvas store, so read it back
+      // the same way the plugin does.
+      const found = await host.canvasStore.readAssets([request.asset])
+      const blob = found.get(request.asset.assetId)
+      if (blob === undefined) message = 'missing upload'
+      else {
+        try {
+          installed.push(await host.installFromArchive(blob.data, skillLibraryRoot, request.name ?? 'skill', request.force === true))
+        } catch (error) { message = String(error.message) }
+      }
+    }
+    return {
+      ok: installed.length > 0,
+      installed,
+      failed,
+      library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }),
+      ...message === undefined ? {} : { message },
+    }
+  },
+  async remove(name) {
+    try {
+      await host.removeSkill(name, skillLibraryRoot)
+      return { ok: true, library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }) }
+    } catch (error) {
+      return { ok: false, library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }), message: String(error.message) }
+    }
+  },
+}
 const routes = host.makeRoutes({
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
@@ -976,47 +1024,7 @@ const routes = host.makeRoutes({
   attachments,
   pendingConversationImages,
   skills: canvasSkillRunner,
-  skillLibrary: {
-    async list() {
-      return await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false })
-    },
-    async install(request) {
-      const installed = []
-      const failed = []
-      let message
-      for (const source of request.sources ?? []) {
-        try { installed.push(host.classifySource(source).kind) }
-        catch (error) { failed.push({ source, message: String(error.message) }) }
-      }
-      if (request.asset !== undefined) {
-        // The upload route stores into the real canvas store, so read it back
-        // the same way the plugin does.
-        const found = await host.canvasStore.readAssets([request.asset])
-        const blob = found.get(request.asset.assetId)
-        if (blob === undefined) message = 'missing upload'
-        else {
-          try {
-            installed.push(await host.installFromArchive(blob.data, skillLibraryRoot, request.name ?? 'skill', request.force === true))
-          } catch (error) { message = String(error.message) }
-        }
-      }
-      return {
-        ok: installed.length > 0,
-        installed,
-        failed,
-        library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }),
-        ...message === undefined ? {} : { message },
-      }
-    },
-    async remove(name) {
-      try {
-        await host.removeSkill(name, skillLibraryRoot)
-        return { ok: true, library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }) }
-      } catch (error) {
-        return { ok: false, library: await host.listLibrary({ root: skillLibraryRoot, networkAvailable: false }), message: String(error.message) }
-      }
-    },
-  },
+  skillLibrary: skillLibraryFake,
 })
 const server = createServer((req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://x').pathname
@@ -1604,6 +1612,218 @@ await check('C10c a file node round-trips through canvas save with its asset int
   assert.equal(storedNode.metadata.fileKind, 'text')
 })
 
+/** Upload one file through the real route, exactly like the browser does. */
+const uploadCanvasFile = async (name, mime, body) => {
+  const response = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=${encodeURIComponent(name)}`, {
+    method: 'POST',
+    headers: { 'content-type': mime },
+    body,
+  })
+  const parsed = await response.json()
+  assert.equal(parsed.ok, true, JSON.stringify(parsed))
+  return parsed.asset
+}
+
+/** Ask the host for one asset's structured preview (node metadata as hints). */
+const canvasFilePreview = async asset => {
+  const response = await post('/api/dsh-imagegen/canvas/file/preview', { assetId: asset.assetId, name: asset.name, mime: asset.mime })
+  assert.equal(response.body.ok, true, JSON.stringify(response.body))
+  return response.body.preview
+}
+
+await check('C10d a canvas file preview decodes text, tables and office documents', async () => {
+  const textPreview = await canvasFilePreview(await uploadCanvasFile('notes.txt', 'text/plain', Buffer.from('line one\nline two\n', 'utf8')))
+  assert.equal(textPreview.kind, 'text')
+  assert.match(textPreview.text, /line two/)
+  assert.ok(textPreview.lines >= 2, 'line count reported')
+
+  const tablePreview = await canvasFilePreview(await uploadCanvasFile('people.csv', 'text/csv', Buffer.from('name,role\nalice,admin\nbob,viewer\n', 'utf8')))
+  assert.equal(tablePreview.kind, 'table')
+  assert.deepEqual(tablePreview.rows[0], ['name', 'role'])
+  assert.deepEqual(tablePreview.rows[2], ['bob', 'viewer'])
+  assert.equal(tablePreview.totalRows, 3)
+  assert.equal(tablePreview.truncated, false)
+
+  // RFC4180 quoting: separators and newlines inside quotes stay in one cell.
+  const quotedPreview = await canvasFilePreview(await uploadCanvasFile('quoted.csv', 'text/csv', Buffer.from('a,b\n"x,1","y\n2"\n', 'utf8')))
+  assert.deepEqual(quotedPreview.rows[1], ['x,1', 'y\n2'])
+
+  // DOCX: the OOXML body is inflated and its paragraphs keep their order.
+  const docx = buildZip([
+    { name: '[Content_Types].xml', body: '<Types/>' },
+    { name: 'word/document.xml', body: '<w:document><w:body><w:p><w:r><w:t>季度报告</w:t></w:r></w:p><w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p></w:body></w:document>' },
+  ])
+  const docxPreview = await canvasFilePreview(await uploadCanvasFile('report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', docx))
+  assert.equal(docxPreview.kind, 'document')
+  assert.equal(docxPreview.format, 'docx')
+  assert.equal(docxPreview.blocks.length, 2, 'both paragraphs survive as blocks')
+  assert.equal(docxPreview.blocks[0].type, 'paragraph')
+  assert.match(docxPreview.blocks[0].runs.map(run => run.text).join(''), /季度报告/)
+  assert.match(docxPreview.blocks[1].runs.map(run => run.text).join(''), /Second paragraph/)
+
+  // XLSX: shared strings resolve into a grid instead of a wall of XML.
+  const xlsx = buildZip([
+    { name: 'xl/sharedStrings.xml', body: '<sst><si><t>Name</t></si><si><t>Score</t></si><si><t>Ada</t></si></sst>' },
+    { name: 'xl/worksheets/sheet1.xml', body: '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>97</v></c></row></sheetData></worksheet>' },
+  ])
+  const sheetPreview = await canvasFilePreview(await uploadCanvasFile('scores.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xlsx))
+  assert.equal(sheetPreview.kind, 'table')
+  assert.deepEqual(sheetPreview.rows[0], ['Name', 'Score'])
+  assert.deepEqual(sheetPreview.rows[1], ['Ada', '97'])
+
+  // Markdown decodes whole so the client can render it as rich text.
+  const mdPreview = await canvasFilePreview(await uploadCanvasFile('readme.md', 'text/markdown', Buffer.from('# 计划\n\n**加粗** and `code`\n', 'utf8')))
+  assert.equal(mdPreview.kind, 'markdown')
+  assert.match(mdPreview.markdown, /# 计划/)
+  assert.equal(mdPreview.truncated, false)
+
+  const missing = await post('/api/dsh-imagegen/canvas/file/preview', { assetId: 'nope.csv' })
+  assert.equal(missing.body.ok, false)
+  assert.equal(missing.body.code, 'not-found')
+})
+
+await check('C10d2 rich previews reconstruct html / svg / docx layouts and pptx slides', () => {
+  // The upload gate keeps HTML/SVG out of the store, so these go straight to
+  // the preview builder — the same function the route calls with store bytes.
+  const preview = (name, mime, data) => host.buildFilePreview({ data, mime, name, url: 'asset-url' })
+
+  // HTML is handed over untouched: the client renders it in a sandboxed iframe.
+  const html = preview('page.html', 'text/html', Buffer.from('<!doctype html><html><body><h1>你好</h1><script>alert(1)</script></body></html>', 'utf8'))
+  assert.equal(html.kind, 'html')
+  assert.match(html.html, /<h1>你好<\/h1>/)
+  assert.match(html.html, /<script>/)
+
+  // SVG likewise; the browser renders it through an `<img>` (no script runs).
+  const svg = preview('logo.svg', 'image/svg+xml', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>', 'utf8'))
+  assert.equal(svg.kind, 'svg')
+  assert.match(svg.svg, /<rect/)
+
+  // DOCX layout: heading level, bold/italic runs, numbered list, table grid.
+  const richDocx = preview('plan.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buildZip([
+    { name: '[Content_Types].xml', body: '<Types/>' },
+    { name: 'word/numbering.xml', body: '<w:numbering><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum><w:num w:numId="3"><w:abstractNumId w:val="0"/></w:num></w:numbering>' },
+    { name: 'word/document.xml', body: '<w:document><w:body>'
+      + '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>项目计划</w:t></w:r></w:p>'
+      + '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗</w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>斜体</w:t></w:r></w:p>'
+      + '<w:p><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr><w:r><w:t>第一项</w:t></w:r></w:p>'
+      + '<w:p><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr><w:r><w:t>第二项</w:t></w:r></w:p>'
+      + '<w:p/>' // Word-style empty spacer paragraph between blocks
+      + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+      + '</w:body></w:document>' },
+  ]))
+  assert.equal(richDocx.kind, 'document')
+  const [heading, paragraph, list, table] = richDocx.blocks
+  assert.deepEqual(heading, { type: 'heading', level: 1, runs: [{ text: '项目计划' }] })
+  assert.equal(paragraph.type, 'paragraph')
+  assert.deepEqual(paragraph.runs, [{ text: '加粗', bold: true }, { text: '斜体', italic: true }])
+  assert.deepEqual(list, { type: 'list', ordered: true, items: [[{ text: '第一项' }], [{ text: '第二项' }]] })
+  assert.deepEqual(table, { type: 'table', rows: [['A1', 'B1']] })
+
+  // PPTX: one card per slide, title placeholder split from body lines, and
+  // embedded raster pictures ride along as data URLs.
+  const deck = preview('deck.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buildZip([
+    { name: '[Content_Types].xml', body: '<Types/>' },
+    { name: 'ppt/slides/slide1.xml', body: '<p:sld><p:cSld><p:spTree>'
+      + '<p:sp><p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>季度回顾</a:t></a:r></a:p></p:txBody></p:sp>'
+      + '<p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody>'
+      + '<a:p><a:r><a:t>营收增长</a:t></a:r></a:p><a:p><a:r><a:t>成本下降</a:t></a:r></a:p>'
+      + '</p:txBody></p:sp>'
+      + '<p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic>'
+      + '</p:spTree></p:cSld></p:sld>' },
+    { name: 'ppt/slides/_rels/slide1.xml.rels', body: '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>' },
+    { name: 'ppt/media/image1.png', body: pngBytes },
+    { name: 'ppt/slides/slide2.xml', body: '<p:sld><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>结尾页</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>' },
+  ]))
+  assert.equal(deck.kind, 'slides')
+  assert.equal(deck.format, 'pptx')
+  assert.equal(deck.slides.length, 2)
+  assert.equal(deck.slides[0].title, '季度回顾')
+  assert.deepEqual(deck.slides[0].lines, ['营收增长', '成本下降'])
+  assert.equal(deck.slides[0].images.length, 1)
+  assert.equal(deck.slides[0].images[0].mime, 'image/png')
+  assert.equal(deck.slides[0].images[0].data, `data:image/png;base64,${pngBytes.toString('base64')}`)
+  assert.deepEqual(deck.slides[1], { lines: ['结尾页'], images: [] })
+
+  // Vector metafiles (EMF) cannot render in an <img>, so they are dropped.
+  const emfDeck = preview('legacy.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buildZip([
+    { name: '[Content_Types].xml', body: '<Types/>' },
+    { name: 'ppt/slides/slide1.xml', body: '<p:sld><p:cSld><p:spTree><p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic></p:spTree></p:cSld></p:sld>' },
+    { name: 'ppt/slides/_rels/slide1.xml.rels', body: '<Relationships><Relationship Id="rId2" Target="../media/image1.emf"/></Relationships>' },
+    { name: 'ppt/media/image1.emf', body: '\u0001\u0002emf' },
+  ]))
+  assert.equal(emfDeck.kind, 'slides')
+  assert.equal(emfDeck.slides[0].images.length, 0)
+})
+
+await check('C10e a canvas file preview lists archives and reports opaque binaries', async () => {
+  const archive = buildZip([
+    { name: 'docs/', body: '' },
+    { name: 'docs/a.txt', body: 'hello' },
+    { name: 'b.bin', body: 'xxxxx' },
+  ])
+  const archivePreview = await canvasFilePreview(await uploadCanvasFile('bundle.zip', 'application/zip', archive))
+  assert.equal(archivePreview.kind, 'archive')
+  assert.equal(archivePreview.totalEntries, 3)
+  assert.deepEqual(archivePreview.entries.map(entry => entry.name), ['docs/', 'docs/a.txt', 'b.bin'])
+  assert.equal(archivePreview.entries[0].dir, true)
+  assert.equal(archivePreview.entries[1].size, 5)
+  assert.equal(archivePreview.truncated, false)
+
+  // A PDF and media ask the browser to render the asset itself.
+  const pdfPreview = await canvasFilePreview(await uploadCanvasFile('paper.pdf', 'application/pdf', Buffer.from('%PDF-1.4\n%%EOF\n', 'utf8')))
+  assert.equal(pdfPreview.kind, 'media')
+  assert.equal(pdfPreview.media, 'pdf')
+  assert.match(pdfPreview.url, /\?inline=1$/)
+
+  const audioPreview = await canvasFilePreview(await uploadCanvasFile('track.mp3', 'audio/mpeg', Buffer.from('ID3fakeaudio')))
+  assert.equal(audioPreview.kind, 'media')
+  assert.equal(audioPreview.media, 'audio')
+
+  // An opaque binary says so, with a machine-readable reason for the browser.
+  const blob = await canvasFilePreview(await uploadCanvasFile('blob.bin', 'application/octet-stream', Buffer.from([0, 1, 2, 3])))
+  assert.equal(blob.kind, 'none')
+  assert.equal(blob.reason, 'unsupported')
+  assert.equal(typeof blob.format, 'string')
+})
+
+await check('C10f previewable assets serve inline with byte ranges, markup never does', async () => {
+  const base = `http://127.0.0.1:${port}`
+  const bytes = Buffer.from('%PDF-1.4\nsecond page\n%%EOF\n', 'utf8')
+  const pdf = await uploadCanvasFile('inline.pdf', 'application/pdf', bytes)
+
+  // Plain requests keep the attachment contract the upload path promises.
+  const download = await fetch(`${base}${pdf.url}`)
+  assert.equal(download.headers.get('content-type'), 'application/octet-stream')
+  assert.match(download.headers.get('content-disposition') ?? '', /^attachment/)
+
+  // ?inline=1 unlocks the browser's own renderer for the documented types.
+  const inline = await fetch(`${base}${pdf.url}?inline=1`)
+  assert.equal(inline.headers.get('content-type'), 'application/pdf')
+  assert.match(inline.headers.get('content-disposition') ?? '', /^inline/)
+  assert.equal(inline.headers.get('accept-ranges'), 'bytes')
+  assert.equal(await inline.text(), bytes.toString('utf8'))
+
+  // Media seeking needs real range answers.
+  const ranged = await fetch(`${base}${pdf.url}?inline=1`, { headers: { range: 'bytes=0-7' } })
+  assert.equal(ranged.status, 206)
+  assert.equal(ranged.headers.get('content-range'), `bytes 0-7/${bytes.length}`)
+  assert.equal(await ranged.text(), '%PDF-1.4')
+
+  // Text-shaped assets travel as JSON previews, never as an inline response.
+  const csv = await uploadCanvasFile('inline.csv', 'text/csv', Buffer.from('a,b\n', 'utf8'))
+  const csvInline = await fetch(`${base}${csv.url}?inline=1`)
+  assert.equal(csvInline.headers.get('content-type'), 'application/octet-stream')
+  assert.match(csvInline.headers.get('content-disposition') ?? '', /^attachment/)
+
+  // An HTML-shaped payload may sit in the store (a declared type can slip past
+  // the name check) but can never render in the app's origin.
+  const markup = await uploadCanvasFile('evil.txt', 'text/html', Buffer.from('<html><script>alert(1)</script></html>', 'utf8'))
+  const markupInline = await fetch(`${base}${markup.url}?inline=1`)
+  assert.equal(markupInline.headers.get('content-type'), 'application/octet-stream')
+  assert.match(markupInline.headers.get('content-disposition') ?? '', /^attachment/)
+  assert.equal(markupInline.headers.get('x-content-type-options'), 'nosniff')
+})
+
 await check('C11 the skill catalog merges built-ins with local skills and tiers external ones', async () => {
   skillRegistrySkills.length = 0
   skillRegistrySkills.push(
@@ -1668,12 +1888,23 @@ await check('C11b a lightweight skill run answers through the chat model and dra
   })
   assert.equal(run.body.ok, true, JSON.stringify(run.body))
   const taskId = run.body.task.id
+  // The run-card rebuild path: tasks carry their input ids and a machine phase.
+  assert.deepEqual(run.body.task.nodeIds, ['node-text-1'])
+  assert.equal(['queued', 'running'].includes(run.body.task.phase), true, JSON.stringify(run.body.task))
   let snapshot = run.body.task
   for (let attempt = 0; attempt < 80 && snapshot.status !== 'completed'; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 25))
     snapshot = (await post('/api/dsh-imagegen/canvas/skills/task', { taskId })).body.task
   }
   assert.equal(snapshot.status, 'completed', JSON.stringify(snapshot))
+  // The finished snapshot keeps nodeIds so a reload can still rebuild context.
+  assert.deepEqual(snapshot.nodeIds, ['node-text-1'])
+  // A canvas-scoped listing only reports unfinished runs.
+  const drained = await post('/api/dsh-imagegen/canvas/skills/task', { canvasId: document.id })
+  assert.equal(drained.body.ok, true)
+  assert.deepEqual(drained.body.tasks, [], 'finished runs are not listed as live')
+  const unknown = await post('/api/dsh-imagegen/canvas/skills/task', { canvasId: 'canvas-none' })
+  assert.deepEqual(unknown.body.tasks, [])
   assert.equal(chatCalls, before + 1)
   const produced = snapshot.output.nodes[0]
   assert.equal(produced.type, 'text')
@@ -1779,6 +2010,145 @@ await check('C11f skill routes answer in the caller language and reject unknown 
   assert.ok(zh.body.reason === undefined || !String(zh.body.reason).includes('canvas.skills.'))
 })
 
+await check('C11g a scope-blind host registry still offers the local skill library', async () => {
+  // The user's exact situation: the skill is installed under the local root,
+  // while the registry the host-plane plugin can query answers nothing (on the
+  // Web surface a preset owns local discovery, so the global layer is empty).
+  const previous = [...skillRegistrySkills]
+  skillRegistrySkills.length = 0
+  const bundle = (name, body) => {
+    mkdirSync(join(skillRegistryRoot, name), { recursive: true })
+    writeFileSync(join(skillRegistryRoot, name, 'SKILL.md'), body)
+  }
+  const names = ['image-to-editable-ppt', 'local-worker', 'Bad_Name', 'user-only-thing']
+  try {
+    bundle('image-to-editable-ppt', '---\nname: image-to-editable-ppt\ndescription: Rebuild slides\n---\n\n# Deck\n')
+    bundle('local-worker', '---\nname: local-worker\ndescription: Local notes worker\n---\n\n# Local\n\nlocal body marker\n')
+    // Entries the host registry would drop: never offered to a node.
+    bundle('Bad_Name', '---\nname: Bad_Name\ndescription: Wrong name shape\n---\n\n# Bad\n')
+    bundle('user-only-thing', '---\nname: user-only-thing\ndescription: Slash command only\ndisable-model-invocation: true\n---\n\n# Human\n')
+
+    const listed = await post('/api/dsh-imagegen/canvas/skills/list', {})
+    const ids = listed.body.skills.map(skill => skill.id)
+    assert.ok(ids.includes('skill:image-to-editable-ppt'), `missing the installed deck skill in ${JSON.stringify(ids)}`)
+    assert.ok(ids.includes('skill:local-worker'), `missing the local skill in ${JSON.stringify(ids)}`)
+    assert.equal(ids.includes('skill:Bad_Name'), false, `a non-kebab name must not be offered: ${JSON.stringify(ids)}`)
+    assert.equal(ids.includes('skill:user-only-thing'), false, `a user-only skill must not be offered: ${JSON.stringify(ids)}`)
+    // The built-in deck action keys its install hint off this list: the skill IS
+    // installed, so the picker must stop telling the user to install it.
+    assert.deepEqual([...listed.body.installed].sort(), ['image-to-editable-ppt', 'local-worker'])
+
+    // The body loads from disk too, so a run is not silently instruction-less.
+    const adapter = host.createSkillRegistryBackend({ async list() { return [] }, async get() { return undefined } }, { root: () => skillRegistryRoot })
+    const definition = await adapter.get('local-worker')
+    assert.equal(definition.name, 'local-worker')
+    assert.match(definition.content, /local body marker/)
+    assert.equal(await adapter.get('Bad_Name'), undefined)
+    // A registry entry still wins a name collision (deployment outranks a user install).
+    const merged = host.createSkillRegistryBackend({
+      async list() { return [{ name: 'local-worker', description: 'registry wins', path: 'C:/repo/local-worker/SKILL.md' }] },
+      async get() { return { name: 'local-worker', content: 'registry body' } },
+    }, { root: () => skillRegistryRoot })
+    assert.equal((await merged.list()).find(skill => skill.name === 'local-worker').description, 'registry wins')
+    assert.equal((await merged.get('local-worker')).content, 'registry body')
+  } finally {
+    for (const name of names) rmSync(join(skillRegistryRoot, name), { recursive: true, force: true })
+    skillRegistrySkills.push(...previous)
+    // Leave the catalog a later check sees as the registry-only one again.
+    const restored = await post('/api/dsh-imagegen/canvas/skills/list', {})
+    assert.equal(restored.body.skills.some(skill => skill.id === 'skill:local-worker'), false)
+  }
+})
+
+await check('C11h a heavy run composes its agent with the preset roster and a model route', async () => {
+  // Creating an agent is not enough: on the Web surface every model-facing row
+  // lives behind a preset, and the model route is not implied by the request.
+  const seen = { sections: [] }
+  const created = await host.createCanvasSkillAgent({
+    agents: {
+      async create(options) {
+        seen.options = options
+        // The real factory runs setup before it publishes the agent.
+        await options.setup({
+          systemPrompt: { section: input => seen.sections.push(input) },
+        })
+        return {
+          agent: {
+            session: { deriveMessages: () => [] },
+            followup() { seen.delivered = true },
+            async whenIdle() {},
+            cancel(cause) { seen.cancelled = cause },
+          },
+          async dispose() {},
+        }
+      },
+    },
+    presets: {
+      async resolve(id) { seen.resolvedWith = id; return { id: 'standard' } },
+      async mount(_ctx, id) { seen.mounted = id; return { id } },
+    },
+    defaultModel: { currentSelection: () => ({ provider: 'packyapi', model: 'deepseek-flash' }) },
+    agentPreset: '',
+    sessionId: 'skillagent-smoke',
+    cwd: 'C:/runs/smoke',
+    systemPrompt: 'SKILL BODY',
+    fail: key => `copy:${key}`,
+  })
+  assert.equal(seen.resolvedWith, undefined, 'an empty setting must ask for the deployment default')
+  assert.deepEqual(seen.options.agentOptions, { provider: 'packyapi', model: 'deepseek-flash' })
+  assert.equal(seen.options.meta.agentPreset, 'standard')
+  assert.equal(seen.options.meta.origin, 'subagent')
+  assert.equal(seen.options.meta.cwd, 'C:/runs/smoke')
+  assert.equal(seen.mounted, 'standard', 'the agent must join the preset, or it runs tool-less')
+  assert.equal(seen.sections.length, 1)
+  assert.equal(seen.sections[0].text, 'SKILL BODY')
+  assert.equal(seen.sections[0].name, 'plugin:dsh-imagegen:canvas-skill')
+  // Driving the handle narrows the DSH agent to what a run needs.
+  created.followup('go')
+  assert.equal(seen.delivered, true)
+  created.cancel()
+  assert.deepEqual(seen.cancelled, { kind: 'user' })
+  await created.dispose()
+
+  // A configured preset name wins over the deployment default.
+  const named = {}
+  await host.createCanvasSkillAgent({
+    agents: {
+      async create(options) {
+        await options.setup({ systemPrompt: { section() {} } })
+        return { agent: { session: { deriveMessages: () => [] }, followup() {}, async whenIdle() {}, cancel() {} }, async dispose() {} }
+      },
+    },
+    presets: {
+      async resolve(id) { named.resolvedWith = id; return { id: id ?? 'standard' } },
+      async mount(_ctx, id) { named.mounted = id; return { id } },
+    },
+    defaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+    agentPreset: 'deck-runner',
+    sessionId: 'x',
+    cwd: 'c',
+    systemPrompt: 's',
+    fail: key => key,
+  })
+  assert.equal(named.resolvedWith, 'deck-runner')
+  assert.equal(named.mounted, 'deck-runner')
+
+  // Without a default model the run fails with copy instead of starting a
+  // model-less agent that dies on its first step.
+  await assert.rejects(
+    () => host.createCanvasSkillAgent({
+      agents: { async create() { throw new Error('must not be reached') } },
+      defaultModel: { currentSelection: () => ({}) },
+      agentPreset: '',
+      sessionId: 'x',
+      cwd: 'c',
+      systemPrompt: 's',
+      fail: key => `copy:${key}`,
+    }),
+    /copy:canvas\.skills\.needModel/,
+  )
+})
+
 // ------------------------------------------- C12. local skill library
 
 /** Minimal stored-method ZIP writer (the reader validates structure, not CRC). */
@@ -1788,7 +2158,7 @@ function buildZip(entries) {
   let offset = 0
   for (const entry of entries) {
     const name = Buffer.from(entry.name, 'utf8')
-    const body = Buffer.from(entry.body, 'utf8')
+    const body = Buffer.isBuffer(entry.body) ? entry.body : Buffer.from(entry.body, 'utf8')
     const local = Buffer.alloc(30 + name.length)
     local.writeUInt32LE(0x04034b50, 0)
     local.writeUInt16LE(20, 4)
@@ -1920,6 +2290,212 @@ await check('C12b the library routes list, install from an upload, and remove', 
   assert.ok(!removed.body.library.entries.some(entry => entry.name === 'routed-skill'))
   const missing = await post('/api/dsh-imagegen/canvas/skills/remove', { name: 'never-installed' })
   assert.equal(missing.body.ok, false)
+})
+
+await check('C12c an install the host registry would ignore is refused with copy', async () => {
+  // A non-kebab frontmatter name is dropped by the host provider: installing it
+  // would look successful and stay unusable in every node.
+  const badName = buildZip([{ name: 'b/SKILL.md', body: '---\nname: Bad_Name\ndescription: Wrong shape\n---\n\n# Bad\n' }])
+  await assert.rejects(() => host.installFromArchive(badName, skillLibraryRoot, 'b', true), /kebab-case/)
+  // Same for a bundle with no description at all.
+  const noBlurb = buildZip([{ name: 'b/SKILL.md', body: '---\nname: no-blurb\n---\n\n# No blurb\n' }])
+  await assert.rejects(() => host.installFromArchive(noBlurb, skillLibraryRoot, 'b', true), /description/)
+  // A user-only skill is a legitimate install: the canvas just cannot run it.
+  const userOnly = buildZip([{ name: 'b/SKILL.md', body: '---\nname: human-only\ndescription: Slash command\ndisable-model-invocation: true\n---\n\n# Human\n' }])
+  assert.equal(await host.installFromArchive(userOnly, skillLibraryRoot, 'b', true), 'human-only')
+  assert.equal(await host.removeSkill('human-only', skillLibraryRoot), 'human-only')
+
+  // The panel explains the same verdicts it would otherwise leave silent.
+  const issueRoot = mkdtempSync(join(tmpdir(), 'dsh-imagegen-smoke-issue-'))
+  try {
+    mkdirSync(join(issueRoot, 'bad-name'), { recursive: true })
+    writeFileSync(join(issueRoot, 'bad-name', 'SKILL.md'), '---\nname: Bad_Name\ndescription: Wrong shape\n---\n\n# Bad\n')
+    writeFileSync(join(issueRoot, 'loose.md'), '# No frontmatter at all\n')
+    const listed = await host.listLibrary({
+      root: issueRoot,
+      networkAvailable: false,
+      issueText: (issue, name) => `${issue}:${name}`,
+    })
+    const byName = new Map(listed.entries.map(entry => [entry.name, entry]))
+    assert.equal(byName.get('Bad_Name').issue, 'bad-name:Bad_Name')
+    assert.equal(byName.get('loose').issue, 'no-frontmatter:loose')
+    // The disk scan still offers the loadable ones, and only those.
+    assert.deepEqual((await host.listLocalSkills(issueRoot)).map(skill => skill.name), [])
+  } finally {
+    rmSync(issueRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------- C13. per-skill configuration surface
+
+await check('C13a a skill.config.json is validated, bounded and versioned', () => {
+  const parsed = host.parseSkillConfigManifest({
+    version: 1,
+    note: 'secrets stay local',
+    fields: [
+      { id: 'api-key', label: 'Key', type: 'secret', required: true, expose: true },
+      { id: 'base-url', type: 'string', default: 'https://x/v1', expose: true },
+      { id: 'Bad_Id', type: 'string' },
+      { id: 'mode', type: 'select', options: [{ value: 'a', label: 'A' }, { value: 'b' }] },
+    ],
+    apply: [
+      { kind: 'command', argv: ['tool', '--key', '{api-key}'], cwd: 'skill' },
+      { kind: 'file', path: '~/.x/config.json', content: '{"url":"{base-url}"}' },
+      { kind: 'nonsense' },
+    ],
+  })
+  assert.equal(parsed.issue, undefined)
+  // A bad field id and an unknown step kind are dropped, not fatal.
+  assert.deepEqual(parsed.manifest.fields.map(field => field.id), ['api-key', 'base-url', 'mode'])
+  // A secret can never be expository, whatever the declaration says.
+  assert.equal(parsed.manifest.fields[0].expose, undefined)
+  assert.equal(parsed.manifest.fields[1].expose, true)
+  assert.equal(parsed.manifest.steps.length, 2)
+  assert.equal(parsed.manifest.steps[0].cwd, 'skill')
+  assert.equal(parsed.manifest.note, 'secrets stay local')
+
+  assert.equal(host.parseSkillConfigManifest({ version: 2, fields: [{ id: 'a' }] }).issue, 'unsupported-version')
+  assert.equal(host.parseSkillConfigManifest({ version: 1 }).issue, 'empty')
+  assert.equal(host.parseSkillConfigManifest('nope').issue, 'unreadable')
+  // Caps: only the first 32 fields survive.
+  const many = host.parseSkillConfigManifest({
+    version: 1,
+    fields: Array.from({ length: 40 }, (_value, index) => ({ id: `f${index}` })),
+  })
+  assert.equal(many.manifest.fields.length, 32)
+
+  // File targets: `~` expands, escapes and DSH control files are refused.
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  assert.equal(host.resolveConfigTarget('~/.editppt/config.yaml').path, join(homedir(), '.editppt', 'config.yaml'))
+  assert.equal(host.resolveConfigTarget('relative/path').issue, 'refused-path')
+  assert.equal(host.resolveConfigTarget(`${home}/../outside/config.yaml`).issue, 'refused-path')
+  assert.equal(host.resolveConfigTarget(join(home, 'settings.yaml')).issue, 'refused-path')
+  assert.equal(host.resolveConfigTarget(join(home, 'profiles', 'web', 'package.json')).issue, 'refused-path')
+})
+
+await check('C13b apply steps substitute values, honor guards and mask secrets', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-imagegen-smoke-config-'))
+  try {
+    const parsed = host.parseSkillConfigManifest({
+      version: 1,
+      fields: [
+        { id: 'api-key', label: 'Key', type: 'secret', required: true },
+        { id: 'base-url', label: 'URL', type: 'string' },
+        { id: 'ocr-token', label: 'OCR', type: 'secret' },
+        { id: 'endpoint', label: 'Endpoint', type: 'string', required: true },
+      ],
+      apply: [
+        { kind: 'command', argv: [process.execPath, '-e', 'console.log("echo " + process.argv[1])', '{api-key}'] },
+        { kind: 'file', path: join(root, 'out', 'config.json'), content: '{"base":"{base-url}"}' },
+        { kind: 'command', argv: [process.execPath, '-e', 'process.exit(9)'], when: { field: 'ocr-token', set: true } },
+      ],
+    })
+    const declaration = { manifest: parsed.manifest, source: 'skill' }
+    const values = host.valuesFor(declaration, { values: { 'deck/base-url': 'https://x/v1' }, secrets: { 'deck/api-key': 'sk-super-secret' } }, 'deck')
+    assert.equal(values.get('api-key'), 'sk-super-secret')
+    assert.deepEqual(host.missingFields(declaration, values), ['Endpoint'])
+
+    const steps = await host.applySkillConfigSteps(declaration, values, { runRoot: root })
+    assert.equal(steps.length, 3)
+    // The secret is never echoed back to the panel.
+    assert.equal(steps[0].ok, true)
+    assert.equal(steps[0].detail.includes('sk-super-secret'), false)
+    assert.equal(steps[0].output.includes('sk-super-secret'), false)
+    assert.match(steps[0].output, /•••/)
+    assert.equal(steps[1].ok, true)
+    assert.equal(readFileSync(join(root, 'out', 'config.json'), 'utf8'), '{"base":"https://x/v1"}')
+    // The guarded step is skipped: its field has no value.
+    assert.equal(steps[2].detail, 'skipped')
+
+    // A missing required value stops that step with copy, not a crash.
+    const empty = host.valuesFor(declaration, { values: {}, secrets: {} }, 'deck')
+    const failed = await host.applySkillConfigSteps(declaration, empty, { runRoot: root })
+    assert.equal(failed[0].ok, false)
+    assert.match(failed[0].output, /api-key/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+await check('C13c the built-in recipe covers image-to-editable-ppt and a sidecar wins', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-imagegen-smoke-recipe-'))
+  try {
+    const recipe = await host.readCanvasSkillConfig({ name: 'image-to-editable-ppt', root, store: { values: {}, secrets: {} } })
+    assert.equal(recipe.declaration.source, 'plugin')
+    assert.deepEqual(recipe.declaration.manifest.fields.map(field => field.id), ['image-api-key', 'image-base-url', 'image-model', 'paddle-ocr-token'])
+    assert.deepEqual(recipe.view.missing, ['图像 API 密钥'])
+    assert.equal(recipe.view.applicable, true)
+    // The declared command is exactly what the skill documents.
+    assert.ok(recipe.declaration.manifest.steps[0].argv.includes('editppt'))
+    assert.ok(recipe.declaration.manifest.steps[0].argv.includes('{image-api-key}'))
+    assert.deepEqual(recipe.declaration.manifest.steps[1].when, { field: 'paddle-ocr-token', set: true })
+
+    // A skill's own sidecar takes over, and a broken one reports why.
+    mkdirSync(join(root, 'image-to-editable-ppt'), { recursive: true })
+    writeFileSync(join(root, 'image-to-editable-ppt', 'skill.config.json'), JSON.stringify({
+      version: 1,
+      fields: [{ id: 'own-field', label: 'Own', type: 'string' }],
+      apply: [{ kind: 'file', path: join(root, 'own.txt'), content: '{own-field}' }],
+    }))
+    const own = await host.readCanvasSkillConfig({
+      name: 'image-to-editable-ppt',
+      entryPath: join(root, 'image-to-editable-ppt', 'SKILL.md'),
+      root,
+      store: { values: { 'image-to-editable-ppt/own-field': 'x' }, secrets: {} },
+    })
+    assert.equal(own.declaration.source, 'skill')
+    assert.deepEqual(own.declaration.manifest.fields.map(field => field.id), ['own-field'])
+    writeFileSync(join(root, 'image-to-editable-ppt', 'skill.config.json'), '{ not json')
+    const broken = await host.readCanvasSkillConfig({
+      name: 'image-to-editable-ppt',
+      entryPath: join(root, 'image-to-editable-ppt', 'SKILL.md'),
+      root,
+      store: { values: {}, secrets: {} },
+      issueText: issue => `copy:${issue}`,
+    })
+    assert.equal(broken.declaration, undefined)
+    assert.equal(broken.view.issue, 'copy:unreadable')
+
+    // A skill with no declaration and no recipe gets no configuration surface.
+    const none = await host.readCanvasSkillConfig({ name: 'whatever-skill', root, store: { values: {}, secrets: {} } })
+    assert.equal(none.view, undefined)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+await check('C13d the config routes save and apply through the library backend', async () => {
+  const seen = {}
+  const previous = { save: skillLibraryFake.configSave, apply: skillLibraryFake.configApply }
+  skillLibraryFake.configSave = async request => {
+    seen.saved = request
+    return { ok: true, library: await skillLibraryFake.list() }
+  }
+  skillLibraryFake.configApply = async request => {
+    seen.applied = request
+    return { ok: true, library: await skillLibraryFake.list(), steps: [{ kind: 'command', detail: 'editppt config --api-key •••', ok: true }] }
+  }
+  try {
+    const saved = await post('/api/dsh-imagegen/canvas/skills/config/save', {
+      name: 'image-to-editable-ppt',
+      values: [{ id: 'image-api-key', value: 'sk-1' }, { bad: true }, { id: 'x' }],
+      language: 'zh',
+    })
+    assert.equal(saved.body.ok, true, JSON.stringify(saved.body))
+    assert.deepEqual(seen.saved, { name: 'image-to-editable-ppt', values: [{ id: 'image-api-key', value: 'sk-1' }], language: 'zh' })
+
+    const applied = await post('/api/dsh-imagegen/canvas/skills/config/apply', { name: 'image-to-editable-ppt', language: 'zh' })
+    assert.equal(applied.body.ok, true, JSON.stringify(applied.body))
+    assert.equal(applied.body.steps[0].kind, 'command')
+    assert.equal(seen.applied.name, 'image-to-editable-ppt')
+
+    const nameless = await post('/api/dsh-imagegen/canvas/skills/config/save', { values: [] })
+    assert.equal(nameless.body.ok, false)
+    assert.equal(nameless.body.code, 'bad-request')
+  } finally {
+    skillLibraryFake.configSave = previous.save
+    skillLibraryFake.configApply = previous.apply
+  }
 })
 
 await new Promise(resolve => server.close(resolve))
@@ -2139,12 +2715,16 @@ await check('D2 the client bundle ships the canvas skill + file-node surface', (
     'canvas.skills.installNow',
     'canvas.polish.formal',
     'settings.skillsEnabled',
+    'canvas.preview.expand',
+    'canvas.preview.textTruncated',
+    'canvas.preview.reason.unreadable',
   ]) {
     assert.ok(source.includes(needle), `client bundle is missing ${needle}`)
   }
   // Endpoints: the browser half must call the exact routes the host registers.
   for (const route of [
     '/api/dsh-imagegen/canvas/file/upload',
+    '/api/dsh-imagegen/canvas/file/preview',
     '/api/dsh-imagegen/canvas/skills/list',
     '/api/dsh-imagegen/canvas/skills/run',
     '/api/dsh-imagegen/canvas/skills/task',
@@ -2314,6 +2894,33 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     origin: 'upload',
   }
   let canvasUploads = 0
+  /** One stored text file, addressed the way the real content-addressed store is. */
+  const canvasFileAsset = {
+    assetId: `${'c'.repeat(64)}.txt`,
+    url: `/api/dsh-imagegen/canvas/asset/${'c'.repeat(64)}.txt`,
+    mime: 'text/plain',
+    bytes: 48,
+    width: 0,
+    height: 0,
+    origin: 'upload',
+    kind: 'file',
+    name: 'notes.txt',
+    textPreview: '文件预览正文',
+  }
+  /** One stored PDF, the document type the browser renders itself. */
+  const canvasPdfAsset = {
+    assetId: `${'d'.repeat(64)}.pdf`,
+    url: `/api/dsh-imagegen/canvas/asset/${'d'.repeat(64)}.pdf`,
+    mime: 'application/pdf',
+    bytes: 1024,
+    width: 0,
+    height: 0,
+    origin: 'upload',
+    kind: 'file',
+    name: 'paper.pdf',
+  }
+  /** Preview requests the canvas file nodes issued (assetId + hints). */
+  const previewRequests = []
   /** Every fetch path the client issued (debug aid for the canvas tools). */
   const requestPaths = []
   const canvasDocument = {
@@ -2406,6 +3013,18 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       const payload = JSON.parse(init.body)
       canvasSaves.push(payload.document)
       return { ok: true, json: async () => ({ ok: true, document: { ...payload.document, revision: payload.document.revision + 1 } }) }
+    }
+    if (path.endsWith('/canvas/file/preview')) {
+      // The real host decodes the asset; the fixture stands in with the decoded
+      // shape so the reader can be exercised end to end.
+      previewRequests.push(JSON.parse(init.body))
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          preview: { kind: 'text', format: 'txt', text: '文件预览正文\nsecond line\nthird line', truncated: false, lines: 3 },
+        }),
+      }
     }
     if (path.endsWith('/canvas/asset/upload')) {
       canvasUploads += 1
@@ -3150,6 +3769,49 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const resizedImage = canvasSaves.at(-1).nodes.find(node => node.id === 'node-image')
     assert.equal(resizedImage.height, Math.round(resizedImage.width), 'the image keeps its aspect ratio while resizing')
     assert.equal(resizedImage.x, imageBefore.x + 100, 'the anchored corner stays put')
+
+    // --- file nodes read their content instead of showing a download hint ---
+    canvasDocument.nodes = [
+      ...canvasDocument.nodes,
+      { id: 'node-file', type: 'file', title: 'notes.txt', x: 0, y: 640, width: 300, height: 170, metadata: { asset: canvasFileAsset, fileKind: 'text', status: 'success' } },
+    ]
+    ecommerceSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 60))
+    canvasSwitch.click()
+    await waitForSelector(view, '[data-node-id="node-file"]')
+    assert.ok(await waitUntil(() => previewRequests.some(request => request.assetId === canvasFileAsset.assetId)), 'the node asked the host to decode the file')
+    assert.ok(
+      await waitUntil(() => (view.querySelector('[data-node-id="node-file"] pre')?.textContent ?? '').includes('文件预览正文')),
+      'the node body renders the decoded text',
+    )
+    // The reader opens from the node toolbar and shows the same content larger.
+    const fileNode = view.querySelector('[data-node-id="node-file"]')
+    assert.ok(fileNode.querySelector('[data-file-footer]').textContent.includes('notes.txt'), 'the file footer carries the name')
+    fileNode.querySelector('[title="放大预览"]').dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await waitForSelector(view, '[role="dialog"]')
+    const reader = view.querySelector('[role="dialog"]')
+    assert.ok(reader.textContent.includes('notes.txt'), 'the reader header carries the file name')
+    assert.ok(reader.querySelector('pre').textContent.includes('second line'), 'the reader shows the full decoded text')
+    jsdomWindow.dispatchEvent(new jsdomWindow.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    assert.ok(await waitUntil(() => view.querySelector('[role="dialog"]') === null), 'Escape closes the reader')
+
+    // A PDF needs no host payload: the browser renders it from the inline URL,
+    // in the node body and in the reader alike.
+    canvasDocument.nodes = [
+      ...canvasDocument.nodes,
+      { id: 'node-pdf', type: 'file', title: 'paper.pdf', x: 0, y: 900, width: 300, height: 170, metadata: { asset: canvasPdfAsset, fileKind: 'pdf', status: 'success' } },
+    ]
+    ecommerceSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 60))
+    canvasSwitch.click()
+    await waitForSelector(view, '[data-node-id="node-pdf"] object[type="application/pdf"]')
+    const pdfBody = view.querySelector('[data-node-id="node-pdf"] object[type="application/pdf"]')
+    assert.match(pdfBody.getAttribute('data'), /\?inline=1$/, 'the node embeds the inline URL')
+    view.querySelector('[data-node-id="node-pdf"] [title="放大预览"]').dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await waitForSelector(view, '[role="dialog"] object[type="application/pdf"]')
+    assert.ok(view.querySelector('[role="dialog"]').textContent.includes('paper.pdf'), 'the reader names the PDF')
+    view.querySelector('[role="dialog"] [title="关闭预览"]').dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    assert.ok(await waitUntil(() => view.querySelector('[role="dialog"]') === null), 'the close button dismisses the reader')
   } finally {
     if (previousWindow === undefined) delete globalThis.window
     else globalThis.window = previousWindow

@@ -1873,6 +1873,168 @@
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
 }
 
+/* Header group: title with an optional small subtitle (target node, counts). */
+.skillMenuTitleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.skillMenuSubtitle {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+/* ----------------------------------------------- live skill run cards */
+
+/* Ephemeral world-layer card that a queued skill run grows out of its source
+   node. Gone the moment the run's output nodes land (or the user dismisses a
+   failure), so it never pollutes the document or the undo history. */
+.skillRunNode {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 34%, var(--dsw-alias-border-l1));
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 96%, transparent);
+  box-shadow: 0 14px 34px rgb(15 23 42 / 18%);
+  user-select: none;
+}
+
+.skillRunNode[data-status='failed'] {
+  border-color: color-mix(in srgb, var(--dsw-alias-label-error) 42%, var(--dsw-alias-border-l1));
+}
+
+.skillRunNode[data-status='pending'] { opacity: 0.85; }
+
+.skillRunHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.skillRunSpinner {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, transparent);
+  border-top-color: var(--dsw-alias-brand-primary);
+  animation: canvasSpin 0.8s linear infinite;
+}
+
+.skillRunTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.skillRunSteps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 1px;
+}
+
+.skillRunStep {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  transition: background 0.3s ease;
+}
+
+.skillRunStep[data-active] {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent);
+  animation: skillRunPulse 1.4s ease-in-out infinite;
+}
+
+.skillRunStep[data-done] { background: var(--dsw-alias-brand-primary); }
+
+.skillRunStage {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillRunError {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-error);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.skillRunFooter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skillRunElapsed {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.skillRunBtn {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.skillRunBtn:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+
+/* The animated edge from the source node into its run card. */
+.skillRunEdge {
+  fill: none;
+  stroke: var(--dsw-alias-brand-primary);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 7 7;
+  opacity: 0.65;
+  animation: skillRunDash 0.9s linear infinite;
+}
+
+@keyframes skillRunDash {
+  to { stroke-dashoffset: -14; }
+}
+
+@keyframes skillRunPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .polishCustom {
   border-top: 1px solid var(--dsw-alias-border-l1);
   padding: 9px 12px 11px;
@@ -1971,8 +2133,8 @@
    install for a known upstream. */
 
 .libraryDialog {
-  width: min(560px, calc(100vw - 40px));
-  max-height: min(76vh, 640px);
+  width: min(600px, calc(100vw - 40px));
+  max-height: min(78vh, 680px);
   gap: 10px;
 }
 
@@ -1989,14 +2151,37 @@
   flex-direction: column;
   gap: 8px;
   border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 2.5%, transparent);
 }
 
 .librarySectionTitle {
   font-size: 12px;
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
+}
+
+/* Dashed upload zone: click or drop a .zip archive. */
+.libraryDrop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1.5px dashed color-mix(in srgb, var(--dsw-alias-label-primary) 22%, transparent);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.libraryDrop:hover,
+.libraryDrop[data-active] {
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);
 }
 
 .libraryRow {
@@ -2041,10 +2226,14 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
-  border-radius: 9px;
+  padding: 9px 11px;
+  border-radius: 10px;
   border: 1px solid var(--dsw-alias-border-l1);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 92%, transparent);
+  transition: border-color 0.15s ease;
 }
+
+.libraryEntry:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-border-l1)); }
 
 .libraryEntryText {
   flex: 1;
@@ -2072,6 +2261,100 @@
   flex: none;
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* Why the node skill menu cannot offer this entry (the host renders the copy). */
+.libraryEntryText small.libraryEntryIssue {
+  font-size: 11px;
+  color: var(--dsw-alias-label-error);
+  white-space: normal;
+  overflow: visible;
+}
+
+/* One installed skill plus its optional configuration form. */
+.libraryEntryGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.libraryRemove[data-variant='config'] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.skillConfig {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px dashed var(--dsw-alias-border-l1);
+}
+
+.skillConfigFields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skillConfigField {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.skillConfigLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.skillConfigRequired {
+  color: var(--dsw-alias-label-error);
+  font-style: normal;
+  margin-left: 3px;
+}
+
+.skillConfigHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.skillConfigClear {
+  flex: none;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.skillConfigSteps {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.skillConfigSteps li[data-ok=''] {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.skillConfigSteps code {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .libraryRemove {
@@ -2110,3 +2393,428 @@
 @keyframes canvasSpin {
   to { transform: rotate(360deg); }
 }
+
+/* ------------------------------------------- canvas file previews */
+
+/* The node body is the preview surface itself: media stretches, documents
+   scroll, and every branch stays inside the node frame. */
+.fileMedia {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.fileMedia audio { width: 100%; max-width: 260px; height: 32px; }
+
+.fileVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+.fileSpinner { animation: canvasSpin 0.9s linear infinite; }
+
+.fileRetry {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.fileRetry:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+/* One-line note under a preview: truncation and extraction caveats. */
+.fileNotice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px 6px;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.fileNotice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------- tables / archives */
+
+.fileTableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+.fileTable {
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.fileTable th,
+.fileTable td {
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+  padding: 3px 6px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fileTable th {
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 92%, transparent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+.fileTableWrap[data-expanded] .fileTable { font-size: 12px; }
+
+.fileArchiveList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  box-sizing: border-box;
+}
+
+.fileArchiveRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.fileArchiveRow[data-dir] { color: var(--dsw-alias-label-primary); font-weight: 600; }
+
+.fileArchiveName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileArchiveSize {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ------------------------- rich rendered previews (markdown / html / docx) */
+
+/* Rendered rich text shared by the Markdown and DOCX renderers. */
+.fileDoc {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  box-sizing: border-box;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.fileDoc h1, .fileDoc h2, .fileDoc h3, .fileDoc h4, .fileDoc h5, .fileDoc h6 {
+  margin: 14px 0 6px;
+  color: var(--dsw-alias-label-primary);
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.fileDoc > :first-child { margin-top: 0; }
+.fileDoc h1 { font-size: 18px; }
+.fileDoc h2 { font-size: 16px; }
+.fileDoc h3 { font-size: 14.5px; }
+.fileDoc h4 { font-size: 13px; }
+.fileDoc h5, .fileDoc h6 { font-size: 12.5px; }
+
+.fileDoc p { margin: 0 0 8px; white-space: pre-line; }
+.fileDoc ul, .fileDoc ol { margin: 0 0 8px; padding-left: 20px; }
+.fileDoc li { margin: 2px 0; white-space: pre-line; }
+.fileDoc li::marker { color: var(--dsw-alias-label-tertiary); }
+
+.fileDoc blockquote {
+  margin: 0 0 8px;
+  padding: 2px 12px;
+  border-left: 3px solid color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.fileDoc pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+  overflow: auto;
+  white-space: pre;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.fileDoc code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+  font-size: 0.92em;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.fileDoc pre code { padding: 0; background: transparent; font-size: 11px; }
+.fileDoc a { color: var(--dsw-alias-brand-primary); text-decoration: none; }
+.fileDoc a:hover { text-decoration: underline; }
+.fileDoc img { max-width: 100%; border-radius: 8px; }
+.fileDoc hr { border: none; border-top: 1px solid var(--dsw-alias-border-l1); margin: 12px 0; }
+.fileDoc strong { color: var(--dsw-alias-label-primary); }
+
+.fileDoc table { border-collapse: collapse; margin: 0 0 10px; max-width: 100%; }
+
+.fileDoc th,
+.fileDoc td {
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  padding: 3px 8px;
+  text-align: left;
+  font-size: 11.5px;
+}
+
+.fileDoc th {
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 92%, transparent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+.fileOverlayBody .fileDoc { font-size: 13.5px; padding: 16px 22px; }
+
+/* SVG stage: the blob-rendered image keeps its aspect ratio inside the node. */
+.fileSvg {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.fileSvg img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* Rendered / source switch shown above rich previews in the overlay. */
+.fileSourceRow { flex: none; display: flex; gap: 4px; padding: 8px 12px 0; }
+
+.fileSourceBtn {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fileSourceBtn:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+
+.fileSourceBtn[data-active] {
+  color: var(--dsw-alias-brand-primary);
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
+}
+
+/* Slide deck: one card per slide with number, title, pictures and bullets. */
+.fileSlides {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+.fileSlide {
+  flex: none;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 96%, transparent);
+  overflow: hidden;
+}
+
+.fileSlideHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.fileSlideNum { flex: none; font-size: 10.5px; color: var(--dsw-alias-label-tertiary); }
+
+.fileSlideTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.fileSlideImages { padding: 8px 11px 0; display: flex; flex-wrap: wrap; gap: 8px; }
+
+.fileSlideImages img {
+  max-width: 100%;
+  max-height: 150px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+}
+
+.fileSlideLines { padding: 7px 13px 9px; display: flex; flex-direction: column; gap: 3px; }
+
+.fileSlideLine {
+  display: flex;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.fileSlideLine::before { content: '•'; flex: none; color: var(--dsw-alias-label-tertiary); }
+
+.fileSlideLine span { min-width: 0; white-space: pre-line; word-break: break-word; }
+
+.fileOverlayBody .fileSlides { padding: 14px; gap: 14px; }
+.fileOverlayBody .fileSlideImages img { max-height: 300px; }
+.fileOverlayBody .fileSlideLine { font-size: 13px; }
+
+/* ------------------------------------------------- full-screen reader */
+
+.fileOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 86;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgb(15 23 42 / 46%);
+  backdrop-filter: blur(3px);
+}
+
+.fileOverlayPanel {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 94vw);
+  height: min(820px, 88vh);
+  border-radius: 14px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 98%, transparent);
+  box-shadow: 0 24px 64px rgb(15 23 42 / 34%);
+  overflow: hidden;
+}
+
+.fileOverlayPanel[data-media='audio'] { height: auto; min-height: 220px; }
+
+.fileOverlayHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.fileOverlayIcon { display: grid; place-items: center; color: var(--dsw-alias-label-tertiary); }
+
+.fileOverlayTitle {
+  font-weight: 600;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileOverlayMeta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.fileOverlayActions { flex: none; display: flex; align-items: center; gap: 4px; }
+
+.fileAction {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.fileAction:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+
+.fileOverlayBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fileOverlayBody > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.fileOverlayBody .fileFrame { flex: 1; min-height: 0; }
+
+.fileOverlayText {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.fileOverlayBody .fileTableWrap { padding: 10px; }
+

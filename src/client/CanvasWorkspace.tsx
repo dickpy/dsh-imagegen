@@ -9,14 +9,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { createPortal } from 'react-dom'
 import {
   Bold, BookOpen, ChevronDown, Copy, Download, Eraser, FileText as FileTextIcon, FolderX, Hand, Image as ImageIcon,
-  Layers, Map as MapIcon, Maximize, MousePointer2, Palette, Pencil, Plus, Redo2, Scissors, SendHorizonal, Sparkles,
+  Layers, Map as MapIcon, Maximize, Maximize2, MousePointer2, Palette, Pencil, Plus, Redo2, Scissors, SendHorizonal, Sparkles,
   SquareDashedMousePointer, Trash2, Type, Undo2, Upload, Wand2, Wallpaper, X,
 } from 'lucide-react'
-import type { CanvasAnnotation, CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasFileKind, CanvasLayerInfo, CanvasLayerPlanItem, CanvasNode, CanvasRect, CanvasSkillDescriptor, CanvasSkillLibrary, CanvasSkillRunRequest, CanvasSkillTask, CanvasSketchStroke, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
+import type { CanvasAnnotation, CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasFileKind, CanvasLayerInfo, CanvasLayerPlanItem, CanvasNode, CanvasRect, CanvasSkillConfigApplyResult, CanvasSkillConfigField, CanvasSkillConfigSaveResult, CanvasSkillConfigStep, CanvasSkillConfigView, CanvasSkillDescriptor, CanvasSkillLibrary, CanvasSkillOutput, CanvasSkillRunRequest, CanvasSkillTask, CanvasSketchStroke, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { autoRemoveBackground, canvasToDataUrl, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { CanvasFileBody, CanvasFileOverlay, fileKindLabel, fileKindOfAsset, fileSizeLabel } from './CanvasFilePreview.tsx'
 import { DotFieldBackground, DotGridBackground, FaultyTerminalBackground, FloatingLinesBackground, FlowBackground, GalaxyBackground, LiquidEtherBackground, ShapeGridBackground, SilkBackground, WavesBackground } from './CanvasBackgrounds.tsx'
 import css from './canvas-workspace.module.css'
 
@@ -439,7 +440,7 @@ function rasterizeSketch(strokes: CanvasSketchStroke[], boardWidth: number, boar
   return { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
 }
 
-type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'file' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject' | 'annotate' | 'removeBg' | 'layers' | 'bold' | 'color' | 'skill' | 'upload'
+type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'file' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject' | 'annotate' | 'removeBg' | 'layers' | 'bold' | 'color' | 'skill' | 'upload' | 'expand'
 
 /** Lucide icons (stroke matches the DSH line style); one shared component so
  *  every dock/toolbar icon comes from the same well-drawn set. */
@@ -474,34 +475,8 @@ function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number
     case 'color': return <Palette {...common} />
     case 'skill': return <Wand2 {...common} />
     case 'upload': return <Upload {...common} />
+    case 'expand': return <Maximize2 {...common} />
   }
-}
-
-/** Human-readable byte count for file nodes and the file picker. */
-function fileSizeLabel(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return tt('canvas.skills.fileSizeUnknown')
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`
-}
-
-/** Coarse bucket of one file asset (falling back to the MIME/extension). */
-function fileKindOfAsset(asset: CanvasAssetRef): CanvasFileKind {
-  const declared = asset.kind === 'file' ? asset.name ?? '' : ''
-  const mime = asset.mime.split(';')[0]!.trim().toLowerCase()
-  const extension = /\.([a-z0-9]+)$/i.exec(declared)?.[1]?.toLowerCase() ?? ''
-  if (mime === 'application/pdf' || extension === 'pdf') return 'pdf'
-  if (mime.startsWith('image/')) return 'image'
-  if (mime.startsWith('audio/')) return 'audio'
-  if (mime.startsWith('video/')) return 'video'
-  if (/openxmlformats|vnd\.ms-|vnd\.oasis/.test(mime) || ['pptx', 'docx', 'xlsx', 'ppt', 'doc', 'xls', 'odt', 'odp', 'ods'].includes(extension)) return 'office'
-  if (mime === 'application/zip' || ['zip', '7z', 'rar', 'gz', 'tar'].includes(extension)) return 'archive'
-  if (mime.startsWith('text/') || mime === 'application/json' || ['md', 'markdown', 'csv', 'tsv', 'log', 'json', 'yaml', 'yml', 'xml', 'txt'].includes(extension)) return 'text'
-  return 'other'
-}
-
-function fileKindLabel(kind: CanvasFileKind): string {
-  return tt(`canvas.skills.fileKind.${kind}` as Parameters<typeof tt>[0])
 }
 
 /** Extensions the file picker refuses before a byte leaves the browser; the
@@ -523,6 +498,8 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 function SkillPicker(props: {
   anchor: Point
   nodeType: CanvasNode['type']
+  /** Title of the node the menu was opened on (shown in the header). */
+  targetTitle: string
   catalog: { skills: CanvasSkillDescriptor[]; reason?: string } | null
   loading: boolean
   /** Number of nodes the run will cover (1 = the acting node). */
@@ -532,6 +509,8 @@ function SkillPicker(props: {
   onPick: (skill: CanvasSkillDescriptor) => void
   /** Open the library installer prefilled with one entry's upstream. */
   onInstall: (skill: CanvasSkillDescriptor) => void
+  /** Open the skill library focused on one skill's configuration form. */
+  onConfigure: (skill: CanvasSkillDescriptor) => void
   onClose: () => void
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
@@ -539,16 +518,21 @@ function SkillPicker(props: {
   const skills = (props.catalog?.skills ?? []).filter(skill => term === ''
     || skill.name.toLowerCase().includes(term)
     || skill.description.toLowerCase().includes(term))
-  const builtin = skills.filter(skill => skill.origin === 'builtin')
-  const external = skills.filter(skill => skill.origin === 'external')
   const compatible = (skill: CanvasSkillDescriptor): boolean => props.nodeType === 'config'
     ? false
     : skill.accepts.includes(props.nodeType)
+  // The skills this node can actually run come first inside every group, so a
+  // mis-click never lands on a greyed-out row sitting on top of the menu.
+  const byFit = (a: CanvasSkillDescriptor, b: CanvasSkillDescriptor): number =>
+    Number(compatible(b)) - Number(compatible(a))
+  const builtin = skills.filter(skill => skill.origin === 'builtin').sort(byFit)
+  const external = skills.filter(skill => skill.origin === 'external').sort(byFit)
   const missing = (skill: CanvasSkillDescriptor): boolean => props.installed !== undefined
     && skill.skillName !== undefined
     && !props.installed.has(skill.skillName)
   const row = (skill: CanvasSkillDescriptor): React.JSX.Element => {
     const needsInstall = missing(skill)
+    const needsConfig = !needsInstall && (skill.configMissing?.length ?? 0) > 0
     const title = needsInstall
       ? tt('canvas.skills.missingHint', { name: skill.skillName ?? skill.name })
       : compatible(skill) ? skill.description : tt('canvas.skills.incompatible')
@@ -564,13 +548,20 @@ function SkillPicker(props: {
         onClick={() => props.onPick(skill)}
       >
         <strong>{skill.name}</strong>
-        <small>{needsInstall ? tt('canvas.skills.missingHint', { name: skill.skillName ?? skill.name }) : skill.description}</small>
+        <small>
+          {needsInstall
+            ? tt('canvas.skills.missingHint', { name: skill.skillName ?? skill.name })
+            : needsConfig ? tt('canvas.skills.configMissingHint', { fields: (skill.configMissing ?? []).join('、') })
+              : skill.description}
+        </small>
       </button>
       {needsInstall
         ? <button type="button" className={css.skillInstall} onClick={() => props.onInstall(skill)}>{tt('canvas.skills.installNow')}</button>
-        : <span className={css.skillTier} data-tier={skill.tier}>
-            {skill.tier === 'heavy' ? tt('canvas.skills.tierHeavy') : tt('canvas.skills.tierLight')}
-          </span>}
+        : needsConfig
+          ? <button type="button" className={css.skillInstall} onClick={() => props.onConfigure(skill)}>{tt('canvas.skills.configGo')}</button>
+          : <span className={css.skillTier} data-tier={skill.tier}>
+              {skill.tier === 'heavy' ? tt('canvas.skills.tierHeavy') : tt('canvas.skills.tierLight')}
+            </span>}
     </div>
   }
   const style: CSSProperties = {
@@ -581,7 +572,10 @@ function SkillPicker(props: {
     <div className={css.skillScrim} onPointerDown={props.onClose} />
     <div className={css.skillMenu} style={style} role="menu" aria-label={tt('canvas.skills.pickerTitle')}>
       <header className={css.skillMenuHeader}>
-        <span>{tt('canvas.skills.menuTitle')}</span>
+        <span className={css.skillMenuTitleGroup}>
+          <span>{tt('canvas.skills.menuTitle')}</span>
+          {props.targetTitle !== '' ? <small className={css.skillMenuSubtitle} title={props.targetTitle}>{tt('canvas.skills.runOn', { name: props.targetTitle })}</small> : null}
+        </span>
         <button type="button" className={css.skillMenuClose} aria-label={tt('canvas.close')} onClick={props.onClose}><ToolbarIcon name="close" size={14} /></button>
       </header>
       <input
@@ -608,11 +602,144 @@ function SkillPicker(props: {
 }
 
 /**
+ * The per-skill configuration form (see `docs/skill-config.md`).
+ *
+ * One skill declares its fields and how they take effect; this renders them and
+ * offers two actions — save, or save-and-apply (which runs the declaration's own
+ * commands / file writes host-side). Secret fields never round-trip: they show
+ * only whether a value is stored, and the save request carries just the ones the
+ * user touched.
+ */
+function SkillConfigForm(props: {
+  name: string
+  config: CanvasSkillConfigView
+  busy: boolean
+  onSave: (name: string, values: Array<{ id: string; value: string }>) => Promise<CanvasSkillConfigSaveResult>
+  onApply: (name: string) => Promise<CanvasSkillConfigApplyResult>
+}): React.JSX.Element {
+  const initial = (field: CanvasSkillConfigField): string => {
+    if (field.type === 'secret') return ''
+    return props.config.values.find(value => value.id === field.id)?.value ?? field.default ?? ''
+  }
+  const [draft, setDraft] = useState<Record<string, string>>(() => Object.fromEntries(props.config.fields.map(field => [field.id, initial(field)])))
+  const [touched, setTouched] = useState<ReadonlySet<string>>(() => new Set())
+  const [phase, setPhase] = useState<'idle' | 'saving' | 'applying'>('idle')
+  const [steps, setSteps] = useState<CanvasSkillConfigStep[] | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  // A reload replaces the entry with a fresh object: re-seed the drafts so the
+  // form never shows stale values after a save or an external edit.
+  const signature = props.config.fields.map(field => `${field.id}:${initial(field)}`).join('|')
+  useEffect(() => {
+    setDraft(Object.fromEntries(props.config.fields.map(field => [field.id, initial(field)])))
+    setTouched(new Set())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature])
+  const payload = (): Array<{ id: string; value: string }> => props.config.fields.flatMap(field => {
+    if (field.type === 'secret') return touched.has(field.id) ? [{ id: field.id, value: draft[field.id] ?? '' }] : []
+    return [{ id: field.id, value: draft[field.id] ?? '' }]
+  })
+  const save = async (apply: boolean): Promise<void> => {
+    setPhase(apply ? 'applying' : 'saving')
+    setMessage(null)
+    setSteps(null)
+    try {
+      const saved = await props.onSave(props.name, payload())
+      if (!saved.ok) {
+        setMessage(saved.message ?? tt('canvas.skills.configSaveFailed'))
+        return
+      }
+      if (!apply) {
+        setMessage(tt('canvas.skills.configSaved'))
+        return
+      }
+      const applied = await props.onApply(props.name)
+      setSteps(applied.steps)
+      setMessage(applied.ok ? tt('canvas.skills.configApplied') : applied.message ?? tt('canvas.skills.configApplyFailed'))
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setPhase('idle')
+    }
+  }
+  return <div className={css.skillConfig}>
+    {props.config.note === undefined ? null : <p className={css.skillHint}>{props.config.note}</p>}
+    {props.config.issue === undefined ? null : <p className={css.libraryEntryIssue}>{props.config.issue}</p>}
+    <p className={css.skillHint}>{props.config.source === 'plugin' ? tt('canvas.skills.configSourcePlugin') : tt('canvas.skills.configSourceSkill')}</p>
+    {props.config.fields.length === 0 ? null : <div className={css.skillConfigFields}>
+      {props.config.fields.map(field => {
+        const stored = props.config.values.find(value => value.id === field.id)
+        const set = stored?.set === true && !touched.has(field.id)
+        return <label key={field.id} className={css.skillConfigField}>
+          <span className={css.skillConfigLabel}>
+            {field.label}
+            {field.required === true ? <em className={css.skillConfigRequired}>*</em> : null}
+          </span>
+          {field.type === 'select'
+            ? <select
+                className={css.skillDialogInput}
+                value={draft[field.id] ?? ''}
+                disabled={props.busy || phase !== 'idle'}
+                onChange={event => { setDraft(current => ({ ...current, [field.id]: event.target.value })); setTouched(current => new Set(current).add(field.id)) }}
+              >
+                {field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            : <input
+                className={css.skillDialogInput}
+                type={field.type === 'secret' ? 'password' : 'text'}
+                value={draft[field.id] ?? ''}
+                placeholder={field.type === 'secret'
+                  ? (set ? tt('canvas.skills.configSecretSet') : tt('canvas.skills.configSecretUnset'))
+                  : field.default ?? ''}
+                disabled={props.busy || phase !== 'idle'}
+                onChange={event => { setDraft(current => ({ ...current, [field.id]: event.target.value })); setTouched(current => new Set(current).add(field.id)) }}
+              />}
+          <span className={css.skillConfigHint}>
+            {field.description ?? ''}
+            {field.type === 'secret' && set
+              ? <button
+                  type="button"
+                  className={css.skillConfigClear}
+                  disabled={props.busy || phase !== 'idle'}
+                  onClick={() => { setDraft(current => ({ ...current, [field.id]: '' })); setTouched(current => new Set(current).add(field.id)) }}
+                >{tt('canvas.skills.configClear')}</button>
+              : null}
+          </span>
+        </label>
+      })}
+    </div>}
+    <div className={css.libraryRow}>
+      <button
+        type="button"
+        className={css.skillGhost}
+        disabled={props.busy || phase !== 'idle'}
+        onClick={() => { void save(false) }}
+      >{phase === 'saving' ? tt('canvas.skills.configSaving') : tt('canvas.skills.configSave')}</button>
+      {props.config.applicable
+        ? <button
+            type="button"
+            className={css.skillPrimary}
+            disabled={props.busy || phase !== 'idle'}
+            onClick={() => { void save(true) }}
+          >{phase === 'applying' ? tt('canvas.skills.configApplying') : tt('canvas.skills.configSaveApply')}</button>
+        : null}
+    </div>
+    {message === null ? null : <p className={css.skillHint}>{message}</p>}
+    {steps === null || steps.length === 0 ? null : <ul className={css.skillConfigSteps}>
+      {steps.map((step, index) => <li key={`${index}-${step.detail}`} data-ok={step.ok ? '' : undefined}>
+        <span>{step.kind === 'command' ? '▶' : '▤'} {step.detail}</span>
+        {step.output === undefined ? null : <code>{step.output}</code>}
+      </li>)}
+    </ul>}
+  </div>
+}
+
+/**
  * Skill library manager (dock entry 「技能库」). One dialog covers the whole
  * lifecycle: what is installed, install from URLs, install from an uploaded
- * archive, and uninstall. Installs are obviously consequential (they write into
- * the user's `~/.dsh/skills`), so every action reports its own result instead of
- * acting silently.
+ * archive, per-skill configuration declared by the skill itself, and uninstall.
+ * Installs are obviously consequential (they write into the user's
+ * `~/.dsh/skills`), so every action reports its own result instead of acting
+ * silently.
  */
 function SkillLibraryDialog(props: {
   library: CanvasSkillLibrary | null
@@ -620,56 +747,40 @@ function SkillLibraryDialog(props: {
   busy: boolean
   /** Prefill for the URL field, e.g. the upstream of a skill just clicked. */
   presetUrl: string
+  /** Skill whose configuration the user asked to open (from the node picker). */
+  focusSkill?: string
   onReload: () => void
   onInstallUrls: (urls: string[], force: boolean) => void
   onInstallArchive: (file: File, force: boolean) => void
   onRemove: (name: string) => void
+  onSaveConfig: (name: string, values: Array<{ id: string; value: string }>) => Promise<CanvasSkillConfigSaveResult>
+  onApplyConfig: (name: string) => Promise<CanvasSkillConfigApplyResult>
   onClose: () => void
 }): React.JSX.Element {
   const [urls, setUrls] = useState(props.presetUrl)
   const [force, setForce] = useState(false)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [dropActive, setDropActive] = useState(false)
+  const [configOpen, setConfigOpen] = useState<string | null>(props.focusSkill ?? null)
   const archiveRef = useRef<HTMLInputElement>(null)
   useEffect(() => { if (props.presetUrl !== '') setUrls(props.presetUrl) }, [props.presetUrl])
+  useEffect(() => { if (props.focusSkill !== undefined && props.focusSkill !== '') setConfigOpen(props.focusSkill) }, [props.focusSkill])
   const sourceList = urls.split(/\r?\n/).map(line => line.trim()).filter(line => line !== '')
   const entries = props.library?.entries ?? []
+  const pickArchive = (file: File | undefined): void => {
+    if (file !== undefined) props.onInstallArchive(file, force)
+  }
   return createPortal(<>
     <div className={css.skillScrim} onPointerDown={props.onClose} />
     <div className={`${css.skillDialog} ${css.libraryDialog}`} role="dialog" aria-label={tt('canvas.skills.libraryTitle')}>
       <header className={css.skillMenuHeader}>
-        <span>{tt('canvas.skills.libraryTitle')}</span>
+        <span className={css.skillMenuTitleGroup}>
+          <span>{tt('canvas.skills.libraryTitle')}</span>
+          {entries.length > 0 ? <small className={css.skillMenuSubtitle}>{tt('canvas.skills.libraryInstalled', { count: entries.length })}</small> : null}
+        </span>
         <button type="button" className={css.skillMenuClose} aria-label={tt('canvas.close')} onClick={props.onClose}><ToolbarIcon name="close" size={14} /></button>
       </header>
       <div className={css.libraryBody}>
-        <section className={css.librarySection}>
-          <span className={css.librarySectionTitle}>{tt('canvas.skills.libraryInstalled', { count: entries.length })}</span>
-          {props.library?.root !== undefined && props.library.root !== ''
-            ? <p className={css.skillHint}>{tt('canvas.skills.libraryRoot', { root: props.library.root })}</p>
-            : null}
-          {props.loading && props.library === null ? <p className={css.skillHint}>{tt('canvas.skills.loading')}</p> : null}
-          {!props.loading && entries.length === 0 ? <p className={css.skillHint}>{tt('canvas.skills.libraryEmpty')}</p> : null}
-          {entries.length > 0 ? <div className={css.libraryList}>
-            {entries.map(entry => <div key={entry.name} className={css.libraryEntry}>
-              <span className={css.skillRowIcon}><ToolbarIcon name="skill" size={15} /></span>
-              <span className={css.libraryEntryText}>
-                <strong>{entry.name}</strong>
-                <small title={entry.description}>{entry.description === '' ? entry.name : entry.description}</small>
-              </span>
-              <span className={css.libraryEntryMeta}>{entry.sizeBytes > 0 ? fileSizeLabel(entry.sizeBytes) : ''}</span>
-              <button
-                type="button"
-                className={css.libraryRemove}
-                disabled={props.busy || removing !== null}
-                onClick={() => {
-                  if (!globalThis.confirm(tt('canvas.skills.libraryRemoveConfirm', { name: entry.name }))) return
-                  setRemoving(entry.name)
-                  props.onRemove(entry.name)
-                  window.setTimeout(() => setRemoving(null), 4_000)
-                }}
-              >{removing === entry.name ? tt('canvas.skills.libraryRemoving') : tt('canvas.skills.libraryRemove')}</button>
-            </div>)}
-          </div> : null}
-        </section>
         <section className={css.librarySection}>
           <span className={css.librarySectionTitle}>{tt('canvas.skills.libraryInstall')}</span>
           <p className={css.skillHint}>{tt('canvas.skills.libraryInstallHint')}</p>
@@ -694,15 +805,24 @@ function SkillLibraryDialog(props: {
               onClick={() => props.onInstallUrls(sourceList, force)}
             >{props.busy ? tt('canvas.skills.libraryInstalling') : tt('canvas.skills.libraryInstallAction')}</button>
           </div>
-        </section>
-        <section className={css.librarySection}>
-          <span className={css.librarySectionTitle}>{tt('canvas.skills.libraryUpload')}</span>
-          <p className={css.skillHint}>{tt('canvas.skills.libraryUploadHint')}</p>
-          <div className={css.libraryRow}>
-            <span style={{ flex: 1 }} />
-            <button type="button" className={css.skillGhost} disabled={props.busy} onClick={() => archiveRef.current?.click()}>
-              {tt('canvas.skills.libraryUpload')}
-            </button>
+          <div
+            className={css.libraryDrop}
+            data-active={dropActive ? '' : undefined}
+            role="button"
+            tabIndex={0}
+            aria-label={tt('canvas.skills.libraryDropzone')}
+            onClick={() => archiveRef.current?.click()}
+            onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') archiveRef.current?.click() }}
+            onDragOver={event => { event.preventDefault(); setDropActive(true) }}
+            onDragLeave={() => setDropActive(false)}
+            onDrop={event => {
+              event.preventDefault()
+              setDropActive(false)
+              pickArchive(event.dataTransfer.files?.[0])
+            }}
+          >
+            <ToolbarIcon name="file" size={16} />
+            <span>{tt('canvas.skills.libraryDropzone')}</span>
           </div>
           <input
             ref={archiveRef}
@@ -712,9 +832,62 @@ function SkillLibraryDialog(props: {
             onChange={event => {
               const file = event.target.files?.[0]
               event.target.value = ''
-              if (file !== undefined) props.onInstallArchive(file, force)
+              pickArchive(file)
             }}
           />
+        </section>
+        <section className={css.librarySection}>
+          <span className={css.librarySectionTitle}>{tt('canvas.skills.libraryInstalled', { count: entries.length })}</span>
+          {props.library?.root !== undefined && props.library.root !== ''
+            ? <p className={css.skillHint}>{tt('canvas.skills.libraryRoot', { root: props.library.root })}</p>
+            : null}
+          {props.loading && props.library === null ? <p className={css.skillHint}>{tt('canvas.skills.loading')}</p> : null}
+          {!props.loading && entries.length === 0 ? <p className={css.skillHint}>{tt('canvas.skills.libraryEmpty')}</p> : null}
+          {entries.length > 0 ? <div className={css.libraryList}>
+            {entries.map(entry => <div key={entry.name} className={css.libraryEntryGroup}>
+              <div className={css.libraryEntry}>
+                <span className={css.skillRowIcon}><ToolbarIcon name="skill" size={15} /></span>
+                <span className={css.libraryEntryText}>
+                  <strong>{entry.name}</strong>
+                  <small title={entry.description}>{entry.description === '' ? entry.name : entry.description}</small>
+                  {entry.issue === undefined ? null : <small className={css.libraryEntryIssue}>{entry.issue}</small>}
+                  {entry.config === undefined || entry.config.missing.length === 0 ? null : (
+                    <small className={css.libraryEntryIssue}>{tt('canvas.skills.configMissingHint', { fields: entry.config.missing.join('、') })}</small>
+                  )}
+                </span>
+                <span className={css.libraryEntryMeta}>{entry.sizeBytes > 0 ? fileSizeLabel(entry.sizeBytes) : ''}</span>
+                {entry.config === undefined ? null : (
+                  <button
+                    type="button"
+                    className={css.libraryRemove}
+                    data-variant="config"
+                    disabled={props.busy}
+                    onClick={() => setConfigOpen(current => current === entry.name ? null : entry.name)}
+                  >{tt('canvas.skills.configOpen')}</button>
+                )}
+                <button
+                  type="button"
+                  className={css.libraryRemove}
+                  disabled={props.busy || removing !== null}
+                  onClick={() => {
+                    if (!globalThis.confirm(tt('canvas.skills.libraryRemoveConfirm', { name: entry.name }))) return
+                    setRemoving(entry.name)
+                    props.onRemove(entry.name)
+                    window.setTimeout(() => setRemoving(null), 4_000)
+                  }}
+                >{removing === entry.name ? tt('canvas.skills.libraryRemoving') : tt('canvas.skills.libraryRemove')}</button>
+              </div>
+              {entry.config !== undefined && configOpen === entry.name
+                ? <SkillConfigForm
+                    name={entry.name}
+                    config={entry.config}
+                    busy={props.busy}
+                    onSave={props.onSaveConfig}
+                    onApply={props.onApplyConfig}
+                  />
+                : null}
+            </div>)}
+          </div> : null}
         </section>
       </div>
       <div className={css.skillDialogActions}>
@@ -811,6 +984,106 @@ function PolishMenu(props: {
       </div>
     </div>
   </>, globalThis.document.body)
+}
+
+/** Live skill-run card rendered as an ephemeral canvas node. It is not part of
+ *  the document: it appears the moment a run is queued (wired to its source
+ *  node with an animated edge), reports the host's progress phases, and hands
+ *  its place to the real output nodes when the run lands. */
+interface SkillRunTrace {
+  /** Canvas the run was queued on (results must not graft onto another). */
+  canvasId: string
+  /** Source node the run grew out of. */
+  nodeId: string
+  ids: string[]
+  skillId: string
+  label: string
+  tier: CanvasSkillDescriptor['tier']
+  stage: string
+  phase: NonNullable<CanvasSkillTask['phase']>
+  status: 'queued' | 'running' | 'failed' | 'pending'
+  /** Set when the run finished while another canvas was open; applied on return. */
+  output?: CanvasSkillOutput
+  error?: string
+  startedAt: number
+  rect: CanvasRect
+}
+
+const RUN_NODE_SIZE = { width: 272, height: 132 }
+const RUN_NODE_GAP = 64
+
+/** World-space rect of the run card for one source node (stacked per node). */
+function runRectOf(source: CanvasNode, stackIndex: number): CanvasRect {
+  return {
+    x: source.x + source.width + RUN_NODE_GAP,
+    y: source.y + stackIndex * (RUN_NODE_SIZE.height + 18),
+    width: RUN_NODE_SIZE.width,
+    height: RUN_NODE_SIZE.height,
+  }
+}
+
+const RUN_STEPS_HEAVY: Array<'queued' | 'preparing' | 'running' | 'collecting'> = ['queued', 'preparing', 'running', 'collecting']
+const RUN_STEPS_LIGHT: Array<'queued' | 'running'> = ['queued', 'running']
+
+function SkillRunCard(props: {
+  taskId: string
+  trace: SkillRunTrace
+  onCancel: (taskId: string) => void
+  onDismiss: (taskId: string) => void
+  onRetry: (taskId: string, trace: SkillRunTrace) => void
+}): React.JSX.Element {
+  const { trace } = props
+  const [, tickNow] = useState(0)
+  const live = trace.status === 'queued' || trace.status === 'running'
+  useEffect(() => {
+    if (!live) return undefined
+    const timer = window.setInterval(() => tickNow(value => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [live])
+  const elapsed = Math.max(0, Math.floor((Date.now() - trace.startedAt) / 1000))
+  const clock = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
+  const steps = trace.tier === 'heavy' ? RUN_STEPS_HEAVY : RUN_STEPS_LIGHT
+  const phaseIndex = trace.status === 'failed'
+    ? -1
+    : trace.status === 'pending'
+      ? steps.length
+      : Math.max(0, steps.indexOf(trace.phase as 'queued' | 'preparing' | 'running' | 'collecting'))
+  return <div
+    className={css.skillRunNode}
+    data-status={trace.status}
+    data-skill-run={props.taskId}
+    style={{ left: trace.rect.x, top: trace.rect.y, width: trace.rect.width, minHeight: trace.rect.height }}
+    onPointerDown={event => event.stopPropagation()}
+  >
+    <header className={css.skillRunHeader}>
+      {live ? <span className={css.skillRunSpinner} aria-hidden="true" /> : null}
+      <span className={css.skillRunTitle} title={trace.label}>{trace.label}</span>
+      <span className={css.skillTier} data-tier={trace.tier}>{trace.tier === 'heavy' ? tt('canvas.skills.tierHeavy') : tt('canvas.skills.tierLight')}</span>
+    </header>
+    {trace.status === 'failed'
+      ? <p className={css.skillRunError} title={trace.error}>{trace.error}</p>
+      : <>
+          <div className={css.skillRunSteps}>
+            {steps.map((step, index) => <span
+              key={step}
+              className={css.skillRunStep}
+              data-done={index < phaseIndex ? '' : undefined}
+              data-active={index === phaseIndex ? '' : undefined}
+            />)}
+          </div>
+          <p className={css.skillRunStage}>{trace.status === 'pending' ? tt('canvas.skills.stageDone') : trace.stage}</p>
+        </>}
+    <footer className={css.skillRunFooter}>
+      <span className={css.skillRunElapsed} title={tt('canvas.skills.runElapsed')}>{clock}</span>
+      <span style={{ flex: 1 }} />
+      {trace.status === 'failed'
+        ? <>
+            <button type="button" className={css.skillRunBtn} onClick={() => props.onRetry(props.taskId, trace)}>{tt('canvas.skills.runRetry')}</button>
+            <button type="button" className={css.skillRunBtn} onClick={() => props.onDismiss(props.taskId)}>{tt('canvas.close')}</button>
+          </>
+        : <button type="button" className={css.skillRunBtn} onClick={() => props.onCancel(props.taskId)}>{tt('canvas.skills.cancel')}</button>}
+    </footer>
+  </div>
 }
 
 
@@ -940,6 +1213,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   /** Canvas file nodes: the hidden file input plus the skill catalog overlay. */
   const fileUploadRef = useRef<HTMLInputElement>(null)
   const [fileTargetNodeId, setFileTargetNodeId] = useState<string | null>(null)
+  /** File node whose full-screen preview reader is open (null = closed). */
+  const [filePreviewNodeId, setFilePreviewNodeId] = useState<string | null>(null)
   const [skillMenu, setSkillMenu] = useState<{ screen: Point; nodeId: string } | null>(null)
   const [skillCatalog, setSkillCatalog] = useState<{ skills: CanvasSkillDescriptor[]; installed: string[]; reason?: string } | null>(null)
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false)
@@ -949,14 +1224,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [libraryLoading, setLibraryLoading] = useState(false)
   const [libraryBusy, setLibraryBusy] = useState(false)
   const [libraryPresetUrl, setLibraryPresetUrl] = useState('')
+  /** Skill whose configuration form the library dialog should open. */
+  const [libraryFocusSkill, setLibraryFocusSkill] = useState('')
   /** Toast action for a specific message: a missing skill the user can install. */
   const [errorAction, setErrorAction] = useState<{ label: string; run: () => void; forError: string } | null>(null)
   const [pendingSkill, setPendingSkill] = useState<{ skill: CanvasSkillDescriptor; nodeIds: string[]; instruction: string } | null>(null)
   /** Live skill runs: task id -> the target node's toolbar label/id. */
-  const [skillRuns, setSkillRuns] = useState<Record<string, { nodeId: string; ids: string[]; label: string; stage: string }>>({})
+  const [skillRuns, setSkillRuns] = useState<Record<string, SkillRunTrace>>({})
   const [polishBusy, setPolishBusy] = useState<string | null>(null)
   const [polishNode, setPolishNode] = useState<{ screen: Point; nodeId: string } | null>(null)
-  const skillRunsRef = useRef<Record<string, { nodeId: string; ids: string[]; label: string; stage: string }>>({})
+  const skillRunsRef = useRef<Record<string, SkillRunTrace>>({})
   const backgroundFileRef = useRef<HTMLInputElement>(null)
 
   /** reactbits.dev "Dock" port: each tile spring-scales by its distance to the
@@ -1541,9 +1818,48 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   /** Open the library manager, optionally prefilled with one upstream. */
   const openSkillLibrary = useCallback((presetUrl = ''): void => {
     setLibraryPresetUrl(presetUrl)
+    setLibraryFocusSkill('')
     setSkillLibraryOpen(true)
     void loadSkillLibrary()
   }, [loadSkillLibrary])
+
+  /** Open the library focused on one skill's declared configuration. */
+  const openSkillConfig = useCallback((skillName: string): void => {
+    setLibraryPresetUrl('')
+    setLibraryFocusSkill(skillName)
+    setSkillLibraryOpen(true)
+    void loadSkillLibrary()
+  }, [loadSkillLibrary])
+
+  /** Save one skill's declared configuration values. */
+  const saveSkillValues = useCallback(async (name: string, values: Array<{ id: string; value: string }>): Promise<CanvasSkillConfigSaveResult> => {
+    setLibraryBusy(true)
+    try {
+      const result = await api.canvasSkillConfigSave({ name, values })
+      if (result.library !== undefined) setSkillLibrary(result.library)
+      await loadSkillCatalog()
+      return result
+    } catch (caught) {
+      return { ok: false, library: skillLibrary ?? { root: '', entries: [], catalog: [], networkAvailable: false }, message: errorMessage(caught) }
+    } finally {
+      setLibraryBusy(false)
+    }
+  }, [api, loadSkillCatalog, skillLibrary])
+
+  /** Run a skill declaration's `apply` steps with the saved values. */
+  const applySkillValues = useCallback(async (name: string): Promise<CanvasSkillConfigApplyResult> => {
+    setLibraryBusy(true)
+    try {
+      const result = await api.canvasSkillConfigApply({ name })
+      if (result.library !== undefined) setSkillLibrary(result.library)
+      await loadSkillCatalog()
+      return result
+    } catch (caught) {
+      return { ok: false, library: skillLibrary ?? { root: '', entries: [], catalog: [], networkAvailable: false }, steps: [], message: errorMessage(caught) }
+    } finally {
+      setLibraryBusy(false)
+    }
+  }, [api, loadSkillCatalog, skillLibrary])
 
   /** Install one archive the user picked in the library dialog. */
   const installSkillArchive = useCallback(async (file: File, force: boolean): Promise<void> => {
@@ -1606,7 +1922,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     void loadSkillCatalog()
   }, [loadSkillCatalog])
 
-  /** Queue one skill run through the host and track its task. */
+  /** Queue one skill run through the host, grow a run card out of the source
+   *  node (connected with an animated edge), and track its task. */
   const startSkillRun = useCallback(async (
     skill: CanvasSkillDescriptor,
     nodeIds: string[],
@@ -1625,8 +1942,30 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     }
     try {
       const task = await api.canvasSkillRun(request)
-      setBusyNodes(previous => ({ ...previous, [focus]: `${skill.name} · ${task.stage ?? ''}` }))
-      setSkillRuns(previous => ({ ...previous, [task.id]: { nodeId: focus, ids: [...nodeIds], label: skill.name, stage: task.stage ?? '' } }))
+      setSkillRuns(previous => {
+        // Several runs on one node stack their cards instead of overlapping.
+        const stack = Object.values(previous).filter(trace => trace.nodeId === focus).length
+        const source = current.nodes.find(node => node.id === focus)
+        const rect = source === undefined
+          ? { x: 0, y: 0, width: RUN_NODE_SIZE.width, height: RUN_NODE_SIZE.height }
+          : runRectOf(source, stack)
+        return {
+          ...previous,
+          [task.id]: {
+            canvasId: current.id,
+            nodeId: focus,
+            ids: [...nodeIds],
+            skillId: skill.id,
+            label: skill.name,
+            tier: skill.tier,
+            stage: task.stage ?? tt('canvas.skills.stageQueued'),
+            phase: task.phase ?? 'queued',
+            status: 'queued',
+            startedAt: task.startedAt,
+            rect,
+          },
+        }
+      })
       setNotice(tt('canvas.skills.runStarted', { name: skill.name }))
     } catch (caught) {
       setError(errorMessage(caught))
@@ -1696,11 +2035,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     anchor.remove()
   }, [])
 
-  /** Open a file asset with whatever the OS/browser registered for its type. */
+  /** Open a file asset in the in-app reader (system programs stay one click
+   *  away through the reader's own download / open-in-tab actions). */
   const openFileNode = useCallback((node: CanvasNode): void => {
     const asset = assetOf(node)
     if (asset === undefined || asset.assetId === '') return
-    globalThis.open?.(asset.url, '_blank', 'noopener')
+    setFilePreviewNodeId(node.id)
   }, [])
 
   /** One-click AI polish for a text node (light tier, replaces the text). */
@@ -1802,9 +2142,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   }, [mutate])
 
   /** Poll the host while runs are alive; runs are serialized host-side, so a
-   *  single interval keeps every tool card honest without a request storm. The
-   *  live map is read through a ref, so only the count drives the effect. */
-  const activeSkillRunCount = Object.keys(skillRuns).length
+   *  single interval keeps every run card honest without a request storm. The
+   *  live map is read through a ref, so only the live count drives the effect. */
+  const activeSkillRunCount = Object.values(skillRuns).filter(trace => trace.status === 'queued' || trace.status === 'running').length
   useEffect(() => {
     skillRunsRef.current = skillRuns
   }, [skillRuns])
@@ -1815,7 +2155,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const ids = Object.keys(skillRunsRef.current)
       for (const taskId of ids) {
         const entry = skillRunsRef.current[taskId]
-        if (entry === undefined || disposed) continue
+        if (entry === undefined || disposed || entry.status === 'failed' || entry.status === 'pending') continue
         let snapshot: CanvasSkillTask
         try {
           snapshot = await api.canvasSkillTask(taskId)
@@ -1830,43 +2170,135 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         }
         if (disposed) return
         if (snapshot.status === 'completed') {
-          const added = applySkillOutput(snapshot, entry.ids)
-          setNotice(tt('canvas.skills.runDone', { count: added }))
-          setSkillRuns(previous => { const next = { ...previous }; delete next[taskId]; return next })
-          setBusyNodes(previous => { const next = { ...previous }; delete next[entry.nodeId]; return next })
+          if (documentRef.current?.id === entry.canvasId) {
+            const added = applySkillOutput(snapshot, entry.ids)
+            setNotice(tt('canvas.skills.runDone', { count: added }))
+            setSkillRuns(previous => { const next = { ...previous }; delete next[taskId]; return next })
+          } else {
+            // The user switched canvases mid-run: hold the result on the card
+            // and graft it when the origin canvas is open again.
+            setSkillRuns(previous => previous[taskId] === undefined
+              ? previous
+              : { ...previous, [taskId]: { ...previous[taskId]!, status: 'pending', output: snapshot.output } })
+          }
           continue
         }
         if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
-          if (snapshot.status === 'failed') {
-            const failed = skillCatalog?.skills.find(skill => skill.id === snapshot.skillId)
-            const missing = failed?.skillName !== undefined
-              && skillCatalog !== null
-              && !skillCatalog.installed.includes(failed.skillName)
-            const text = snapshot.error ?? tt('canvas.skills.runFailed', { message: '' })
-            setError(text)
-            // A missing skill is the one failure the canvas can fix itself:
-            // offer the install right in the toast instead of a dead-end error.
-            // The action is bound to this exact message so a later, unrelated
-            // error never inherits a stale button.
-            setErrorAction(missing && failed !== undefined
-              ? { label: tt('canvas.skills.installNow'), run: () => openSkillLibrary(failed.installUrl ?? ''), forError: text }
-              : null)
-          } else setNotice(tt('canvas.skills.runCancelled'))
-          setSkillRuns(previous => { const next = { ...previous }; delete next[taskId]; return next })
-          setBusyNodes(previous => { const next = { ...previous }; delete next[entry.nodeId]; return next })
+          if (snapshot.status === 'cancelled') {
+            setNotice(tt('canvas.skills.runCancelled'))
+            setSkillRuns(previous => { const next = { ...previous }; delete next[taskId]; return next })
+            continue
+          }
+          const failed = skillCatalog?.skills.find(skill => skill.id === snapshot.skillId)
+          const missing = failed?.skillName !== undefined
+            && skillCatalog !== null
+            && !skillCatalog.installed.includes(failed.skillName)
+          const text = snapshot.error ?? tt('canvas.skills.runFailed', { message: '' })
+          setError(text)
+          // A missing skill is the one failure the canvas can fix itself:
+          // offer the install right in the toast instead of a dead-end error.
+          // The action is bound to this exact message so a later, unrelated
+          // error never inherits a stale button.
+          setErrorAction(missing && failed !== undefined
+            ? { label: tt('canvas.skills.installNow'), run: () => openSkillLibrary(failed.installUrl ?? ''), forError: text }
+            : null)
+          // The run card stays on the canvas with the error + retry actions.
+          setSkillRuns(previous => previous[taskId] === undefined
+            ? previous
+            : { ...previous, [taskId]: { ...previous[taskId]!, status: 'failed', error: text, phase: previous[taskId]!.phase } })
           continue
         }
         const stage = snapshot.stage ?? ''
-        if (stage !== entry.stage) {
-          setSkillRuns(previous => previous[taskId] === undefined ? previous : { ...previous, [taskId]: { ...previous[taskId]!, stage } })
-          setBusyNodes(previous => ({ ...previous, [entry.nodeId]: `${entry.label} · ${stage}` }))
+        const phase = snapshot.phase ?? 'running'
+        if (stage !== entry.stage || phase !== entry.phase) {
+          setSkillRuns(previous => previous[taskId] === undefined
+            ? previous
+            : { ...previous, [taskId]: { ...previous[taskId]!, stage, phase, status: snapshot.status === 'running' ? 'running' : previous[taskId]!.status } })
         }
       }
     }
     const timer = window.setInterval(() => { void tick() }, 1500)
     void tick()
     return () => { disposed = true; window.clearInterval(timer) }
-  }, [activeSkillRunCount, api, applySkillOutput])
+  }, [activeSkillRunCount, api, applySkillOutput, skillCatalog])
+
+  /** A run that finished while another canvas was open lands as soon as its
+   *  own canvas is shown again. */
+  const pendingSkillOutputs = Object.entries(skillRuns).filter(([, trace]) => trace.status === 'pending' && trace.canvasId === document?.id)
+  useEffect(() => {
+    if (pendingSkillOutputs.length === 0) return
+    for (const [taskId, trace] of pendingSkillOutputs) {
+      if (trace.output !== undefined) {
+        const added = applySkillOutput({ skillId: trace.skillId, label: trace.label, output: trace.output } as CanvasSkillTask, trace.ids)
+        setNotice(tt('canvas.skills.runDone', { count: added }))
+      }
+      setSkillRuns(previous => { const next = { ...previous }; delete next[taskId]; return next })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSkillOutputs.length, document?.id, applySkillOutput])
+
+  /** Reopen recovery: a canvas with live host-side runs rebuilds its run cards
+   *  (page reload or canvas switch loses the browser-side traces). */
+  const seedSkillRuns = useCallback(async (canvasId: string): Promise<void> => {
+    let tasks: CanvasSkillTask[]
+    try {
+      tasks = await api.canvasSkillTasks(canvasId)
+    } catch {
+      return
+    }
+    setSkillRuns(previous => {
+      const next: Record<string, SkillRunTrace> = {}
+      for (const [taskId, trace] of Object.entries(previous)) {
+        if (trace.canvasId === canvasId && trace.status !== 'pending') next[taskId] = trace
+      }
+      const current = documentRef.current
+      for (const task of tasks) {
+        if (next[task.id] !== undefined) continue
+        const sourceId = task.nodeIds?.find(id => current?.nodes.some(node => node.id === id)) ?? task.nodeIds?.[0]
+        const source = current?.nodes.find(node => node.id === sourceId)
+        if (source === undefined) continue
+        next[task.id] = {
+          canvasId,
+          nodeId: source.id,
+          ids: task.nodeIds ?? [source.id],
+          skillId: task.skillId,
+          label: task.label,
+          tier: task.tier,
+          stage: task.stage ?? tt('canvas.skills.stageRunning'),
+          phase: task.phase ?? 'running',
+          status: task.status === 'queued' ? 'queued' : 'running',
+          startedAt: task.startedAt,
+          rect: runRectOf(source, Object.values(next).filter(trace => trace.nodeId === source.id).length),
+        }
+      }
+      return next
+    })
+  }, [api])
+
+  useEffect(() => {
+    if (document?.id === undefined || document.id === '') return
+    void seedSkillRuns(document.id)
+  }, [document?.id, seedSkillRuns])
+
+  /** Drop a failed run card the user closed. */
+  const dismissSkillRun = useCallback((taskId: string): void => {
+    setSkillRuns(previous => { const next = { ...previous }; delete next[taskId]; return next })
+  }, [])
+
+  /** Re-run a failed skill with the same inputs. */
+  const retrySkillRun = useCallback((taskId: string, trace: SkillRunTrace): void => {
+    setSkillRuns(previous => {
+      const next = { ...previous }
+      delete next[taskId]
+      return next
+    })
+    const skill = skillCatalog?.skills.find(item => item.id === trace.skillId)
+    if (skill === undefined) {
+      setError(tt('canvas.skills.empty'))
+      return
+    }
+    void startSkillRun(skill, trace.ids)
+  }, [skillCatalog, startSkillRun])
 
   // --------------------------------------------------------- node tools
 
@@ -2978,6 +3410,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   // -------------------------------------------------------------- derived
 
   const nodeById = useMemo(() => new Map((document?.nodes ?? []).map(node => [node.id, node])), [document])
+  /** The file node whose full-screen reader is open, with its asset resolved. */
+  const filePreviewNode = useMemo(() => {
+    if (filePreviewNodeId === null) return undefined
+    const node = nodeById.get(filePreviewNodeId)
+    const asset = node === undefined ? undefined : assetOf(node)
+    return node === undefined || asset === undefined || asset.assetId === '' ? undefined : { node, asset }
+  }, [filePreviewNodeId, nodeById])
   const relatedIds = useMemo(() => {
     const related = new Set<string>()
     if (document === null) return related
@@ -3162,21 +3601,22 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             onAssetChange={asset => patchSketchAsset(node.id, asset)}
           />
         : isFile
-        ? <div className={css.fileBody}>
-            {hasFile
-              ? fileKind === 'image'
-                ? <img src={asset.url} alt={node.title} draggable={false} onDragStart={event => event.preventDefault()} />
-                : fileKind === 'pdf'
-                  ? <object className={css.fileFrame} data={asset.url} type="application/pdf" aria-label={node.title} />
-                  : fileKind === 'text' && asset.textPreview !== undefined && asset.textPreview !== ''
-                    ? <pre className={css.fileText} onPointerDown={event => event.stopPropagation()}>{asset.textPreview}</pre>
-                    : <div className={css.filePlaceholder}><ToolbarIcon name="file" size={26} /><span>{tt('canvas.skills.filePreviewUnavailable')}</span></div>
-              : <button
-                  type="button"
-                  className={css.nodeEmpty}
-                  onClick={() => { setFileTargetNodeId(node.id); fileUploadRef.current?.click() }}
-                ><ToolbarIcon name="upload" /><span>{tt('canvas.skills.emptyFileNode')}</span></button>}
-          </div>
+        ? hasFile
+          ? <CanvasFileBody
+              api={api}
+              asset={asset}
+              fileKind={fileKind}
+              title={node.title}
+              hint={tt('canvas.preview.doubleClick')}
+              onExpand={() => { setFilePreviewNodeId(node.id) }}
+            />
+          : <div className={css.fileBody}>
+              <button
+                type="button"
+                className={css.nodeEmpty}
+                onClick={() => { setFileTargetNodeId(node.id); fileUploadRef.current?.click() }}
+              ><ToolbarIcon name="upload" /><span>{tt('canvas.skills.emptyFileNode')}</span></button>
+            </div>
         : <div className={css.nodeBody}>
             {isGenerating
               ? <div className={css.nodeState}><span className={css.nodeSpinner} aria-hidden="true" /><span>{tt('canvas.generatingNode')}</span></div>
@@ -3282,7 +3722,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         </> : null}
         {isFile && hasFile ? <>
           <IconButton name="download" label={tt('canvas.skills.fileDownload')} onClick={() => downloadFileNode(node)} />
-          <IconButton name="file" label={tt('canvas.skills.fileOpen')} onClick={() => openFileNode(node)} />
+          <IconButton name="expand" label={tt('canvas.preview.expand')} onClick={() => openFileNode(node)} />
           <span className={css.toolbarDivider} aria-hidden="true" />
         </> : null}
         {isAnnotationCard(node) ? null : <IconButton name="duplicate" label={tt('canvas.duplicate')} onClick={() => duplicateNode(node.id)} />}
@@ -3374,6 +3814,15 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             : bezierPath(mouse, nodeAnchor(node, 'left'))
           return <path d={path} className={css.connectionPreview} />
         })() : null}
+        {/* Live skill runs: an animated edge grows out of the source node into
+            the ephemeral run card (removed once outputs take over). */}
+        {Object.entries(skillRuns).map(([taskId, trace]) => {
+          const from = nodeById.get(trace.nodeId)
+          if (from === undefined || trace.status === 'pending') return null
+          const start = nodeAnchor(from, 'right')
+          const end = { x: trace.rect.x, y: trace.rect.y + trace.rect.height / 2 }
+          return <path key={`skill-run-${taskId}`} d={bezierPath(start, end)} className={css.skillRunEdge} />
+        })}
       </g>
     </svg>
   }
@@ -3532,7 +3981,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         if (node !== undefined && node.type === 'image' && (assetOf(node)?.url.length ?? 0) > 0) items.push({ label: tt('canvas.download'), icon: 'download', action: () => downloadNode(node) })
         if (node !== undefined && node.type === 'file' && (assetOf(node)?.url.length ?? 0) > 0) {
           items.push({ label: tt('canvas.skills.fileDownload'), icon: 'download', action: () => downloadFileNode(node) })
-          items.push({ label: tt('canvas.skills.fileOpen'), icon: 'file', action: () => openFileNode(node) })
+          items.push({ label: tt('canvas.preview.expand'), icon: 'expand', action: () => openFileNode(node) })
         }
         if (node !== undefined && node.type !== 'config') {
           items.push({ label: tt('canvas.skills.button'), icon: 'skill', action: () => openSkillMenu(node, { x: contextMenu.screen.x, y: contextMenu.screen.y }) })
@@ -3657,6 +4106,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       <div className={css.world} style={{ transform: `translate(${document?.viewport.x ?? 0}px, ${document?.viewport.y ?? 0}px) scale(${document?.viewport.k ?? 1})` }}>
         {renderConnections()}
         {document?.nodes.map(renderNode)}
+        {Object.entries(skillRuns).map(([taskId, trace]) => <SkillRunCard
+          key={taskId}
+          taskId={taskId}
+          trace={trace}
+          onCancel={taskId => { void cancelSkillRun(taskId) }}
+          onDismiss={dismissSkillRun}
+          onRetry={retrySkillRun}
+        />)}
         {renderAnnotationLinks()}
       </div>
       {marqueeRect !== null ? <div className={css.marquee} style={marqueeRect} aria-hidden="true" /> : null}
@@ -3792,6 +4249,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       return target === undefined ? null : <SkillPicker
         anchor={skillMenu.screen}
         nodeType={target.type}
+        targetTitle={target.title ?? ''}
         catalog={skillCatalog}
         loading={skillCatalogLoading}
         batchCount={skillBatchCount(target.id)}
@@ -3800,6 +4258,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         onInstall={skill => {
           setSkillMenu(null)
           openSkillLibrary(skill.installUrl ?? '')
+        }}
+        onConfigure={skill => {
+          setSkillMenu(null)
+          openSkillConfig(skill.id.startsWith('skill:') ? skill.id.slice('skill:'.length) : (skill.skillName ?? skill.name))
         }}
         onClose={() => setSkillMenu(null)}
       />
@@ -3891,17 +4353,27 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     {minimapOpen ? renderMinimap() : null}
     {renderComposer()}
     {renderContextMenu()}
+    {filePreviewNode !== undefined ? <CanvasFileOverlay
+      api={api}
+      asset={filePreviewNode.asset}
+      fileKind={fileKindOfAsset(filePreviewNode.asset)}
+      title={filePreviewNode.node.title}
+      onClose={() => setFilePreviewNodeId(null)}
+    /> : null}
     {libraryOpen ? <TemplateLibrary api={api} onClose={() => setLibraryOpen(false)} onUse={applyTemplate} /> : null}
     {skillLibraryOpen ? <SkillLibraryDialog
       library={skillLibrary}
       loading={libraryLoading}
       busy={libraryBusy}
       presetUrl={libraryPresetUrl}
+      focusSkill={libraryFocusSkill}
       onReload={() => { void loadSkillLibrary() }}
       onInstallUrls={(sources, force) => { void installSkillUrls(sources, force) }}
       onInstallArchive={(file, force) => { void installSkillArchive(file, force) }}
       onRemove={name => { void removeSkillEntry(name) }}
-      onClose={() => setSkillLibraryOpen(false)}
+      onSaveConfig={saveSkillValues}
+      onApplyConfig={applySkillValues}
+      onClose={() => { setSkillLibraryOpen(false); setLibraryFocusSkill('') }}
     /> : null}
 
     {error !== null ? <div className={css.errorToast} role="status" data-canvas-no-zoom="">

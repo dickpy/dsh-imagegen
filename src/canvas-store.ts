@@ -114,7 +114,8 @@ function extensionOf(mime: string): string {
   }
 }
 
-function baseMime(mime: string): string {
+/** MIME type without its parameters, lower-cased (`text/plain; charset=utf-8`). */
+export function baseMime(mime: string): string {
   return mime.split(';')[0]!.trim().toLowerCase()
 }
 

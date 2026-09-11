@@ -168,16 +168,18 @@ export function isEditablePptSkill(name: string): boolean {
  * so a user-only (slash-command) skill would fail halfway.
  * @param skills - host registry summaries.
  * @param t - copy resolver for the current UI language.
- * @param options - run-layer availability, used for the heavy entries' hints.
+ * @param options - run-layer availability, used for the heavy entries' hints;
+ *   `configMissing` reports a skill's unset required configuration by name.
  */
 export function mergeExternalSkills(
   skills: readonly ExternalSkillSummary[],
   t: CatalogTranslate,
-  options: { agentAvailable: boolean },
+  options: { agentAvailable: boolean; configMissing?: (name: string) => string[] | undefined },
 ): CanvasSkillDescriptor[] {
   return skills.map(skill => {
     const tier = tierOfExternalSkill(skill)
     const name = t('canvas.skills.externalName', { name: skill.name })
+    const configMissing = options.configMissing?.(skill.name)
     return {
       id: `skill:${skill.name}`,
       name,
@@ -193,6 +195,7 @@ export function mergeExternalSkills(
             requires: options.agentAvailable ? [] : [t('canvas.skills.needAgent')],
           }
         : {},
+      ...configMissing === undefined || configMissing.length === 0 ? {} : { configMissing },
     }
   })
 }
@@ -201,7 +204,7 @@ export function mergeExternalSkills(
 export function canvasSkillCatalog(
   external: readonly ExternalSkillSummary[],
   t: CatalogTranslate,
-  options: { agentAvailable: boolean; pptInstallUrl?: string },
+  options: { agentAvailable: boolean; pptInstallUrl?: string; configMissing?: (name: string) => string[] | undefined },
 ): CanvasSkillDescriptor[] {
   const builtins = builtinCanvasSkills(t, options)
   const taken = new Set(builtins.map(skill => skill.id))

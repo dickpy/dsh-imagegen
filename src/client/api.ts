@@ -3,7 +3,7 @@
  * data access path the panel uses — plain fetch, same origin.
  */
 
-import { CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
+import { CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, GALLERY_API, GENERATE_API, HISTORY_API, PROMPT_ENHANCE_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, type CanvasAssetRef, type CanvasDocument, type CanvasFilePreview, type CanvasLayerPlan, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type CanvasSummary, type GenerateRequest, type GenerateResult, type GenerationTask, type HistoryEntry, type HistoryEntryInput, type TemplateCase, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample, type UpdateInfo } from '../protocol.ts'
 import { activeImageGenLanguage } from './helpers.ts'
 
 /** Error carrying the route's JSON error message. */
@@ -237,6 +237,20 @@ export class ImageGenApi {
     return (await readEnvelope<{ ok: true; asset: CanvasAssetRef }>(response)).asset
   }
 
+  /**
+   * Ask the host for one canvas file node's readable content. Media types come
+   * back as an inline URL; text, spreadsheets, office documents and archives
+   * come back decoded and bounded.
+   */
+  async canvasFilePreview(asset: { assetId: string; name?: string; mime?: string }): Promise<CanvasFilePreview> {
+    const response = await fetch(CANVAS_API.filePreview, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(asset),
+    })
+    return (await readEnvelope<{ ok: true; preview: CanvasFilePreview }>(response)).preview
+  }
+
   /** Read the skill catalog offered to canvas nodes. */
   async canvasSkillsList(): Promise<CanvasSkillCatalog> {
     const response = await fetch(CANVAS_SKILL_API.list, {
@@ -284,6 +298,26 @@ export class ImageGenApi {
     return await readEnvelope<CanvasSkillRemoveResult>(response)
   }
 
+  /** Save the values one skill's own declaration asked for. */
+  async canvasSkillConfigSave(request: CanvasSkillConfigSaveRequest): Promise<CanvasSkillConfigSaveResult> {
+    const response = await fetch(CANVAS_SKILL_API.configSave, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...request, language: activeImageGenLanguage() }),
+    })
+    return await readEnvelope<CanvasSkillConfigSaveResult>(response)
+  }
+
+  /** Run a skill declaration's `apply` steps (its CLI or a config file). */
+  async canvasSkillConfigApply(request: CanvasSkillConfigApplyRequest): Promise<CanvasSkillConfigApplyResult> {
+    const response = await fetch(CANVAS_SKILL_API.configApply, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...request, language: activeImageGenLanguage() }),
+    })
+    return await readEnvelope<CanvasSkillConfigApplyResult>(response)
+  }
+
   /** Queue one skill run; the task is polled through {@link canvasSkillTask}. */
   async canvasSkillRun(request: CanvasSkillRunRequest): Promise<CanvasSkillTask> {
     const response = await fetch(CANVAS_SKILL_API.run, {
@@ -302,6 +336,16 @@ export class ImageGenApi {
       body: JSON.stringify({ taskId, language: activeImageGenLanguage() }),
     })
     return (await readEnvelope<{ ok: true; task: CanvasSkillTask }>(response)).task
+  }
+
+  /** Unfinished skill runs of one canvas (rebuilds run cards after a reload). */
+  async canvasSkillTasks(canvasId: string): Promise<CanvasSkillTask[]> {
+    const response = await fetch(CANVAS_SKILL_API.task, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ canvasId, language: activeImageGenLanguage() }),
+    })
+    return (await readEnvelope<{ ok: true; tasks: CanvasSkillTask[] }>(response)).tasks
   }
 
   /** Ask the host to cancel a queued or running skill run. */
