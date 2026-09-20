@@ -501,6 +501,7 @@ export function ImageGenPanel(props: {
   // (possibly empty — never fall back to the hardcoded legacy defaults).
   const imageModels = hasChannels ? modelOptions.models : normalizeImageModels(config?.imageModels)
   const defaultChannelId = modelOptions.defaultChannelId
+  const defaultModel = modelOptions.defaultModel
   const apiUrl = defaultChannelId !== undefined && (config?.channels ?? []).length > 0
     ? (config!.channels!.find(channel => channel.id === defaultChannelId)?.apiUrl ?? '')
     : (config?.apiUrl ?? '')
@@ -691,14 +692,15 @@ export function ImageGenPanel(props: {
 
   // A saved settings change is authoritative. Keep the active selection and
   // comparison choices in that allow-list without disturbing valid choices.
-  const imageModelKey = modeModels.join('\u0000')
+  const modelPreferenceKey = `${modeModels.join('\u0000')}\u0000${defaultModel ?? ''}`
   useEffect(() => {
-    setModel(previous => modeModels.includes(previous) ? previous : modeModels[0] ?? '')
+    const preferred = defaultModel !== undefined && modeModels.includes(defaultModel) ? defaultModel : modeModels[0] ?? ''
+    setModel(previous => preferred !== '' || modeModels.includes(previous) ? preferred : '')
     setCompareModels(previous => {
       const retained = previous.filter(candidate => modeModels.includes(candidate))
-      return retained.length > 0 ? retained : modeModels[0] === undefined ? [] : [modeModels[0]]
+      return retained.length > 0 ? retained : preferred === '' ? [] : [preferred]
     })
-  }, [imageModelKey])
+  }, [modelPreferenceKey])
 
   const filteredGallery = gallery
     .filter(entry => {

@@ -290,6 +290,7 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   }
 
   const channels = state.channels.channels
+  const modelAliases = [...new Set(channels.flatMap(channel => channel.models.map(model => model.alias)).filter(alias => alias !== ''))]
   const editing = editingId === null ? undefined : channels.find(channel => channel.id === editingId)
 
   return (
@@ -390,6 +391,23 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                 />
               ) : null}
 
+              {modelAliases.length > 0 ? (
+                <div className={css.defaultModelRow}>
+                  <label htmlFor="dsh-imagegen-default-model">
+                    <strong>{t('channels.defaultModel')}</strong>
+                    <small>{t('channels.defaultModelHint')}</small>
+                  </label>
+                  <select
+                    id="dsh-imagegen-default-model"
+                    className={css.modelChoices}
+                    value={state.channels.defaultModel}
+                    disabled={disabled}
+                    onChange={event => { props.channels.setDefaultModel(event.target.value) }}
+                  >
+                    {modelAliases.map(model => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                </div>
+              ) : null}
               <div className={css.channelAddRow}>
                 <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { setPresetError(null); setPresetPickerOpen(true) }}>+ {t('channels.addProvider')}</button>
                 <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</button>

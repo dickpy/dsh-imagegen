@@ -52,7 +52,7 @@ const nodeConfig: UserConfig = {
   target: 'es2024',
   fixedExtension: false,
   dts: false,
-  clean: false,
+  clean: true,
   outputOptions: {
     entryFileNames: '[name].js',
   },

@@ -708,6 +708,43 @@
   color: var(--dsw-alias-label-error);
 }
 
+.defaultModelRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.defaultModelRow label {
+  flex: 1;
+  min-width: 0;
+}
+
+.defaultModelRow strong,
+.defaultModelRow small {
+  display: block;
+}
+
+.defaultModelRow strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+}
+
+.defaultModelRow small {
+  margin-top: 3px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.defaultModelRow select {
+  width: min(260px, 48%);
+}
+
 .channelAddRow {
   display: flex;
   gap: 8px;

@@ -28,6 +28,8 @@ export interface ImageGenConfig {
   channelSecrets?: Record<string, string>
   /** Channel used when a request does not name one. */
   defaultChannelId?: string
+  /** Model alias selected by default in the GUI. Empty uses the first option. */
+  defaultModel?: string
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
@@ -279,24 +281,38 @@ export function bindImageGenScope(fetchFn: typeof fetch = fetch): ImageGenScope 
  * Falls back to the legacy flat allow-list while no channels exist (upgrade
  * path). Pure projection — no host calls.
  */
-export function imageModelOptions(config: ImageGenConfig | undefined): { models: string[]; defaultChannelId?: string } {
+export function imageModelOptions(config: ImageGenConfig | undefined): { models: string[]; defaultChannelId?: string; defaultModel?: string } {
   const channels = config?.channels ?? []
   if (channels.length === 0) {
     const legacy = Array.isArray(config?.imageModels)
       ? config.imageModels.filter((model): model is string => typeof model === 'string' && model.trim() !== '')
       : []
-    return { models: legacy }
+    const defaultModel = typeof config?.defaultModel === 'string' && legacy.includes(config.defaultModel)
+      ? config.defaultModel
+      : undefined
+    return {
+      models: defaultModel === undefined ? legacy : [defaultModel, ...legacy.filter(model => model !== defaultModel)],
+      ...defaultModel === undefined ? {} : { defaultModel },
+    }
   }
   const defaultId = config?.defaultChannelId !== undefined && channels.some(channel => channel.id === config.defaultChannelId)
     ? config.defaultChannelId
     : channels[0]!.id
   const ordered = [defaultId, ...channels.filter(channel => channel.id !== defaultId).map(channel => channel.id)]
-  const models: string[] = []
+  const aliases: string[] = []
   for (const id of ordered) {
     const channel = channels.find(candidate => candidate.id === id)!
     for (const model of channel.models) {
-      if (model.alias !== '' && !models.includes(model.alias)) models.push(model.alias)
+      if (model.alias !== '' && !aliases.includes(model.alias)) aliases.push(model.alias)
     }
   }
-  return models.length > 0 ? { models, defaultChannelId: defaultId } : { models: [], defaultChannelId: defaultId }
+  const defaultModel = typeof config?.defaultModel === 'string' && aliases.includes(config.defaultModel)
+    ? config.defaultModel
+    : undefined
+  const models = defaultModel === undefined ? aliases : [defaultModel, ...aliases.filter(model => model !== defaultModel)]
+  return {
+    models,
+    defaultChannelId: defaultId,
+    ...defaultModel === undefined ? {} : { defaultModel },
+  }
 }
