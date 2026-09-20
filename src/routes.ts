@@ -829,7 +829,17 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     },
     {
       kind: 'exact', path: TASK_API.list,
-      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: runtime.queue.list() }) },
+      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: runtime.queue.summaries() }) },
+    },
+    {
+      kind: 'exact', path: TASK_API.get,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const task = typeof body?.id === 'string' ? runtime.queue.get(body.id) : undefined
+        if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'task not found' }); return }
+        writeJson(res, 200, { ok: true, task })
+      },
     },
     {
       kind: 'exact', path: TASK_API.cancel,

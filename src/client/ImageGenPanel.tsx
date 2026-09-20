@@ -22,7 +22,7 @@ import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
-import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
+import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
@@ -425,6 +425,8 @@ interface EcommerceResultItem {
   prompt: string
   error?: string
   images: GeneratedImage[]
+  /** Queue id for live tasks; absent on history-restored items. */
+  taskId?: string
   /** The request to resubmit when regenerating this slot. */
   source: GenerateRequest
 }
@@ -462,6 +464,19 @@ function newComparisonId(): string {
   const cryptoApi = globalThis.crypto
   if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
   return `comparison-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/** Fold a lightweight poll summary into a richer task already held locally. */
+function mergeTaskSummary(summary: GenerationTaskSummary, previous: GenerationTask | undefined): GenerationTask {
+  const { resultAvailable: _resultAvailable, ...task } = summary
+  if (previous === undefined) return task
+  const merged: GenerationTask = {
+    ...previous,
+    ...task,
+    request: { ...previous.request, ...task.request },
+  }
+  if (summary.resultAvailable && previous.result !== undefined) merged.result = previous.result
+  return merged
 }
 
 /** Render the studio. */
@@ -560,6 +575,9 @@ export function ImageGenPanel(props: {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
+  const taskPollStartedAtRef = useRef(Date.now())
+  const observedTaskIdsRef = useRef<Set<string>>(new Set())
+  const submittedTaskIdsRef = useRef<Set<string>>(new Set())
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   const [comparison, setComparison] = useState<ComparisonSession | null>(null)
   const [comparisonFullscreen, setComparisonFullscreen] = useState(false)
@@ -663,7 +681,10 @@ export function ImageGenPanel(props: {
       prompt: withAnchorNote(request.prompt),
     }))
     void Promise.all(requests.map(request => api.taskSubmit(request)))
-      .then(submitted => { setTasks(previous => [...submitted, ...previous]) })
+      .then(submitted => {
+        for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
+        setTasks(previous => [...submitted, ...previous])
+      })
       .catch(caught => { setError(errorMessage(caught)) })
   }, [api, tasks, ecommerceAnchor])
 
@@ -739,30 +760,88 @@ export function ImageGenPanel(props: {
 
   useEffect(() => {
     let disposed = false
+    let refreshing = false
     const refresh = (): void => {
-      void api.taskList().then(next => {
-        if (disposed) return
-        const newlyCompleted = next.filter(task => task.status === 'completed'
-          && task.result !== undefined
-          && !tasksRef.current.some(old => old.id === task.id && old.status === 'completed'))
-        tasksRef.current = next
-        setTasks(previous => {
-          const completed = next.find(task => task.status === 'completed'
-            && !previous.some(old => old.id === task.id && old.status === 'completed')
-            && !comparison?.taskIds.includes(task.id))
-          if (completed?.result !== undefined) {
-            setImages(completed.result.images)
-            if (completed.result.history !== undefined) setHistory(completed.result.history)
-            setError(completed.result.historyError ?? null)
+      if (refreshing) return
+      refreshing = true
+      void (async () => {
+        try {
+          const summaries = await api.taskList()
+          if (disposed) return
+          const previousTasks = tasksRef.current
+          const previousById = new Map(previousTasks.map(task => [task.id, task] as const))
+          for (const summary of summaries) {
+            if (summary.status === 'queued' || summary.status === 'running') {
+              observedTaskIdsRef.current.add(summary.id)
+            }
           }
-          return next
-        })
-        if (newlyCompleted.length > 0) {
-          void api.historyList().then(entries => {
-            if (!disposed) setHistory(entries)
-          }).catch(() => {})
+          // Hydrate only tasks created after this panel mounted, or tasks we
+          // already saw running. Completed tasks from older sessions stay
+          // lightweight; their images are available from history.
+          const needsHydration = summaries.filter(summary => {
+            const previous = previousById.get(summary.id)
+            return summary.status === 'completed'
+              && summary.resultAvailable
+              && previous?.status !== 'completed'
+              && (submittedTaskIdsRef.current.has(summary.id)
+                || observedTaskIdsRef.current.has(summary.id)
+                || summary.createdAt >= taskPollStartedAtRef.current)
+          })
+          const fetched = await Promise.all(needsHydration.map(async summary => {
+            try {
+              return await api.taskGet(summary.id)
+            } catch {
+              return undefined
+            }
+          }))
+          if (disposed) return
+          const fullById = new Map(
+            fetched
+              .filter((task): task is GenerationTask => task !== undefined)
+              .map(task => [task.id, task] as const),
+          )
+          const pending = new Set(
+            needsHydration
+              .filter(summary => !fullById.has(summary.id))
+              .map(summary => summary.id),
+          )
+          const next = summaries.flatMap(summary => {
+            const full = fullById.get(summary.id)
+            if (full !== undefined) return [full]
+            const previous = previousById.get(summary.id)
+            // Omit the task or keep its old active state when hydration fails;
+            // the next poll then retries instead of settling without images.
+            if (pending.has(summary.id)) return previous === undefined ? [] : [previous]
+            return [mergeTaskSummary(summary, previous)]
+          })
+          for (const task of fullById.values()) observedTaskIdsRef.current.add(task.id)
+          const hydratedCompleted = next.filter(task => task.status === 'completed'
+            && task.result !== undefined
+            && !previousTasks.some(old => old.id === task.id && old.status === 'completed'))
+          tasksRef.current = next
+          setTasks(current => {
+            const completed = next.find(task => task.status === 'completed'
+              && task.result !== undefined
+              && !current.some(old => old.id === task.id && old.status === 'completed')
+              && !comparison?.taskIds.includes(task.id))
+            if (completed?.result !== undefined) {
+              setImages(completed.result.images)
+              if (completed.result.history !== undefined) setHistory(completed.result.history)
+              setError(completed.result.historyError ?? null)
+            }
+            return next
+          })
+          if (hydratedCompleted.length > 0) {
+            void api.historyList().then(entries => {
+              if (!disposed) setHistory(entries)
+            }).catch(() => {})
+          }
+        } catch {
+          // A transient host error must not stop the polling loop.
+        } finally {
+          refreshing = false
         }
-      }).catch(() => {})
+      })()
     }
     refresh()
     const timer = window.setInterval(refresh, 1500)
@@ -960,6 +1039,7 @@ export function ImageGenPanel(props: {
       const comparisonId = targetModels.length > 1 ? newComparisonId() : undefined
       const comparisonFields = comparisonId === undefined ? {} : { comparisonId, comparisonModels: targetModels }
       const submitted = await Promise.all(targetModels.map(targetModel => api.taskSubmit({ ...request, model: targetModel, ...comparisonFields })))
+      for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
       setComparison(comparisonId === undefined ? null : { taskIds: submitted.map(task => task.id), prompt: promptText, comparisonId })
     } catch (caught) {
@@ -1013,6 +1093,7 @@ export function ImageGenPanel(props: {
     setEcommerceGenerating(true); setSubmitting(true); setError(null); setEcommerceProjectId(projectId); setEcommerceRestored(null); setEcommerceAnchor(null)
     try {
       const submitted = await Promise.all(requests.map(request => api.taskSubmit(request)))
+      for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous])
       setEcommercePreview(false)
       if (anchorChain) setEcommerceAnchor({ projectId, mainTaskIds: submitted.map(task => task.id), remaining })
@@ -1039,7 +1120,10 @@ export function ImageGenPanel(props: {
     setEcommerceGenerating(true)
     setError(null)
     try {
-      const submitted = await Promise.all(group.map(item => api.taskSubmit({ ...item.source })))
+      const submitted = await Promise.all(group.map(item => item.taskId === undefined
+        ? api.taskSubmit({ ...item.source })
+        : api.taskRetry(item.taskId)))
+      for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous])
     } catch (caught) {
       setError(errorMessage(caught))
@@ -1559,6 +1643,7 @@ export function ImageGenPanel(props: {
       prompt: task.request.prompt,
       ...task.error !== undefined ? { error: task.error } : {},
       images: task.result?.images ?? [],
+      taskId: task.id,
       source: task.request,
     })),
     ...(ecommerceRestored !== null && ecommerceRestored.projectId === ecommerceProjectId

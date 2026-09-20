@@ -1,7 +1,7 @@
 /** In-memory, host-resident image generation queue. */
 
 import { randomUUID } from 'node:crypto'
-import type { GenerateRequest, GenerateResult, GenerationTask } from './protocol.ts'
+import type { GenerateRequest, GenerateResult, GenerationTask, GenerationTaskSummary } from './protocol.ts'
 
 export type GenerationTaskListener = (task: GenerationTask) => void
 
@@ -18,6 +18,23 @@ export class GenerationTaskQueue {
 
   list(): GenerationTask[] {
     return this.tasks.map(task => this.snapshot(task))
+  }
+
+  /**
+   * Bounded poll payload: active tasks plus the newest terminal summaries.
+   * Image data and completed results are intentionally omitted.
+   */
+  summaries(terminalLimit = 100): GenerationTaskSummary[] {
+    const limit = Math.max(0, Math.floor(terminalLimit))
+    const active = this.tasks.filter(task => task.status === 'queued' || task.status === 'running')
+    const terminal = this.tasks.filter(task => task.status !== 'queued' && task.status !== 'running').slice(0, limit)
+    const selected = new Set([...active, ...terminal].map(task => task.id))
+    return this.tasks.filter(task => selected.has(task.id)).map(task => this.summary(task))
+  }
+
+  get(id: string): GenerationTask | undefined {
+    const task = this.tasks.find(item => item.id === id)
+    return task === undefined ? undefined : this.snapshot(task)
   }
 
   /** Observe queue state changes. Listener failures never disrupt generation. */
@@ -99,6 +116,22 @@ export class GenerationTaskQueue {
       } catch {
         // Observers must not be able to interrupt the queue pump.
       }
+    }
+  }
+
+  private summary(task: GenerationTask): GenerationTaskSummary {
+    const request = { ...task.request }
+    delete request.image
+    delete request.images
+    return {
+      id: task.id,
+      request,
+      status: task.status,
+      createdAt: task.createdAt,
+      ...task.startedAt === undefined ? {} : { startedAt: task.startedAt },
+      ...task.finishedAt === undefined ? {} : { finishedAt: task.finishedAt },
+      ...task.error === undefined ? {} : { error: task.error },
+      resultAvailable: task.result !== undefined,
     }
   }
 

@@ -50,6 +50,7 @@ export const USAGE_API = '/api/dsh-imagegen/usage' as const
 export const TASK_API = {
   submit: '/api/dsh-imagegen/tasks/submit',
   list: '/api/dsh-imagegen/tasks/list',
+  get: '/api/dsh-imagegen/tasks/get',
   cancel: '/api/dsh-imagegen/tasks/cancel',
   retry: '/api/dsh-imagegen/tasks/retry',
 } as const
@@ -968,6 +969,13 @@ export interface GenerationTask extends EcommerceTaskMeta {
   error?: string
 }
 
+/**
+ * Wire shape for the queue poll. Reference-image and result payloads stay
+ * host-side; the client hydrates a completed task once through TASK_API.get.
+ */
+export interface GenerationTaskSummary extends Omit<GenerationTask, 'result'> {
+  resultAvailable: boolean
+}
 /** GitHub Release update information shown by the client. */
 export interface UpdateInfo {
   currentVersion: string

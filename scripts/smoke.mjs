@@ -1194,6 +1194,34 @@ await check('C4 comparison tasks run in parallel and share comparison history me
   assert.deepEqual(comparisonEntries[0].comparisonModels, ['gpt-image-2', 'grok-imagine-image'])
 })
 
+await check('C4b task polling stays lightweight and hydrates completed results on demand', async () => {
+  const image = `data:image/png;base64,${pngBytes.toString('base64')}`
+  const submitted = await post('/api/dsh-imagegen/tasks/submit', {
+    mode: 'edit', model: 'gpt-image-2', prompt: 'edit this lightweight task payload', size: '3:2', quality: '4k', n: 1, detail: '',
+    image, refName: 'reference.png',
+  })
+  assert.equal(submitted.body.ok, true, JSON.stringify(submitted.body))
+  let summary
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const listed = await post('/api/dsh-imagegen/tasks/list', {})
+    summary = listed.body.tasks.find(task => task.id === submitted.body.task.id)
+    if (summary?.status === 'completed') break
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(summary?.status, 'completed')
+  assert.equal(summary.result, undefined)
+  assert.equal(summary.resultAvailable, true)
+  assert.equal(summary.request.image, undefined)
+  assert.equal(summary.request.images, undefined)
+
+  const hydrated = await post('/api/dsh-imagegen/tasks/get', { id: submitted.body.task.id })
+  assert.equal(hydrated.body.ok, true)
+  assert.equal(hydrated.body.task.request.image, image)
+  assert.ok(hydrated.body.task.result.images.length > 0)
+  const missing = await post('/api/dsh-imagegen/tasks/get', { id: 'missing-task' })
+  assert.equal(missing.body.ok, false)
+  assert.equal(missing.body.code, 'not-found')
+})
 await check('C5 image model discovery and configured-model allow-list work', async () => {
   const discovered = await post('/api/dsh-imagegen/image-models', {})
   assert.equal(discovered.body.ok, true)
@@ -1799,6 +1827,12 @@ await check('C10f previewable assets serve inline with byte ranges, markup never
   const base = `http://127.0.0.1:${port}`
   const bytes = Buffer.from('%PDF-1.4\nsecond page\n%%EOF\n', 'utf8')
   const pdf = await uploadCanvasFile('inline.pdf', 'application/pdf', bytes)
+  const png = await uploadCanvasFile('inline.png', 'image/png', pngBytes)
+  assert.match(png.url, /\.png$/)
+  const inlinePng = await fetch(`${base}${png.url}`)
+  assert.equal(inlinePng.headers.get('content-type'), 'image/png')
+  assert.match(inlinePng.headers.get('content-disposition') ?? '', /^inline/)
+  assert.deepEqual(Buffer.from(await inlinePng.arrayBuffer()), pngBytes)
 
   // Plain requests keep the attachment contract the upload path promises.
   const download = await fetch(`${base}${pdf.url}`)
@@ -3378,18 +3412,45 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       const task = { id: `ecommerce-task-${ecommerceSubmissions.length}`, request: payload, status: 'queued', createdAt: 1 }
       return { ok: true, json: async () => ({ ok: true, task }) }
     }
+    if (path.endsWith('/tasks/get')) {
+      const requestedId = JSON.parse(init.body).id
+      const match = /^ecommerce-task-(\d+)$/.exec(requestedId)
+      const index = match === null ? -1 : Number(match[1]) - 1
+      const payload = index < 0 ? undefined : ecommerceSubmissions[index]
+      if (payload === undefined) {
+        return { ok: true, json: async () => ({ ok: false, code: 'not-found', message: 'task not found' }) }
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          task: {
+            id: requestedId,
+            request: payload,
+            status: index === 0 ? 'completed' : 'queued',
+            createdAt: 1,
+            ...index === 0 ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png' }] } } : {},
+          },
+        }),
+      }
+    }
     if (path.endsWith('/tasks/list')) {
       return {
         ok: true,
         json: async () => ({
           ok: true,
-          tasks: ecommerceSubmissions.map((payload, index) => ({
-            id: `ecommerce-task-${index + 1}`,
-            request: payload,
-            status: index === 0 ? 'completed' : 'queued',
-            createdAt: 1,
-            ...index === 0 ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png' }] } } : {},
-          })),
+          tasks: ecommerceSubmissions.map((payload, index) => {
+            const request = { ...payload }
+            delete request.image
+            delete request.images
+            return {
+              id: `ecommerce-task-${index + 1}`,
+              request,
+              status: index === 0 ? 'completed' : 'queued',
+              createdAt: 1,
+              resultAvailable: index === 0,
+            }
+          }),
         }),
       }
     }
