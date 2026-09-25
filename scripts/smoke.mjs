@@ -1999,6 +1999,30 @@ await check('C10c a file node round-trips through canvas save with its asset int
   assert.equal(storedNode.metadata.fileKind, 'text')
 })
 
+await check('C10c2 canvas favorites persist across saves and project lists', async () => {
+  const created = await post('/api/dsh-imagegen/canvas/create', { title: 'favorite canvas' })
+  const document = created.body.document
+  const before = await post('/api/dsh-imagegen/canvas/list', {})
+  assert.equal(before.body.projects.find(project => project.id === document.id)?.favorite, undefined)
+
+  const favorited = await post('/api/dsh-imagegen/canvas/favorite', { id: document.id, favorite: true })
+  assert.equal(favorited.body.ok, true, JSON.stringify(favorited.body))
+  assert.equal(favorited.body.projects.find(project => project.id === document.id)?.favorite, true)
+
+  const saved = await post('/api/dsh-imagegen/canvas/save', {
+    document: { ...document, title: 'favorite canvas saved' },
+    expectedRevision: document.revision,
+  })
+  assert.equal(saved.body.ok, true, JSON.stringify(saved.body))
+  const after = await post('/api/dsh-imagegen/canvas/list', {})
+  assert.equal(after.body.projects.find(project => project.id === document.id)?.favorite, true, 'saving must preserve the favorite marker')
+
+  const unfavorited = await post('/api/dsh-imagegen/canvas/favorite', { id: document.id, favorite: false })
+  assert.equal(unfavorited.body.ok, true, JSON.stringify(unfavorited.body))
+  assert.equal(unfavorited.body.projects.find(project => project.id === document.id)?.favorite, undefined)
+  await post('/api/dsh-imagegen/canvas/remove', { id: document.id })
+})
+
 /** Upload one file through the real route, exactly like the browser does. */
 const uploadCanvasFile = async (name, mime, body) => {
   const response = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=${encodeURIComponent(name)}`, {

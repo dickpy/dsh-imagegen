@@ -213,6 +213,11 @@ export class ImageGenApi {
     return (await readEnvelope<{ ok: true; projects: CanvasSummary[] }>(response)).projects
   }
 
+  async canvasFavorite(id: string, favorite: boolean): Promise<CanvasSummary[]> {
+    const response = await fetch(CANVAS_API.favorite, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, favorite }) })
+    return (await readEnvelope<{ ok: true; projects: CanvasSummary[] }>(response)).projects
+  }
+
   async canvasUpload(dataUrl: string, width: number, height: number, meta: { origin?: string; originId?: string; entryId?: string; imageIndex?: number } = {}): Promise<CanvasAssetRef> {
     const response = await fetch(CANVAS_API.assetUpload, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dataUrl, width, height, ...meta }) })
     return (await readEnvelope<{ ok: true; asset: CanvasAssetRef }>(response)).asset

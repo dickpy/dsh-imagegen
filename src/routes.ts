@@ -176,6 +176,7 @@ export interface CanvasBackend {
   read: (id: string) => Promise<Awaited<ReturnType<CanvasStore['read']>>>
   save: (document: CanvasDocument, expectedRevision?: number) => Promise<Awaited<ReturnType<CanvasStore['save']>>>
   remove: (id: string) => Promise<Awaited<ReturnType<CanvasStore['remove']>>>
+  setFavorite?: (id: string, favorite: boolean) => Promise<Awaited<ReturnType<CanvasStore['setFavorite']>>>
   putImage: (input: CanvasImageInput) => Promise<Awaited<ReturnType<CanvasStore['putImage']>>>
   readAsset: (file: string) => Promise<Awaited<ReturnType<CanvasStore['readAsset']>>>
   /** File assets (the canvas file node). Optional so older test backends work. */
@@ -1250,6 +1251,24 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         if (id === '') { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'canvas id is required' }); return }
         try { writeJson(res, 200, { ok: true, projects: await canvas.remove(id) }) }
         catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-failed', message: messageOf(error) }) }
+      },
+    },
+    // -------------------------------------------------- canvas favorite
+    {
+      kind: 'exact',
+      path: CANVAS_API.favorite,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const id = typeof body?.id === 'string' ? body.id.trim() : ''
+        const favorite = body?.favorite === true
+        if (id === '') { writeJson(res, 200, { ok: false, code: 'bad-request', message: 'canvas id is required' }); return }
+        if (canvas.setFavorite === undefined) {
+          writeJson(res, 200, { ok: false, code: 'canvas-favorite-unsupported', message: '当前画布后端不支持收藏' })
+          return
+        }
+        try { writeJson(res, 200, { ok: true, projects: await canvas.setFavorite(id, favorite) }) }
+        catch (error) { writeJson(res, 200, { ok: false, code: 'canvas-favorite-failed', message: messageOf(error) }) }
       },
     },
     // ------------------------------------------------ canvas asset upload

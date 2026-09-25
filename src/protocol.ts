@@ -166,6 +166,7 @@ export const CANVAS_API = {
   read: '/api/dsh-imagegen/canvas/read',
   save: '/api/dsh-imagegen/canvas/save',
   remove: '/api/dsh-imagegen/canvas/remove',
+  favorite: '/api/dsh-imagegen/canvas/favorite',
   assetUpload: '/api/dsh-imagegen/canvas/asset/upload',
   assetImport: '/api/dsh-imagegen/canvas/asset/import',
   asset: '/api/dsh-imagegen/canvas/asset',
@@ -858,6 +859,8 @@ export interface CanvasSummary {
   nodeCount: number
   createdAt: number
   updatedAt: number
+  /** User pinned this canvas to the favorites group. */
+  favorite?: boolean
 }
 
 /** Metadata shared by the ecommerce product-set workflow. */

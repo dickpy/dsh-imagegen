@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { createPortal } from 'react-dom'
 import {
   Bold, BookOpen, ChevronDown, Copy, Download, Eraser, FileText as FileTextIcon, FolderX, Hand, Image as ImageIcon,
-  Layers, Map as MapIcon, Maximize, Maximize2, MousePointer2, Palette, Pencil, Plus, Redo2, Scissors, SendHorizonal, Sparkles,
+  Layers, Map as MapIcon, Maximize, Maximize2, MousePointer2, Palette, Pencil, Plus, Redo2, Scissors, SendHorizonal, Sparkles, Star,
   SquareDashedMousePointer, Trash2, Type, Undo2, Upload, Wand2, Wallpaper, X,
 } from 'lucide-react'
 import type { CanvasAnnotation, CanvasAssetRef, CanvasConnection, CanvasDocument, CanvasFileKind, CanvasLayerInfo, CanvasLayerPlanItem, CanvasNode, CanvasRect, CanvasSkillConfigApplyResult, CanvasSkillConfigField, CanvasSkillConfigSaveResult, CanvasSkillConfigStep, CanvasSkillConfigView, CanvasSkillDescriptor, CanvasSkillLibrary, CanvasSkillOutput, CanvasSkillRunRequest, CanvasSkillTask, CanvasSketchStroke, GenerateRequest, GenerationTask, HistoryEntry } from '../protocol.ts'
@@ -212,7 +212,7 @@ function normalizeConfigNodeSizes(document: CanvasDocument): CanvasDocument {
   return nodes === document.nodes ? document : { ...document, nodes }
 }
 
-function summaryOf(document: CanvasDocument): ProjectSummary {
+function summaryOf(document: CanvasDocument, favorite = false): ProjectSummary {
   return {
     id: document.id,
     title: document.title,
@@ -220,6 +220,7 @@ function summaryOf(document: CanvasDocument): ProjectSummary {
     nodeCount: document.nodes.length,
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
+    ...favorite ? { favorite: true } : {},
   }
 }
 
@@ -444,7 +445,7 @@ function rasterizeSketch(strokes: CanvasSketchStroke[], boardWidth: number, boar
   return { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
 }
 
-type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'file' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject' | 'annotate' | 'removeBg' | 'layers' | 'bold' | 'color' | 'skill' | 'upload' | 'expand'
+type ToolbarIconName = 'new' | 'select' | 'pan' | 'image' | 'text' | 'file' | 'sketch' | 'eraser' | 'trash' | 'undo' | 'redo' | 'fit' | 'minimap' | 'background' | 'template' | 'download' | 'duplicate' | 'sparkle' | 'send' | 'close' | 'deleteProject' | 'annotate' | 'removeBg' | 'layers' | 'bold' | 'color' | 'skill' | 'upload' | 'expand' | 'favorite' | 'favoriteFilled'
 
 /** Lucide icons (stroke matches the DSH line style); one shared component so
  *  every dock/toolbar icon comes from the same well-drawn set. */
@@ -480,6 +481,8 @@ function ToolbarIcon({ name, size = 16 }: { name: ToolbarIconName; size?: number
     case 'skill': return <Wand2 {...common} />
     case 'upload': return <Upload {...common} />
     case 'expand': return <Maximize2 {...common} />
+    case 'favorite': return <Star {...common} />
+    case 'favoriteFilled': return <Star {...common} fill="currentColor" />
   }
 }
 
@@ -2922,7 +2925,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       void saveWithRetry().then(next => {
         syncedRef.current = JSON.stringify(next)
         setDocument(next)
-        setProjects(previous => [summaryOf(next), ...previous.filter(item => item.id !== next.id)])
+        setProjects(previous => {
+          const favorite = previous.find(item => item.id === next.id)?.favorite === true
+          return [summaryOf(next, favorite), ...previous.filter(item => item.id !== next.id)]
+        })
         setSaveState('saved')
       }).catch(caught => { setError(caught instanceof Error ? caught.message : String(caught)); setSaveState('error') })
     }, 650)
@@ -3427,6 +3433,21 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       pastRef.current = []; futureRef.current = []; setHistoryVersion(version => version + 1)
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)) }
   }, [api])
+
+  const currentProject = projects.find(project => project.id === document?.id)
+  const favoriteProjects = projects.filter(project => project.favorite === true)
+  const otherProjects = projects.filter(project => project.favorite !== true)
+  const currentFavorite = currentProject?.favorite === true
+
+  const toggleCurrentFavorite = useCallback(async (): Promise<void> => {
+    const current = documentRef.current
+    if (current === null) return
+    try {
+      setProjects(await api.canvasFavorite(current.id, !currentFavorite))
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }, [api, currentFavorite])
 
   const removeCurrentProject = useCallback(async (): Promise<void> => {
     const current = documentRef.current
@@ -4106,9 +4127,21 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   return <section ref={rootRef} className={css.root} data-canvas-workspace="">
     <header className={css.topBar} data-canvas-no-zoom="">
       <select className={css.projectSelect} value={document?.id ?? ''} onChange={event => { void selectProject(event.target.value) }} aria-label={tt('canvas.project')}>
-        {projects.map(project => <option key={project.id} value={project.id}>{project.title}</option>)}
+        {favoriteProjects.length > 0 ? <optgroup label={tt('canvas.favoriteProjects', { count: favoriteProjects.length })}>
+          {favoriteProjects.map(project => <option key={project.id} value={project.id}>★ {project.title}</option>)}
+        </optgroup> : null}
+        {otherProjects.length > 0 ? <optgroup label={tt('canvas.allProjects', { count: otherProjects.length })}>
+          {otherProjects.map(project => <option key={project.id} value={project.id}>{project.title}</option>)}
+        </optgroup> : null}
       </select>
       <IconButton name="new" label={tt('canvas.newCanvas')} onClick={() => { void newCanvas() }} />
+      <IconButton
+        name={currentFavorite ? 'favoriteFilled' : 'favorite'}
+        label={currentFavorite ? tt('canvas.unfavoriteCanvas') : tt('canvas.favoriteCanvas')}
+        active={currentFavorite}
+        disabled={document === null}
+        onClick={() => { void toggleCurrentFavorite() }}
+      />
       <IconButton name="deleteProject" label={confirmDeleteProject ? tt('canvas.deleteCanvasConfirm') : tt('canvas.deleteCanvas')} active={confirmDeleteProject} disabled={document === null} onClick={() => {
         if (confirmDeleteProject) { void removeCurrentProject() } else { setConfirmDeleteProject(true); window.setTimeout(() => setConfirmDeleteProject(false), 3000) }
       }} />
