@@ -301,7 +301,7 @@ import { registerAgentImageTools } from './agent-image-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
 import { setImageDataRoot, imageDataRoot } from './image-storage-path.ts'
 import { presetById } from './presets.ts'
-import { chatComplete } from './prompt-enhancer.ts'
+import { chatComplete, type PromptModelConfig } from './prompt-enhancer.ts'
 import { SkillRunner, setSkillTranslate, canvasSkillCopy, type SkillAgentBackend, type SkillAgentHandle, type SkillCanvasBackend, type SkillChatBackend, type SkillRegistryBackend } from './skill-runner.ts'
 import { installFromArchive, installFromUrl, knownSkillUrl, listLibrary, listLocalSkills, readLocalSkill, removeSkill, SkillStoreError, skillsRoot, type LocalSkill, type LocalSkillIssue } from './skill-store.ts'
 import { applySkillConfigSteps, asConfigDict, configNote, configView, missingFields, parseSkillConfigManifest, readSkillConfigFile, skillConfigKey, valuesFor, type SkillConfigDeclaration, type SkillConfigIssue, type SkillConfigStore } from './skill-config.ts'
@@ -583,6 +583,34 @@ export interface EffectiveConfig {
   skillConfig: SkillConfigStore
 }
 
+/** Whether a channel can back the optional chat model without subscription routing. */
+function isReusablePromptChannel(channel: RuntimeChannel): boolean {
+  return channel.auth !== 'subscription'
+    && channel.apiUrlFull !== true
+    && channel.apiUrl.trim() !== ''
+}
+
+/**
+ * Resolve the optional chat endpoint. Keeping this separate from image
+ * generation matters when subscription channels appear first: blank prompt
+ * fields must reuse a real API-key channel, not the first configured row.
+ */
+export function resolvePromptModelConfig(value: EffectiveConfig): PromptModelConfig {
+  const modelChannel = value.defaultModel === ''
+    ? undefined
+    : value.channels.find(channel => isReusablePromptChannel(channel)
+      && channel.models.some(model => model.alias === value.defaultModel))
+  const defaultChannel = value.channels.find(channel => channel.id === value.defaultChannelId)
+  const reusable = [modelChannel, defaultChannel, ...value.channels].find(
+    (channel): channel is RuntimeChannel => channel !== undefined && isReusablePromptChannel(channel),
+  )
+  return {
+    apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : reusable?.apiUrl ?? '',
+    apiKey: value.promptApiKey !== '' ? value.promptApiKey : reusable?.apiKey ?? '',
+    model: value.promptModel,
+  }
+}
+
 /**
  * Mount the settings section, routes, and announcement.
  * @param ctx - host plugin context carrying webServer/systemPrompt.
@@ -712,18 +740,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     backend: {
       canvas: canvasStore as unknown as SkillCanvasBackend,
       chat: {
-        complete: async options => chatComplete(
-          (() => {
-            const value = resolve()
-            const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
-            return {
-              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrlFull === true ? '' : channel?.apiUrl ?? ''),
-              apiKey: value.promptApiKey !== '' ? value.promptApiKey : (channel?.apiKey ?? ''),
-              model: value.promptModel,
-            }
-          })(),
-          options,
-        ),
+        complete: async options => chatComplete(resolvePromptModelConfig(resolve()), options),
       },
     },
     enabled: () => resolve().enabled && resolveSkills().enabled,
@@ -1013,15 +1030,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
             return { apiUrl: channel?.apiUrl ?? '', apiKey: channel?.apiKey ?? '' }
           },
           resolveChannels: channelsView,
-          resolvePrompt: () => {
-            const value = resolve()
-            const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
-            return {
-              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrlFull === true ? '' : channel?.apiUrl ?? ''),
-              apiKey: value.promptApiKey !== '' ? value.promptApiKey : (channel?.apiKey ?? ''),
-              model: value.promptModel,
-            }
-          },
+          resolvePrompt: () => resolvePromptModelConfig(resolve()),
           resolveImageModels: () => {
             const value = resolve()
             return [...new Set(value.channels.flatMap(channel => channel.models.map(model => model.alias)))]

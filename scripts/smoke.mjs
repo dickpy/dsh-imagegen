@@ -116,6 +116,40 @@ await check('A2b configured default image model is used when Agent omits model',
   assert.equal(picked.alias, 'qwen-image-2')
   assert.equal(picked.upstream, 'qwen-image-2')
 })
+await check('A2c prompt models reuse an API-key channel instead of a leading subscription channel', () => {
+  const base = {
+    channels: [
+      {
+        id: 'subscription', preset: '', name: 'Subscription', apiUrl: '', apiUrlFull: false,
+        auth: 'subscription', subscription: 'openrouter-sub', apiKey: '', models: [],
+      },
+      {
+        id: 'xlink', preset: '', name: 'xlink', apiUrl: 'https://api.xlinks.site/v1', apiUrlFull: false,
+        apiKey: 'sk-xlink', models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
+      },
+    ],
+    defaultChannelId: 'subscription',
+    defaultModel: 'gpt-image-2',
+    promptApiUrl: '',
+    promptApiKey: '',
+    promptModel: 'gpt-5.6-luna',
+  }
+  assert.deepEqual(host.resolvePromptModelConfig(base), {
+    apiUrl: 'https://api.xlinks.site/v1',
+    apiKey: 'sk-xlink',
+    model: 'gpt-5.6-luna',
+  })
+  assert.deepEqual(host.resolvePromptModelConfig({
+    ...base,
+    defaultModel: '',
+    promptApiUrl: 'https://chat.example.test/v1',
+    promptApiKey: 'sk-chat',
+  }), {
+    apiUrl: 'https://chat.example.test/v1',
+    apiKey: 'sk-chat',
+    model: 'gpt-5.6-luna',
+  })
+})
 await check('A3 updater parses stable Releases and caches checks', async () => {
   assert.equal(host.CURRENT_VERSION, packageJson.version)
   assert.equal(host.compareVersions('v1.0.3', '1.0.2') > 0, true)
@@ -160,6 +194,12 @@ const foreignHost = createServer((req, res) => {
 await new Promise(resolve => foreignHost.listen(0, '127.0.0.1', resolve))
 const upstream = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  if (url.pathname === '/models') {
+    assert.equal(req.headers.authorization, 'Bearer sk-test')
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end('<!doctype html><title>Gateway site</title>')
+    return
+  }
   if (url.pathname === '/v1/models') {
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -1528,6 +1568,13 @@ await check('C5 image model discovery and configured-model allow-list work', asy
   })
   assert.equal(chatDiscovered.body.ok, true)
   assert.deepEqual(chatDiscovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image'])
+  const fallbackDiscovered = await post('/api/dsh-imagegen/image-models', {
+    apiUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: 'sk-test',
+    protocol: 'auto',
+  })
+  assert.equal(fallbackDiscovered.body.ok, true, JSON.stringify(fallbackDiscovered.body))
+  assert.deepEqual(fallbackDiscovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image'])
   const presets = await post('/api/dsh-imagegen/presets', {})
   assert.equal(presets.body.ok, true)
   assert.deepEqual(presets.body.presets.find(preset => preset.id === 'openai-official').models, [{ alias: 'gpt-image-2.5', id: 'gpt-image-2.5' }, { alias: 'gpt-image-2', id: 'gpt-image-2' }])
@@ -3909,7 +3956,17 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   assert.ok(await waitUntil(() => settingsSectionClicks === 1), 'in-app configure prompts select the settings.section entry')
   jsdomDocument.querySelector('[role="dialog"]')?.remove()
   settingsTrigger.remove()
-  // Wait for the bridge fetch + scope settle + React render.
+  // Wait for the bridge fetch + scope settle + sidebar entry. The studio is
+  // intentionally loaded without history images until the image tab activates.
+  await waitForSelectorCount(jsdomDocument, '[data-dsh-imagegen-session-tabs]', 1)
+  assert.equal(jsdomDocument.querySelectorAll('[data-dsh-imagegen-history] img').length, 0, 'inactive studio renders no history images')
+  assert.equal(
+    requestPaths.some(path => path.endsWith('/history/list') || path.endsWith('/gallery/list')),
+    false,
+    'inactive studio does not request history or gallery data',
+  )
+  jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]')
+    .dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
   await waitForSelectorCount(jsdomDocument, '[data-comparison]', 1)
 
   try {

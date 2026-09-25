@@ -20,7 +20,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   AlertTriangle, Archive, Check, Copy, Download, ExternalLink, FileText, FileSpreadsheet,
-  Film, Image as ImageIcon, Loader2, Music, X,
+  Film, Image as ImageIcon, Loader2, Minus, Music, Plus, RotateCcw, X,
 } from 'lucide-react'
 import type {
   CanvasAssetRef, CanvasDocBlock, CanvasDocRun, CanvasFileKind, CanvasFilePreview, CanvasSlidePreview,
@@ -449,11 +449,33 @@ function MediaStage({ media, url, asset, title, compact }: {
 }): React.JSX.Element {
   // Images are already served inline by the asset route, so they never need
   // the `inline` opt-in the document and media types use.
-  if (media === 'image') return <img src={asset.url} alt={title} draggable={false} onDragStart={event => event.preventDefault()} />
+  if (media === 'image') return <ImageViewer src={asset.url} alt={title} compact={compact} />
   if (media === 'pdf') return <object className={css.fileFrame} data={url} type="application/pdf" aria-label={title} />
   if (media === 'video') return <video className={css.fileVideo} controls preload="metadata" src={url} />
   return <div className={css.fileMedia}><Music size={compact ? 22 : 34} strokeWidth={1.5} aria-hidden="true" />
     <audio controls preload="metadata" src={url} />
+  </div>
+}
+
+/** Image viewer used by both the compact file-node body and the full reader. */
+function ImageViewer({ src, alt, compact }: { src: string; alt: string; compact: boolean }): React.JSX.Element {
+  const [scale, setScale] = useState(1)
+  const clamp = (value: number): number => Math.min(4, Math.max(0.5, Math.round(value * 20) / 20))
+
+  useEffect(() => { setScale(1) }, [src])
+
+  return <div className={css.imageViewer} data-compact={compact ? '' : undefined}>
+    {!compact ? <div className={css.imageViewerControls} aria-label={tt('preview.zoomControls')}>
+      <button type="button" title={tt('preview.zoomOut')} aria-label={tt('preview.zoomOut')} disabled={scale <= 0.5} onClick={() => { setScale(value => clamp(value - 0.25)) }}><Minus size={14} aria-hidden="true" /></button>
+      <button type="button" className={css.imageViewerZoomValue} title={tt('preview.zoomReset')} aria-label={tt('preview.zoomReset')} onClick={() => { setScale(1) }}>{Math.round(scale * 100)}%</button>
+      <button type="button" title={tt('preview.zoomIn')} aria-label={tt('preview.zoomIn')} disabled={scale >= 4} onClick={() => { setScale(value => clamp(value + 0.25)) }}><Plus size={14} aria-hidden="true" /></button>
+      <button type="button" title={tt('preview.zoomReset')} aria-label={tt('preview.zoomReset')} onClick={() => { setScale(1) }}><RotateCcw size={13} aria-hidden="true" /></button>
+    </div> : null}
+    <div className={css.imageViewerStage} onDoubleClick={() => { setScale(value => value === 1 ? 2 : 1) }}>
+      <div className={css.imageViewerCanvas} style={scale === 1 ? undefined : { width: `${scale * 100}%`, height: `${scale * 100}%` }}>
+        <img src={src} alt={alt} draggable={false} onDragStart={event => event.preventDefault()} />
+      </div>
+    </div>
   </div>
 }
 

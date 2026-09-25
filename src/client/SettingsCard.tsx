@@ -1240,6 +1240,8 @@ function ChannelEditor(props: {
   const [removeOpen, setRemoveOpen] = useState(false)
   const [copyFrom, setCopyFrom] = useState('')
   const [manualAuthInput, setManualAuthInput] = useState('')
+  const [showKey, setShowKey] = useState(false)
+  const [editingModelIndex, setEditingModelIndex] = useState<number | null>(null)
 
   const generatedCount = (alias: string): number => {
     if (props.usage === null) return 0
@@ -1313,30 +1315,32 @@ function ChannelEditor(props: {
           <button type="button" className={css.editorClose} aria-label={t('preview.close')} onClick={props.onClose}>×</button>
         </header>
 
-        <div className={css.editorField}>
-          <label className={css.label} htmlFor="dsh-imagegen-channel-name">{t('channels.displayName')}</label>
-          <input id="dsh-imagegen-channel-name" className={css.input} value={channel.name} placeholder={t('channels.untitled')} disabled={!props.writable} onChange={event => { props.onPatch({ name: event.target.value }) }} />
-        </div>
-        <div className={css.editorField}>
-          <label className={css.label} htmlFor="dsh-imagegen-channel-auth">{t('channels.authMode')}</label>
-          <select
-            id="dsh-imagegen-channel-auth"
-            className={css.select}
-            value={channel.auth ?? 'api-key'}
-            disabled={!props.writable}
-            onChange={event => {
-              if (event.target.value === 'subscription') {
-                const provider = subscription ?? 'grok-sub'
-                const model = DEFAULT_SUBSCRIPTION_MODELS[provider]
-                props.onPatch({ auth: 'subscription', subscription: provider, apiUrl: '', apiUrlFull: false, models: [{ alias: model, id: model }] })
-              } else {
-                props.onPatch({ auth: 'api-key', subscription: undefined })
-              }
-            }}
-          >
-            <option value="api-key">{t('channels.authModeApiKey')}</option>
-            <option value="subscription">{t('channels.authModeSubscription')}</option>
-          </select>
+        <div className={css.editorGrid}>
+          <div className={css.editorField}>
+            <label className={css.label} htmlFor="dsh-imagegen-channel-name">{t('channels.displayName')}</label>
+            <input id="dsh-imagegen-channel-name" className={css.input} value={channel.name} placeholder={t('channels.untitled')} disabled={!props.writable} onChange={event => { props.onPatch({ name: event.target.value }) }} />
+          </div>
+          <div className={css.editorField}>
+            <label className={css.label} htmlFor="dsh-imagegen-channel-auth">{t('channels.authMode')}</label>
+            <select
+              id="dsh-imagegen-channel-auth"
+              className={css.select}
+              value={channel.auth ?? 'api-key'}
+              disabled={!props.writable}
+              onChange={event => {
+                if (event.target.value === 'subscription') {
+                  const provider = subscription ?? 'grok-sub'
+                  const model = DEFAULT_SUBSCRIPTION_MODELS[provider]
+                  props.onPatch({ auth: 'subscription', subscription: provider, apiUrl: '', apiUrlFull: false, models: [{ alias: model, id: model }] })
+                } else {
+                  props.onPatch({ auth: 'api-key', subscription: undefined })
+                }
+              }}
+            >
+              <option value="api-key">{t('channels.authModeApiKey')}</option>
+              <option value="subscription">{t('channels.authModeSubscription')}</option>
+            </select>
+          </div>
         </div>
 
         {subscriptionMode ? (
@@ -1386,60 +1390,73 @@ function ChannelEditor(props: {
             <p className={css.fieldHint}>{t('settings.subscriptionIsolationHint')}</p>
           </div>
         ) : <>
-        <div className={css.editorField}>
-          <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
-          <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => {
-            const apiUrl = event.target.value
-            props.onPatch({ apiUrl, ...isChatCompletionsUrl(apiUrl) ? { apiUrlFull: true } : {} })
-          }} />
-          <label className={css.label} htmlFor="dsh-imagegen-channel-protocol">{t('channels.protocol')}</label>
-          <select
-            id="dsh-imagegen-channel-protocol"
-            className={css.input}
-            value={channel.protocol ?? 'auto'}
-            disabled={!props.writable}
-            onChange={event => { props.onPatch({ protocol: event.target.value as ChannelDraft['protocol'] }) }}
-          >
-            <option value="auto">{t('channels.protocolAuto')}</option>
-            <option value="images">{t('channels.protocolImages')}</option>
-            <option value="chat-completions">{t('channels.protocolChat')}</option>
-          </select>
-          <p className={css.fieldHint}>{t('channels.protocolHint')}</p>
-          <label className={css.checkboxRow}>
-            <input type="checkbox" checked={channel.apiUrlFull} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrlFull: event.target.checked }) }} />
-            <span>{t('channels.apiUrlFull')}</span>
-          </label>
-          <p className={css.fieldHint}>{t('channels.apiUrlFullHint')}</p>
+        <div className={css.editorGrid} data-connection>
+          <div className={css.editorField}>
+            <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
+            <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => {
+              const apiUrl = event.target.value
+              props.onPatch({ apiUrl, ...isChatCompletionsUrl(apiUrl) ? { apiUrlFull: true } : {} })
+            }} />
+          </div>
+          <div className={css.editorField}>
+            <label className={css.label} htmlFor="dsh-imagegen-channel-protocol">{t('channels.protocol')}</label>
+            <select
+              id="dsh-imagegen-channel-protocol"
+              className={css.input}
+              value={channel.protocol ?? 'auto'}
+              disabled={!props.writable}
+              onChange={event => { props.onPatch({ protocol: event.target.value as ChannelDraft['protocol'] }) }}
+            >
+              <option value="auto">{t('channels.protocolAuto')}</option>
+              <option value="images">{t('channels.protocolImages')}</option>
+              <option value="chat-completions">{t('channels.protocolChat')}</option>
+            </select>
+          </div>
         </div>
+        <p className={css.fieldHint}>{t('channels.protocolHint')}</p>
+        <label className={css.checkboxRow}>
+          <input type="checkbox" checked={channel.apiUrlFull} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrlFull: event.target.checked }) }} />
+          <span>{t('channels.apiUrlFull')}</span>
+        </label>
+        {channel.apiUrlFull ? <p className={css.fieldHint}>{t('channels.apiUrlFullHint')}</p> : null}
         <div className={css.editorField}>
           <div className={css.head}>
             <label className={css.label} htmlFor="dsh-imagegen-channel-key">{t('channels.apiKey')}</label>
-            {props.keyHeld || keyDraft !== ''
-              ? (
+            <div className={css.keyActions}>
+              <span className={css.keyState} data-set={props.keyHeld || keyDraft !== '' ? '' : undefined}>
+                {props.keyHeld || keyDraft !== '' ? t('channels.keySet') : t('channels.keyMissing')}
+              </span>
+              {props.keyHeld || keyDraft !== '' ? (
                 <button type="button" className={css.reset} disabled={!props.writable} onClick={() => { setKeyDraft(''); props.onSetKey(undefined) }}>
                   {t('channels.keyClear')}
                 </button>
-              )
-              : null}
+              ) : null}
+            </div>
           </div>
-          <input
-            id="dsh-imagegen-channel-key"
-            className={css.input}
-            type="password"
-            autoComplete="off"
-            value={keyDraft}
-            placeholder={props.keyHeld ? t('channels.keyReplaceHint') : t('channels.keyMissingHint')}
-            disabled={!props.writable}
-            onChange={event => { const value = event.target.value; setKeyDraft(value); props.onSetKey(value === '' ? undefined : value) }}
-          />
+          <div className={css.keyInputRow}>
+            <input
+              id="dsh-imagegen-channel-key"
+              className={css.input}
+              type={showKey ? 'text' : 'password'}
+              autoComplete="off"
+              value={keyDraft}
+              placeholder={props.keyHeld ? t('channels.keyReplaceHint') : t('channels.keyMissingHint')}
+              disabled={!props.writable}
+              onChange={event => { const value = event.target.value; setKeyDraft(value); props.onSetKey(value === '' ? undefined : value) }}
+            />
+            <button type="button" className={css.keyVisibility} disabled={!props.writable} onClick={() => { setShowKey(value => !value) }}>
+              {showKey ? t('channels.hideKey') : t('channels.showKey')}
+            </button>
+          </div>
         </div>
 
         <div className={css.editorDivider} />
 
+        <div className={css.modelCatalog}>
         <div className={css.editorSectionHeader}>
           <h4 className={css.label}>{t('channels.modelCatalogTitle')}</h4>
           <button type="button" className={css.modelFetch} disabled={!props.writable || detecting || (channel.apiUrlFull && resolveChannelProtocol(channel.apiUrl, channel.protocol) !== 'chat-completions')} onClick={detect}>
-            {detecting ? t('channels.detecting') : t('channels.detect')}
+            {detecting ? t('channels.detecting') : candidates === null && channel.models.length === 0 ? t('channels.detectFirst') : t('channels.detect')}
           </button>
         </div>
         {detectError !== null ? <p className={css.failed} role="status">{t('channels.detectFailed', { error: detectError })}</p> : null}
@@ -1453,48 +1470,45 @@ function ChannelEditor(props: {
                 const entry = describeModel(model.id || model.alias)
                 const generated = generatedCount(model.alias)
                 return (
-                  <li key={`${model.alias}-${index}`} className={css.modelRow}>
-                    <div className={css.modelRowInputs}>
-                      <input className={css.input} value={model.alias} aria-label={t('channels.modelAliasLabel')} disabled={!props.writable} onChange={event => {
-                        const next = [...channel.models]
-                        next[index] = { ...model, alias: event.target.value }
-                        props.onSetModels(next)
-                      }} />
-                      <span className={css.modelArrow}>→</span>
-                      <input className={css.input} value={model.id} aria-label={t('channels.modelIdLabel')} disabled={!props.writable} onChange={event => {
-                        const next = [...channel.models]
-                        next[index] = { ...model, id: event.target.value }
-                        props.onSetModels(next)
-                      }} />
-                    </div>
-                    <div className={css.modelRowBadges}>
-                      <span className={css.modelBadge}>{entry.labelZh}{entry.known ? '' : ` · ${t('channels.unknownProtocol')}`}</span>
-                      {generated > 0 ? <span className={css.modelBadge} data-verified>{t('channels.generated', { n: generated })}</span> : null}
-                      <button type="button" className={css.modelRowRemove} disabled={!props.writable} aria-label={`${t('channels.removeModel')}: ${model.alias}`} onClick={() => { props.onSetModels(channel.models.filter((_, i) => i !== index)) }}>×</button>
+                  <li key={`${model.alias}-${index}`} className={css.modelRow} data-editing={editingModelIndex === index ? '' : undefined}>
+                    {editingModelIndex === index ? (
+                      <div className={css.modelRowEditor}>
+                        <div className={css.modelRowInputs}>
+                          <input className={css.input} value={model.alias} aria-label={t('channels.modelAliasLabel')} disabled={!props.writable} onChange={event => {
+                            const next = [...channel.models]
+                            next[index] = { ...model, alias: event.target.value }
+                            props.onSetModels(next)
+                          }} />
+                          <span className={css.modelArrow}>→</span>
+                          <input className={css.input} value={model.id} aria-label={t('channels.modelIdLabel')} disabled={!props.writable} onChange={event => {
+                            const next = [...channel.models]
+                            next[index] = { ...model, id: event.target.value }
+                            props.onSetModels(next)
+                          }} />
+                        </div>
+                        <button type="button" className={css.modelRowDone} onClick={() => { setEditingModelIndex(null) }}>{t('channels.done')}</button>
+                      </div>
+                    ) : (
+                      <div className={css.modelRowSummary}>
+                        <div className={css.modelRowTitle}>
+                          <span className={css.modelRowName} title={model.alias}>{model.alias}</span>
+                          <span className={css.modelBadge}>{entry.labelZh}{entry.known ? '' : ` · ${t('channels.unknownProtocol')}`}</span>
+                          {generated > 0 ? <span className={css.modelBadge} data-verified>{t('channels.generated', { n: generated })}</span> : null}
+                        </div>
+                        {model.id !== model.alias ? <span className={css.modelRowUpstream} title={model.id}>→ {model.id}</span> : null}
+                      </div>
+                    )}
+                    <div className={css.modelRowActions}>
+                      {editingModelIndex === index ? null : (
+                        <button type="button" className={css.modelRowEdit} disabled={!props.writable} onClick={() => { setEditingModelIndex(index) }}>{t('channels.edit')}</button>
+                      )}
+                      <button type="button" className={css.modelRowRemove} disabled={!props.writable} aria-label={`${t('channels.removeModel')}: ${model.alias}`} onClick={() => { setEditingModelIndex(null); props.onSetModels(channel.models.filter((_, i) => i !== index)) }}>×</button>
                     </div>
                   </li>
                 )
               })}
             </ul>
           )}
-
-        <div className={css.editorTools}>
-          <div className={css.manualModelRow}>
-            <input className={css.input} value={manualId} placeholder={t('channels.manualAddPlaceholder')} disabled={!props.writable} onChange={event => { setManualId(event.target.value) }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addManual() } }} />
-            <button type="button" className={css.addModel} disabled={!props.writable || manualId.trim() === ''} onClick={addManual}>{t('channels.addModelConfirm')}</button>
-          </div>
-          {props.otherChannels.length > 0 ? (
-            <div className={css.manualModelRow}>
-              <select className={css.modelChoices} value={copyFrom} disabled={!props.writable} onChange={event => { setCopyFrom(event.target.value) }} aria-label={t('channels.copyFrom')}>
-                <option value="">{t('channels.copyFrom')}</option>
-                {props.otherChannels.map(other => (
-                  <option key={other.id} value={other.id}>{other.name || t('channels.untitled')}</option>
-                ))}
-              </select>
-              <button type="button" className={css.addModel} disabled={!props.writable || copyFrom === ''} onClick={copyFromChannel}>{t('channels.copyApply')}</button>
-            </div>
-          ) : null}
-        </div>
 
         {candidates !== null && candidates.length > 0 ? (
           <div className={css.modelCandidateList}>
@@ -1519,6 +1533,25 @@ function ChannelEditor(props: {
             })}
           </div>
         ) : null}
+        </div>
+
+        <div className={css.editorTools}>
+          <div className={css.manualModelRow}>
+            <input className={css.input} value={manualId} placeholder={t('channels.manualAddPlaceholder')} disabled={!props.writable} onChange={event => { setManualId(event.target.value) }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addManual() } }} />
+            <button type="button" className={css.addModel} disabled={!props.writable || manualId.trim() === ''} onClick={addManual}>{t('channels.addModelConfirm')}</button>
+          </div>
+          {props.otherChannels.length > 0 ? (
+            <div className={css.manualModelRow}>
+              <select className={css.modelChoices} value={copyFrom} disabled={!props.writable} onChange={event => { setCopyFrom(event.target.value) }} aria-label={t('channels.copyFrom')}>
+                <option value="">{t('channels.copyFrom')}</option>
+                {props.otherChannels.map(other => (
+                  <option key={other.id} value={other.id}>{other.name || t('channels.untitled')}</option>
+                ))}
+              </select>
+              <button type="button" className={css.addModel} disabled={!props.writable || copyFrom === ''} onClick={copyFromChannel}>{t('channels.copyApply')}</button>
+            </div>
+          ) : null}
+        </div>
         </>}
 
         <div className={css.editorDivider} />

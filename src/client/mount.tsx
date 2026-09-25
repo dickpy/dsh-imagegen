@@ -136,6 +136,11 @@ export function mountPanel(
   let root: Root | undefined
   let container: HTMLDivElement | undefined
   let resizer: HTMLDivElement | undefined
+  let panelActive = false
+
+  const renderPanel = (): void => {
+    root?.render(<ImageGenPanel api={api} scope={scope} active={panelActive} {...services} />)
+  }
 
   const ensure = (): void => {
     if (container !== undefined) {
@@ -155,7 +160,7 @@ export function mountPanel(
     container.className = css.view
     column.appendChild(container)
     root = createRoot(container)
-    root.render(<ImageGenPanel api={api} scope={scope} {...services} />)
+    renderPanel()
     resizer = column.querySelector<HTMLDivElement>(RESIZER_SELECTOR) ?? createChatResizer(column)
     if (resizer.parentElement !== column) column.appendChild(resizer)
   }
@@ -165,7 +170,8 @@ export function mountPanel(
   waitObserver.observe(document.body, { childList: true, subtree: true })
 
   const applyActive = (): void => {
-    if (controller.getSnapshot().panelOpen) {
+    panelActive = controller.getSnapshot().panelOpen
+    if (panelActive) {
       // Single-occupant center column: opening this panel must evict sibling
       // panels (task board / ssh), both their html attributes and their
       // controller states, otherwise the visibility rules fight.
@@ -175,6 +181,7 @@ export function mountPanel(
     } else {
       document.documentElement.removeAttribute(ACTIVE_ATTR)
     }
+    renderPanel()
   }
   const onOtherActivate = (event: Event): void => {
     const detail = (event as CustomEvent).detail

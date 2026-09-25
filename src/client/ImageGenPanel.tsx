@@ -25,7 +25,7 @@ import { CanvasWorkspace } from './CanvasWorkspace.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
-import { AGENT_IMAGE_API } from '../protocol.ts'
+import { AGENT_IMAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope, ImageModelGroup } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
 import { describeModel, promptCharLimit } from '../model-catalog.ts'
@@ -150,6 +150,15 @@ function readConfigCollapsed(): boolean {
 }
 
 const CHAT_COLLAPSED_STORAGE_KEY = 'dsh-imagegen:chat-collapsed'
+
+type SubscriptionChannelState = 'logged-in' | 'logged-out' | 'unknown'
+
+const INITIAL_SUBSCRIPTION_STATES: Record<SubscriptionProvider, SubscriptionChannelState> = {
+  'chatgpt-sub': 'unknown',
+  'grok-sub': 'unknown',
+  'google-sub': 'unknown',
+  'openrouter-sub': 'unknown',
+}
 const CONFIG_WIDTH_STORAGE_KEY = 'dsh-imagegen:config-width'
 const CONFIG_WIDTH_MIN = 260
 const CONFIG_WIDTH_MAX = 480
@@ -503,8 +512,10 @@ export function ImageGenPanel(props: {
   scope: ImageGenScope
   sessions?: ISessions
   conversation?: ConversationService
+  /** The panel is visible; inactive panels keep state but defer optional work. */
+  active?: boolean
 }) {
-  const { api, scope, sessions, conversation } = props
+  const { api, scope, sessions, conversation, active = true } = props
   const config = useConfig(scope)
   // The plugin language follows the DSH interface (bridged from ctx.locale);
   // this tick re-renders the tree so every tt() switches live — the template
@@ -526,7 +537,47 @@ export function ImageGenPanel(props: {
   const promptKeySet = useSecretSet(scope, 'promptApiKey')
   const channelKeySet = (config?.channels ?? []).some(channel => scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
   const apiKeySet = (config?.channels ?? []).length > 0 ? channelKeySet : legacyKeySet
-  const connected = enabled && configured && apiKeySet
+  const [subscriptionStates, setSubscriptionStates] = useState<Record<SubscriptionProvider, SubscriptionChannelState>>(INITIAL_SUBSCRIPTION_STATES)
+  const subscriptionChannelsKey = (config?.channels ?? [])
+    .filter(channel => channel.auth === 'subscription' && channel.subscription !== undefined)
+    .map(channel => `${channel.id}:${channel.subscription}`)
+    .sort()
+    .join('|')
+
+  useEffect(() => {
+    if (!active || subscriptionChannelsKey === '') return
+    let disposed = false
+    const refresh = (): void => {
+      void fetch(SUBSCRIPTION_API.status, { method: 'POST', cache: 'no-store' })
+        .then(async response => await response.json() as { ok?: boolean; statuses?: Record<string, { state?: string }> })
+        .then(body => {
+          if (disposed || body.ok !== true || body.statuses === undefined) return
+          setSubscriptionStates(current => {
+            const next = { ...current }
+            for (const provider of SUBSCRIPTION_PROVIDERS) {
+              const state = body.statuses?.[provider]?.state
+              if (state === 'logged-in' || state === 'logged-out' || state === 'unknown') next[provider] = state
+            }
+            return next
+          })
+        })
+        .catch(() => { /* status is advisory; generation still reports its real error */ })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 30_000)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [active, subscriptionChannelsKey])
+
+  const connectedChannelIds = new Set(
+    (config?.channels ?? [])
+      .filter(channel => channel.auth === 'subscription' && channel.subscription !== undefined
+        ? subscriptionStates[channel.subscription] !== 'logged-out'
+        : channel.apiUrl.trim() !== '' && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
+      .map(channel => channel.id),
+  )
+  const connected = enabled && (config?.channels ?? []).length > 0
+    ? connectedChannelIds.size > 0
+    : enabled && configured && apiKeySet
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
@@ -595,6 +646,7 @@ export function ImageGenPanel(props: {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
+  const initialDataRequestedRef = useRef(false)
   const taskPollStartedAtRef = useRef(Date.now())
   const observedTaskIdsRef = useRef<Set<string>>(new Set())
   const submittedTaskIdsRef = useRef<Set<string>>(new Set())
@@ -754,18 +806,19 @@ export function ImageGenPanel(props: {
       && (historyRatioFilter === 'all' || normalizeSize(entry.size) === historyRatioFilter)
   }))
 
-  // Load the host-persisted history and gallery once on mount (they live in
-  // ~/.dsh on the DSH host, so every browser/device sees the same lists).
+  // Load the host-persisted history and gallery once, when the panel first
+  // becomes visible. Keeping this out of boot prevents eager full-size image
+  // requests while image generation is closed.
   useEffect(() => {
-    let disposed = false
+    if (!active || initialDataRequestedRef.current) return
+    initialDataRequestedRef.current = true
     api.historyList()
-      .then(entries => { if (!disposed) setHistory(entries) })
+      .then(entries => { setHistory(entries) })
       .catch(() => { /* history unavailable — leave the list empty */ })
     api.galleryList()
-      .then(entries => { if (!disposed) setGallery(entries) })
+      .then(entries => { setGallery(entries) })
       .catch(() => { /* gallery unavailable — leave the list empty */ })
-    return () => { disposed = true }
-  }, [api])
+  }, [api, active])
 
   // Chat toolviews publish durable refs after they finish loading. Decode the
   // refs through the same host-authorized route and make them the current
@@ -1882,7 +1935,7 @@ export function ImageGenPanel(props: {
                   onClick={() => { void viewHistoryGroup(group) }}
                 >
                   {entry.images.length > 0 ? (
-                    <img className={css.historyThumb} src={entry.images[0]!.url} alt="" />
+                    <img className={css.historyThumb} src={entry.images[0]!.url} alt="" loading="lazy" decoding="async" />
                   ) : (
                     <span className={css.historyThumbPlaceholder} />
                   )}
@@ -2601,6 +2654,7 @@ export function ImageGenPanel(props: {
               modelGroups={modelGroups}
               defaultChannelId={defaultChannelId}
               connected={connected}
+              connectedChannelIds={connectedChannelIds}
               history={history}
               gallery={gallery}
               tasks={tasks}
@@ -2676,7 +2730,7 @@ export function ImageGenPanel(props: {
                           <input type="checkbox" checked={selectedGalleryIds.has(entry.id)} onChange={() => { setGallerySelecting(true); toggleGallerySelection(entry.id) }} />
                         </label>
                         <button type="button" className={css.galleryImageButton} data-selecting={gallerySelecting ? '' : undefined} onClick={() => { if (gallerySelecting) toggleGallerySelection(entry.id); else void viewGalleryEntry(entry) }} title={gallerySelecting ? tt('gallery.select') : tt('preview.open')}>
-                          <img className={css.galleryImage} src={image.url} alt={entry.prompt} />
+                          <img className={css.galleryImage} src={image.url} alt={entry.prompt} loading="lazy" decoding="async" />
                           <span className={css.galleryBadge}>{entry.mode === 'edit' ? tt('mode.edit') : tt('mode.text')}</span>
                         </button>
                         <div className={css.galleryCardActions}>

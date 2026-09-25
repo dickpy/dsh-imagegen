@@ -41,25 +41,123 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
 
 type ModelRecord = Record<string, unknown> & { id: string }
 
-async function listModelRecords(config: ModelListConfig): Promise<ModelRecord[]> {
-  if (config.apiUrl.trim() === '') throw new Error('API URL is required')
+/** Candidate /models URLs for a configured base URL, most specific first. */
+function modelListUrls(config: ModelListConfig): string[] {
   const base = config.apiUrl.trim().replace(/\/+$/, '')
-  let modelsUrl = endpoint(base, '/models')
+  if (base === '') throw new Error('API URL is required')
+  const urls: string[] = []
   if (resolveChannelProtocol(base, config.protocol) === 'chat-completions' && isChatCompletionsUrl(base)) {
     const url = new URL(base)
     url.pathname = `${url.pathname.replace(/\/chat\/completions\/?$/, '')}/models`
     url.search = ''
     url.hash = ''
-    modelsUrl = url.toString()
+    urls.push(url.toString())
+    return urls
   }
-  const response = await fetch(modelsUrl, { headers: headers(config.apiKey) })
-  const body = await responseJson(response)
-  const data = Array.isArray(body.data) ? body.data : []
-  return data.flatMap(item => {
-    if (item === null || typeof item !== 'object' || typeof (item as { id?: unknown }).id !== 'string') return []
-    const id = (item as { id: string }).id.trim()
-    return id === '' ? [] : [{ ...(item as Record<string, unknown>), id }]
+  urls.push(endpoint(base, '/models'))
+  try {
+    const url = new URL(base)
+    const path = url.pathname.replace(/\/+$/, '')
+    // Some gateways serve their marketing site at /models and the API only
+    // under /v1. Try that conventional suffix when the configured base does
+    // not already end in a version segment.
+    if (!/\/v\d+(?:[a-z0-9._-]*)?$/i.test(path)) {
+      url.pathname = `${path === '' || path === '/' ? '' : path}/v1/models`
+      url.search = ''
+      url.hash = ''
+      urls.push(url.toString())
+    }
+  } catch {
+    // Non-URL bases fall back to the original string concatenation behavior.
+  }
+  return [...new Set(urls)]
+}
+
+function errorMessageOf(body: unknown, fallback: string): string {
+  if (body === null || typeof body !== 'object') return fallback
+  const record = body as Record<string, unknown>
+  const error = record.error
+  if (error !== null && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message
+  }
+  return typeof record.message === 'string' && record.message.trim() !== '' ? record.message : fallback
+}
+
+function modelRecordsOf(body: unknown): ModelRecord[] | undefined {
+  const candidate = Array.isArray(body)
+    ? body
+    : body !== null && typeof body === 'object' && Array.isArray((body as { data?: unknown }).data)
+      ? (body as { data: unknown[] }).data
+      : body !== null && typeof body === 'object' && Array.isArray((body as { models?: unknown }).models)
+        ? (body as { models: unknown[] }).models
+        : undefined
+  if (candidate === undefined) return undefined
+  return candidate.flatMap(item => {
+    const id = typeof item === 'string'
+      ? item.trim()
+      : item !== null && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string'
+        ? (item as { id: string }).id.trim()
+        : ''
+    return id === '' ? [] : [{ ...(typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}), id }]
   })
+}
+
+interface ModelListAttempt {
+  records?: ModelRecord[]
+  error?: Error
+  retryable: boolean
+}
+
+async function fetchModelRecords(url: string, apiKey: string): Promise<ModelListAttempt> {
+  const response = await fetch(url, { headers: headers(apiKey) })
+  const text = await response.text().catch(() => '')
+  let body: unknown
+  try {
+    body = text.trim() === '' ? undefined : JSON.parse(text) as unknown
+  } catch {
+    body = undefined
+  }
+  if (!response.ok) {
+    const fallback = `HTTP ${response.status}`
+    return {
+      error: new Error(errorMessageOf(body, fallback)),
+      retryable: response.status === 404 || response.status === 405,
+    }
+  }
+  if (body === undefined) {
+    const type = response.headers.get('content-type') ?? 'unknown content-type'
+    const sample = text.replace(/\s+/g, ' ').trim().slice(0, 160)
+    return {
+      error: new Error(`模型接口返回了非 JSON 响应（HTTP ${response.status}, ${type}）${sample === '' ? '' : `：${sample}`}`),
+      retryable: true,
+    }
+  }
+  const records = modelRecordsOf(body)
+  if (records === undefined) {
+    return {
+      error: new Error(errorMessageOf(body, '模型接口响应中没有 data/models 列表')),
+      retryable: true,
+    }
+  }
+  return { records, retryable: false }
+}
+
+async function listModelRecords(config: ModelListConfig): Promise<ModelRecord[]> {
+  const urls = modelListUrls(config)
+  let lastError: Error | undefined
+  for (const url of urls) {
+    let attempt: ModelListAttempt
+    try {
+      attempt = await fetchModelRecords(url, config.apiKey)
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      continue
+    }
+    if (attempt.records !== undefined) return attempt.records
+    lastError = attempt.error
+    if (!attempt.retryable) throw attempt.error
+  }
+  throw lastError ?? new Error('模型接口不可用')
 }
 
 function textOf(value: unknown): string[] {

@@ -69,6 +69,8 @@ interface CanvasWorkspaceProps {
   modelGroups: ImageModelGroup[]
   defaultChannelId?: string
   connected: boolean
+  /** Channels whose credentials are currently usable. */
+  connectedChannelIds?: ReadonlySet<string>
   history: HistoryEntry[]
   gallery: HistoryEntry[]
   tasks: GenerationTask[]
@@ -1174,7 +1176,7 @@ function ComposerSelect(props: {
 }
 
 export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element {
-  const { api, modelGroups, defaultChannelId, connected, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
+  const { api, modelGroups, defaultChannelId, connected, connectedChannelIds, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [document, setDocument] = useState<CanvasDocument | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
@@ -1369,6 +1371,11 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [composerQuality, setComposerQuality] = useState('auto')
   const [composerCount, setComposerCount] = useState(1)
   const [composerBusy, setComposerBusy] = useState(false)
+  const channelIsConnected = useCallback((channelId: string): boolean => {
+    if (connectedChannelIds !== undefined && channelId !== '') return connectedChannelIds.has(channelId)
+    return connected
+  }, [connected, connectedChannelIds])
+  const composerChannelConnected = channelIsConnected(composerChannelId)
 
   const rootRef = useRef<HTMLElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -2064,6 +2071,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     setFilePreviewNodeId(node.id)
   }, [])
 
+  /** Open one image node in the full-screen reader. */
+  const openImageNode = useCallback((node: CanvasNode): void => {
+    const asset = assetOf(node)
+    if (node.type !== 'image' || asset === undefined || asset.url === '') return
+    setFilePreviewNodeId(node.id)
+  }, [])
+
   /** One-click AI polish for a text node (light tier, replaces the text). */
   const polishTextNode = useCallback(async (node: CanvasNode, style: string, instruction?: string): Promise<void> => {
     const current = documentRef.current
@@ -2578,7 +2592,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const submitComposer = useCallback(async (target: CanvasNode | null): Promise<void> => {
     const current = documentRef.current
     if (current === null || composerBusy) return
-    if (!connected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
+    if (!composerChannelConnected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const inputs = target === null ? [] : upstreamNodes(current, target.id)
     const referenceImages = inputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined)
     const upstreamText = inputs
@@ -2664,7 +2678,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     } finally {
       setComposerBusy(false)
     }
-  }, [annotationPlanOf, api, canvasCenter, composerBusy, composerChannelId, composerCount, composerModel, composerPrompt, composerQuality, composerSize, connected, defaultChannelId, modelGroups, mutate, onOpenSettings, upstreamNodes])
+  }, [annotationPlanOf, api, canvasCenter, composerBusy, composerChannelConnected, composerChannelId, composerCount, composerModel, composerPrompt, composerQuality, composerSize, defaultChannelId, modelGroups, mutate, onOpenSettings, upstreamNodes])
 
   // ---------------------------------------------------------- task intake
 
@@ -3546,6 +3560,13 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       className={`${css.node} ${isSketch ? css.sketchNode : isConfig ? css.configNode : isTextual ? css.textNode : css.imageNode} ${isSelected ? css.nodeSelected : ''} ${isRelated ? css.nodeRelated : ''} ${isConnectTarget ? css.nodeConnectTarget : ''}`}
       style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
       onPointerDown={event => handleNodePointerDown(event, node.id)}
+      onDoubleClick={event => {
+        if (!hasImage || node.type !== 'image') return
+        if ((event.target as Element).closest('button, input, select, textarea, [data-toolbar]')) return
+        event.preventDefault()
+        event.stopPropagation()
+        openImageNode(node)
+      }}
       onContextMenu={event => {
         if ((event.target as Element).closest('textarea, input, select')) return
         event.preventDefault(); event.stopPropagation()
@@ -3650,7 +3671,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
               : isError
                 ? <div className={css.nodeStateError}>{metadata.error ?? tt('canvas.generateFailed')}<button type="button" onClick={() => { void retryGeneration(node) }}>{tt('canvas.retry')}</button></div>
                 : hasImage
-                  ? <img src={asset.url} alt={node.title} draggable={false} onDragStart={event => event.preventDefault()} />
+                  ? <img src={asset.url} alt={node.title} title={tt('canvas.preview.doubleClick')} draggable={false} onDragStart={event => event.preventDefault()} />
                   : <button type="button" className={css.nodeEmpty} onClick={() => imageFileRef.current?.click()}><ToolbarIcon name="image" /><span>{tt('canvas.emptyImageNode')}</span></button>}
             {hasImage && annotations.length > 0 ? <div className={css.annotationLayer} aria-hidden="true">
               {annotations.map((annotation, index) => <div key={annotation.id} className={css.annotationBox} style={boxStyle(annotation)}>
@@ -3735,6 +3756,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
             })}
           />
           <span className={css.toolbarDivider} aria-hidden="true" />
+          <IconButton name="expand" label={tt('canvas.preview.expand')} onClick={() => { openImageNode(node) }} />
           <IconButton name="download" label={tt('canvas.download')} onClick={() => downloadNode(node)} />
         </> : null}
         {skillable ? <>
@@ -3964,7 +3986,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           className={css.composerSend}
           aria-label={tt('canvas.generate')}
           title={tt('canvas.generate')}
-          disabled={!connected || composerBusy || (composerPrompt.trim() === '' && composerTextCount === 0 && composerAnnotationTexts.length === 0)}
+          disabled={!composerChannelConnected || composerBusy || (composerPrompt.trim() === '' && composerTextCount === 0 && composerAnnotationTexts.length === 0)}
           onClick={() => { void submitComposer(composerTarget) }}
         >{composerBusy ? <span className={css.nodeSpinner} aria-hidden="true" /> : <ToolbarIcon name="send" />}</button>
       </div>
@@ -4018,7 +4040,10 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const items: Array<{ label: string; action: () => void; danger?: boolean; icon: ToolbarIconName }> = []
       if (contextMenu.type === 'node') {
         const node = nodeById.get(contextMenu.nodeId)
-        if (node !== undefined && node.type === 'image' && (assetOf(node)?.url.length ?? 0) > 0) items.push({ label: tt('canvas.download'), icon: 'download', action: () => downloadNode(node) })
+        if (node !== undefined && node.type === 'image' && (assetOf(node)?.url.length ?? 0) > 0) {
+          items.push({ label: tt('canvas.preview.expand'), icon: 'expand', action: () => openImageNode(node) })
+          items.push({ label: tt('canvas.download'), icon: 'download', action: () => downloadNode(node) })
+        }
         if (node !== undefined && node.type === 'file' && (assetOf(node)?.url.length ?? 0) > 0) {
           items.push({ label: tt('canvas.skills.fileDownload'), icon: 'download', action: () => downloadFileNode(node) })
           items.push({ label: tt('canvas.preview.expand'), icon: 'expand', action: () => openFileNode(node) })

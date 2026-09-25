@@ -838,6 +838,23 @@
   padding: 12px 0 0;
 }
 
+.editorGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.editorGrid[data-connection] {
+  grid-template-columns: minmax(0, 1.7fr) minmax(150px, 1fr);
+}
+
+@media (max-width: 520px) {
+  .editorGrid,
+  .editorGrid[data-connection] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .checkboxRow {
   display: inline-flex;
   align-items: center;
@@ -857,15 +874,80 @@
   line-height: 1.5;
 }
 
+.keyActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.keyState {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.keyState[data-set] {
+  color: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-secondary));
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #22c55e) 10%, transparent);
+}
+
+.keyInputRow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.keyInputRow .input {
+  min-width: 0;
+  flex: 1;
+}
+
+.keyVisibility {
+  flex: none;
+  min-width: 58px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.keyVisibility:hover:not(:disabled) {
+  color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.keyVisibility:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
 .editorDivider {
   height: 1px;
   margin: 14px 0 4px;
   background: var(--dsw-alias-border-l2);
 }
 
+.modelCatalog {
+  margin: 8px -2px 0;
+  padding: 0 10px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-3) 48%, transparent);
+}
+
 .editorSectionHeader {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 0 4px;
@@ -919,6 +1001,14 @@
   background: var(--dsw-alias-bg-layer-3);
 }
 
+.modelRowEditor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .modelRowInputs {
   flex: 1;
   min-width: 0;
@@ -932,6 +1022,43 @@
   min-width: 0;
 }
 
+.modelRowSummary {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.modelRowTitle {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.modelRowName {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelRowUpstream {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-mono, monospace);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .modelArrow {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
@@ -943,6 +1070,53 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.modelRowActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.modelRowEdit,
+.modelRowDone {
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.modelRowEdit:hover:not(:disabled),
+.modelRowDone:hover:not(:disabled) {
+  color: var(--dsw-alias-brand-primary);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.modelRowEdit:disabled,
+.modelRowDone:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+@media (max-width: 520px) {
+  .modelRowEditor {
+    flex-wrap: wrap;
+  }
+
+  .modelRowEditor .modelRowInputs {
+    flex-basis: 100%;
+  }
+
+  .modelRowDone {
+    margin-left: auto;
+  }
 }
 
 .modelBadge {
