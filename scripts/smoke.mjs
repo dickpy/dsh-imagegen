@@ -129,6 +129,7 @@ await check('A3 updater parses stable Releases and caches checks', async () => {
       tag_name: 'v9.9.9',
       html_url: 'https://github.com/dickpy/dsh-imagegen/releases/tag/v9.9.9',
       published_at: '2026-08-17T00:00:00Z',
+      body: '## Changes\n\n- Faster update discovery\n- Show release notes',
       draft: false,
       prerelease: false,
     }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -137,6 +138,7 @@ await check('A3 updater parses stable Releases and caches checks', async () => {
   const second = await host.checkForUpdate(fetchRelease, 1001)
   assert.equal(first.latestVersion, '9.9.9')
   assert.equal(first.updateAvailable, true)
+  assert.match(first.releaseNotes, /Faster update discovery/)
   assert.equal(second, first)
   assert.equal(calls, 1)
   host.clearUpdateCache()
@@ -244,6 +246,53 @@ const upstream = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     assert.equal(req.headers.authorization, 'Bearer sk-test')
     const asked = body.messages.at(-1).content
+    const imageUrl = `http://127.0.0.1:${upstream.address().port}/image/result.png`
+    const askedText = typeof asked === 'string'
+      ? asked
+      : Array.isArray(asked)
+        ? asked.find(part => part !== null && typeof part === 'object' && part.type === 'text')?.text ?? ''
+        : ''
+    if (askedText.startsWith('chat image')) {
+      assert.equal(body.stream, false, 'chat image requests must disable streaming')
+      assert.equal(body.messages[0].role, 'user', 'chat image request must use a user message')
+    }
+    if (askedText === 'chat image markdown') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: `Generated: ![cat](${imageUrl})` } }] }))
+      return
+    }
+    if (askedText === 'chat image html') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: `<p>Result</p><img src="${imageUrl}" />` } }] }))
+      return
+    }
+    if (askedText === 'chat image plain') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: imageUrl } }] }))
+      return
+    }
+    if (askedText === 'chat image json') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ result: { image_url: imageUrl } }) } }] }))
+      return
+    }
+    if (askedText === 'chat image message images') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: '', images: [{ image_url: { url: imageUrl } }] } }] }))
+      return
+    }
+    if (askedText === 'chat image error text') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: '上游策略拒绝了这次图片生成' } }] }))
+      return
+    }
+    if (askedText === 'chat image edit') {
+      assert.ok(Array.isArray(asked), 'chat edit content must be multimodal')
+      assert.ok(asked.some(part => part !== null && typeof part === 'object' && part.type === 'image_url'), 'chat edit image_url missing')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: [{ type: 'image_url', image_url: { url: imageUrl } }] } }] }))
+      return
+    }
     // Vision request (layer decomposition): the canvas route sends a content
     // array; answer with a fenced JSON plan that also exercises normalization
     // (background first, a text layer, and one degenerate box to drop).
@@ -317,6 +366,44 @@ await check('B1b exact URL channels use the configured endpoint verbatim (#26)',
   )
   assert.equal(result.images.length, 1)
   assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+})
+
+await check('B1c chat completions text content extracts markdown, HTML, plain and JSON image URLs', async () => {
+  const prompts = ['chat image markdown', 'chat image html', 'chat image plain', 'chat image json']
+  for (const prompt of prompts) {
+    const result = await host.generateImage(
+      { apiUrl: `http://127.0.0.1:${upstreamPort}/v1/chat/completions`, apiKey: 'sk-test', protocol: 'auto' },
+      { mode: 'text', model: 'gpt-image-2', prompt, size: '1:1', quality: '4k', n: 1, detail: '' },
+    )
+    assert.equal(result.images.length, 1, prompt)
+    assert.equal(result.images[0].b64, pngBytes.toString('base64'), prompt)
+    assert.equal(result.images[0].mime, 'image/png', prompt)
+  }
+})
+
+await check('B1d chat completions edit sends image_url and reads structured content images', async () => {
+  const dataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`
+  const result = await host.generateImage(
+    { apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test', protocol: 'chat-completions' },
+    { mode: 'edit', model: 'gpt-image-2', prompt: 'chat image edit', size: '1:1', quality: '4k', n: 1, detail: '', image: dataUrl },
+  )
+  assert.equal(result.images.length, 1)
+  assert.equal(result.images[0].b64, pngBytes.toString('base64'))
+})
+
+await check('B1e chat completions message.images and text errors are handled', async () => {
+  const image = await host.generateImage(
+    { apiUrl: `http://127.0.0.1:${upstreamPort}/v1/chat/completions`, apiKey: 'sk-test' },
+    { mode: 'text', model: 'gpt-image-2', prompt: 'chat image message images', size: '1:1', quality: '4k', n: 1, detail: '' },
+  )
+  assert.equal(image.images.length, 1)
+  await assert.rejects(
+    host.generateImage(
+      { apiUrl: `http://127.0.0.1:${upstreamPort}/v1/chat/completions`, apiKey: 'sk-test' },
+      { mode: 'text', model: 'gpt-image-2', prompt: 'chat image error text', size: '1:1', quality: '4k', n: 1, detail: '' },
+    ),
+    /上游策略拒绝了这次图片生成/,
+  )
 })
 
 await check('B2 signed URLs bypass API-key auth and empty base64 falls back to URL', async () => {
@@ -1281,11 +1368,14 @@ await check('C2d OpenRouter OAuth image request uses the hosted credential', asy
       return new Response(JSON.stringify({ choices: [{ message: { images: [{ image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` } }] } }] }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     const manager = new host.SubscriptionManager({
-      credentials: {
-        async resolve(ref) {
-          assert.equal(ref, 'DSH_IMAGEGEN_OPENROUTER_OAUTH_1')
-          return { value: JSON.stringify({ accessToken: 'openrouter-key', refreshToken: '', expiresAt: Number.MAX_SAFE_INTEGER, label: 'OpenRouter', email: '', accountId: '' }) }
-        },
+      get(name) {
+        assert.equal(name, 'credentials')
+        return {
+          async resolve(ref) {
+            assert.equal(ref, 'DSH_IMAGEGEN_OPENROUTER_OAUTH_1')
+            return { value: JSON.stringify({ accessToken: 'openrouter-key', refreshToken: '', expiresAt: Number.MAX_SAFE_INTEGER, label: 'OpenRouter', email: '', accountId: '' }) }
+          },
+        }
       },
     })
     const images = await manager.generate({ vendor: 'openrouter', prompt: 'openrouter cat' })
@@ -1295,6 +1385,56 @@ await check('C2d OpenRouter OAuth image request uses the hosted credential', asy
     const body = JSON.parse(String(calls[0].init.body))
     assert.equal(body.model, 'google/gemini-3-pro-image')
     assert.deepEqual(body.modalities, ['image'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+await check('C2e Grok device polling continues through authorization_pending', async () => {
+  const originalFetch = globalThis.fetch
+  const credentialStore = new Map()
+  let tokenPolls = 0
+  try {
+    globalThis.fetch = async (input, init) => {
+      const url = String(input)
+      if (url === 'https://auth.x.ai/oauth2/device/code') {
+        return new Response(JSON.stringify({
+          device_code: 'device-code',
+          user_code: 'ABCD-EFGH',
+          verification_uri_complete: 'https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH',
+          interval: 1,
+          expires_in: 10,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url === 'https://auth.x.ai/oauth2/token') {
+        tokenPolls += 1
+        if (tokenPolls === 1) {
+          return new Response(JSON.stringify({ error: 'authorization_pending', error_description: 'User has not yet authorized' }), { status: 400, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ access_token: 'grok-access', refresh_token: 'grok-refresh', expires_in: 3600 }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected Grok test URL: ${url}`)
+    }
+    const manager = new host.SubscriptionManager({
+      get(name) {
+        assert.equal(name, 'credentials')
+        return {
+          async resolve(ref) {
+            const value = credentialStore.get(ref)
+            return value === undefined ? undefined : { value }
+          },
+          async set(ref, value) { credentialStore.set(ref, value) },
+          async unset(ref) { credentialStore.delete(ref) },
+        }
+      },
+    })
+    const login = await manager.beginLogin('grok')
+    assert.equal(login.code, 'ABCD-EFGH')
+    const ref = host.subscriptionOauthRef('grok')
+    assert.ok(await waitUntil(() => credentialStore.has(ref), 4000), 'Grok polling did not finish after authorization')
+    assert.equal(tokenPolls, 2)
+    assert.equal(manager.lastLoginError('grok'), undefined)
+    assert.equal((await manager.loginStatus('grok')).state, 'logged-in')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1380,6 +1520,14 @@ await check('C5 image model discovery and configured-model allow-list work', asy
   const discovered = await post('/api/dsh-imagegen/image-models', {})
   assert.equal(discovered.body.ok, true)
   assert.deepEqual(discovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image'])
+  const chatDiscovered = await post('/api/dsh-imagegen/image-models', {
+    apiUrl: `http://127.0.0.1:${upstreamPort}/v1/chat/completions`,
+    apiKey: 'sk-test',
+    apiUrlFull: true,
+    protocol: 'auto',
+  })
+  assert.equal(chatDiscovered.body.ok, true)
+  assert.deepEqual(chatDiscovered.body.models, ['glm-image', 'gpt-image-2', 'grok-imagine-image'])
   const presets = await post('/api/dsh-imagegen/presets', {})
   assert.equal(presets.body.ok, true)
   assert.deepEqual(presets.body.presets.find(preset => preset.id === 'openai-official').models, [{ alias: 'gpt-image-2.5', id: 'gpt-image-2.5' }, { alias: 'gpt-image-2', id: 'gpt-image-2' }])
@@ -1782,6 +1930,7 @@ await check('C10c a file node round-trips through canvas save with its asset int
   const asset = recordCanvasFile(Buffer.from('报告正文\n', 'utf8'), 'text/plain', 'report.txt')
   const created = await post('/api/dsh-imagegen/canvas/create', { title: 'files' })
   const document = created.body.document
+  assert.equal(document.background, 'lines', 'new canvases default to the lightweight grid background')
   const fileNode = {
     id: 'node-file-1',
     type: 'file',

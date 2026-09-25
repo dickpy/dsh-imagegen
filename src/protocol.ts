@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.6.3'
+export const PLUGIN_VERSION = '1.6.4'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -25,6 +25,34 @@ export const SUBSCRIPTION_API = {
 /** Official/subscription-backed image providers. */
 export const SUBSCRIPTION_PROVIDERS = ['chatgpt-sub', 'grok-sub', 'google-sub', 'openrouter-sub'] as const
 export type SubscriptionProvider = typeof SUBSCRIPTION_PROVIDERS[number]
+
+/** Transport protocol a channel uses to reach its gateway. */
+export type ChannelProtocol = 'images' | 'chat-completions'
+
+/** Stored preference: auto keeps old channels on images unless the URL is explicit. */
+export type ChannelProtocolPreference = 'auto' | ChannelProtocol
+
+/** Whether an endpoint URL explicitly names an OpenAI-compatible chat route. */
+export function isChatCompletionsUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed === '') return false
+  try {
+    return /\/chat\/completions\/?$/.test(new URL(trimmed).pathname)
+  } catch {
+    return /\/chat\/completions\/?$/.test(trimmed.split(/[?#]/, 1)[0] ?? '')
+  }
+}
+
+/** Whether a stored value is one of the accepted protocol preferences. */
+export function isChannelProtocolPreference(value: unknown): value is ChannelProtocolPreference {
+  return value === 'auto' || value === 'images' || value === 'chat-completions'
+}
+
+/** Resolve a channel preference without changing legacy behavior by default. */
+export function resolveChannelProtocol(apiUrl: string, preference: ChannelProtocolPreference | undefined = 'auto'): ChannelProtocol {
+  if (preference === 'images' || preference === 'chat-completions') return preference
+  return isChatCompletionsUrl(apiUrl) ? 'chat-completions' : 'images'
+}
 
 /** Subscription channels with a fixed image model. */
 export const DEFAULT_SUBSCRIPTION_MODELS: Record<SubscriptionProvider, string> = {
@@ -754,6 +782,8 @@ export interface CanvasNodeMetadata {
   /** Config/image nodes: generation settings. */
   prompt?: string
   model?: string
+  /** Channel selected alongside the model; omitted means the default channel. */
+  channelId?: string
   size?: string
   quality?: string
   /** Config nodes: how many images to generate (1-4). */
@@ -979,6 +1009,8 @@ export interface ChannelConfig {
   apiUrl: string
   /** Use apiUrl verbatim instead of appending /images/generations or /images/edits. */
   apiUrlFull: boolean
+  /** Request protocol; 'auto' infers chat-completions from an exact chat URL. */
+  protocol?: ChannelProtocolPreference
   /** Authentication source; absent means the legacy API-key path. */
   auth?: 'api-key' | 'subscription'
   /** Subscription provider when auth is subscription. */
@@ -1027,6 +1059,8 @@ export interface UpdateInfo {
   updateAvailable: boolean
   releaseUrl: string
   publishedAt?: string
+  /** Markdown release body shown in the update popover. */
+  releaseNotes?: string
 }
 
 /** One history image reference as the browser consumes it (a served URL). */

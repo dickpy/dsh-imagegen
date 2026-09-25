@@ -17,6 +17,8 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { autoRemoveBackground, canvasToDataUrl, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
+import type { ImageModelGroup } from './settings-scope.ts'
 import { CanvasFileBody, CanvasFileOverlay, fileKindLabel, fileKindOfAsset, fileSizeLabel } from './CanvasFilePreview.tsx'
 import { DotFieldBackground, DotGridBackground, FaultyTerminalBackground, FloatingLinesBackground, FlowBackground, GalaxyBackground, LiquidEtherBackground, ShapeGridBackground, SilkBackground, WavesBackground } from './CanvasBackgrounds.tsx'
 import css from './canvas-workspace.module.css'
@@ -64,7 +66,7 @@ const MAX_BATCH_SKILL_NODES = 12
 
 interface CanvasWorkspaceProps {
   api: ImageGenApi
-  imageModels: string[]
+  modelGroups: ImageModelGroup[]
   defaultChannelId?: string
   connected: boolean
   history: HistoryEntry[]
@@ -1172,7 +1174,7 @@ function ComposerSelect(props: {
 }
 
 export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element {
-  const { api, imageModels, defaultChannelId, connected, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
+  const { api, modelGroups, defaultChannelId, connected, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [document, setDocument] = useState<CanvasDocument | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
@@ -1353,7 +1355,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
 
   // Floating generation composer state.
   const [composerPrompt, setComposerPrompt] = useState('')
-  const [composerModel, setComposerModel] = useState(imageModels[0] ?? '')
+  const initialComposerChoice = resolveModelChoice(modelGroups, undefined, defaultChannelId)
+  const [composerModel, setComposerModel] = useState(initialComposerChoice.model)
+  const [composerChannelId, setComposerChannelId] = useState(initialComposerChoice.channelId)
+  const modelGroupsKey = modelGroups.map(group => `${group.id}:${group.models.join(',')}`).join('|')
+  useEffect(() => {
+    const next = resolveModelChoice(modelGroups, { channelId: composerChannelId, model: composerModel }, defaultChannelId)
+    setComposerChannelId(next.channelId)
+    setComposerModel(next.model)
+  }, [modelGroupsKey, defaultChannelId])
+
   const [composerSize, setComposerSize] = useState('auto')
   const [composerQuality, setComposerQuality] = useState('auto')
   const [composerCount, setComposerCount] = useState(1)
@@ -2582,7 +2593,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ? composerPrompt.trim()
         : (upstreamText.length > 0 ? upstreamText.join('\n') : (annotationPlan?.texts ?? []).join('\n'))
       if (prompt === '') { setError(tt('canvas.needPrompt')); setComposerBusy(false); return }
-      const model = imageModels.includes(composerModel) ? composerModel : imageModels[0] ?? ''
+      const composerChoice = resolveModelChoice(modelGroups, { channelId: composerChannelId, model: composerModel }, defaultChannelId)
+      const model = composerChoice.model
       if (model === '') { setError(tt('canvas.needModel')); setComposerBusy(false); return }
       const count = Math.min(4, Math.max(1, Math.round(composerCount)))
       const baseAsset = referenceImages[0] !== undefined ? usableAsset(referenceImages[0]!) : undefined
@@ -2607,7 +2619,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       const footprint = nodeSizeFromRatio(composerSize, IMAGE_NODE_SIZE)
       const request: GenerateRequest = {
         mode: image === undefined ? 'text' : 'edit', model, prompt: finalPrompt, size: composerSize, quality: composerQuality, n: count, detail: '',
-        ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
+        ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
         canvas: {
@@ -2638,6 +2650,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
               ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
               ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
               prompt: finalPrompt, model,
+              ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
             },
           })
           if (anchor !== undefined) connections.push({ id: newId('edge'), fromNodeId: anchor.id, toNodeId: id })
@@ -2651,7 +2664,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     } finally {
       setComposerBusy(false)
     }
-  }, [annotationPlanOf, api, canvasCenter, composerBusy, composerCount, composerModel, composerPrompt, composerQuality, composerSize, connected, defaultChannelId, imageModels, mutate, onOpenSettings, upstreamNodes])
+  }, [annotationPlanOf, api, canvasCenter, composerBusy, composerChannelId, composerCount, composerModel, composerPrompt, composerQuality, composerSize, connected, defaultChannelId, modelGroups, mutate, onOpenSettings, upstreamNodes])
 
   // ---------------------------------------------------------- task intake
 
@@ -2663,7 +2676,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const metadata = nodeMetadata(node)
     const prompt = (metadata.prompt ?? '').trim()
     if (prompt === '') { setError(tt('canvas.needPrompt')); return }
-    const model = imageModels.includes(metadata.model ?? '') ? metadata.model! : imageModels[0] ?? ''
+    const retryChoice = resolveModelChoice(modelGroups, { channelId: metadata.channelId, model: metadata.model }, defaultChannelId)
+    const model = retryChoice.model
     if (model === '') { setError(tt('canvas.needModel')); return }
     const sourceId = metadata.sourceNodeId
     const sourceNode = sourceId === undefined ? undefined : current.nodes.find(item => item.id === sourceId)
@@ -2699,7 +2713,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }
       const request: GenerateRequest = {
         mode: image === undefined ? 'text' : 'edit', model, prompt, size: metadata.size ?? 'auto', quality: metadata.quality ?? 'auto', n: 1, detail: '',
-        ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }),
+        ...(retryChoice.channelId === '' ? {} : { channelId: retryChoice.channelId }),
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
         canvas: { canvasId: current.id, sourceNodeId: sourceId ?? references[0]?.id, parentNodeId: node.id, placement: 'right' as const },
@@ -2718,7 +2732,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     }
-  }, [annotatedReference, api, connected, defaultChannelId, imageModels, onOpenSettings, patchNode, upstreamNodes])
+  }, [annotatedReference, api, connected, defaultChannelId, modelGroups, onOpenSettings, patchNode, upstreamNodes])
 
   // Orphan reconciliation: a generating placeholder whose task no longer exists
   // in the host feed (e.g. the host restarted) can never complete on its own.
@@ -2946,12 +2960,15 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     setComposerPrompt(texts.join('\n'))
     // Adopt the model chosen on a connected image node, so the node-level model
     // selector drives the generation it feeds.
-    const upstreamModel = upstream
+    const upstreamChoice = upstream
       .filter(node => node.type === 'image')
-      .map(node => nodeMetadata(node).model ?? '')
-      .find(model => imageModels.includes(model))
-    if (upstreamModel !== undefined) setComposerModel(upstreamModel)
-  }, [composerTarget, document, imageModels])
+      .map(node => resolveModelChoice(modelGroups, { channelId: nodeMetadata(node).channelId, model: nodeMetadata(node).model }, defaultChannelId))
+      .find(choice => modelGroups.some(group => group.id === choice.channelId && group.models.includes(choice.model)))
+    if (upstreamChoice !== undefined) {
+      setComposerChannelId(upstreamChoice.channelId)
+      setComposerModel(upstreamChoice.model)
+    }
+  }, [composerTarget, document, defaultChannelId, modelGroups])
 
   // Transient success notices (background removal / layer split).
   useEffect(() => {
@@ -3440,7 +3457,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const isSpaceOrCtrl = temporaryPanTool
   const cursorClass = tool === 'pan' || isSpaceOrCtrl ? css.panCursor : css.selectCursor
 
-  const backgroundMode = document?.background ?? 'liquid'
+  const backgroundMode = document?.background ?? 'lines'
   const setBackgroundMode = useCallback((mode: BackgroundMode): void => {
     mutate(previous => ({
       ...previous,
@@ -3464,7 +3481,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   }, [api, mutate])
 
   const removeBackgroundImage = useCallback((): void => {
-    mutate(previous => ({ ...previous, background: 'dots', backgroundImage: undefined }))
+    mutate(previous => ({ ...previous, background: 'lines', backgroundImage: undefined }))
     setBackgroundMenu(null)
   }, [mutate])
 
@@ -3702,12 +3719,20 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           <IconButton name="removeBg" label={tt('canvas.removeBackground')} disabled={busyLabel !== undefined} onClick={() => { void removeNodeBackground(node) }} />
           <IconButton name="layers" label={tt('canvas.splitLayers')} disabled={busyLabel !== undefined} onClick={() => { void splitLayers(node) }} />
           <span className={css.toolbarDivider} aria-hidden="true" />
-          <ComposerSelect
+          <ModelPicker
+            groups={modelGroups}
+            value={resolveModelChoice(modelGroups, { channelId: metadata.channelId, model: metadata.model }, defaultChannelId)}
             variant="toolbar"
+            channelLabel={tt('model.channel')}
+            modelLabel={tt('model.label')}
+            channelPlaceholder={tt('model.channelPlaceholder')}
+            emptyLabel={tt('canvas.modelPlaceholder')}
             ariaLabel={tt('canvas.nodeModel')}
-            value={metadata.model ?? ''}
-            options={[{ value: '', label: tt('canvas.modelDefault') }, ...imageModels.map(item => ({ value: item, label: item }))]}
-            onChange={value => patchNode(node.id, { model: value === '' ? undefined : value })}
+            disabled={busyLabel !== undefined}
+            onChange={choice => patchNode(node.id, {
+              model: choice.model === '' ? undefined : choice.model,
+              channelId: choice.channelId === '' ? undefined : choice.channelId,
+            })}
           />
           <span className={css.toolbarDivider} aria-hidden="true" />
           <IconButton name="download" label={tt('canvas.download')} onClick={() => downloadNode(node)} />
@@ -3894,11 +3919,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         <span className={css.composerChip}>{tt('canvas.composerLinked', { count: linkedCount })}</span>
       </div> : null}
       <div className={css.composerControls}>
-        <ComposerSelect
+        <ModelPicker
+          groups={modelGroups}
+          value={{ channelId: composerChannelId, model: composerModel }}
+          variant="composer"
+          channelLabel={tt('model.channel')}
+          modelLabel={tt('model.label')}
+          channelPlaceholder={tt('model.channelPlaceholder')}
+          emptyLabel={tt('canvas.modelPlaceholder')}
           ariaLabel={tt('canvas.model')}
-          value={composerModel}
-          options={[{ value: '', label: tt('canvas.modelPlaceholder') }, ...imageModels.map(item => ({ value: item, label: item }))]}
-          onChange={setComposerModel}
+          onChange={choice => { setComposerChannelId(choice.channelId); setComposerModel(choice.model) }}
         />
         <ComposerSelect
           ariaLabel={tt('canvas.size')}
@@ -4371,7 +4401,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       title={filePreviewNode.node.title}
       onClose={() => setFilePreviewNodeId(null)}
     /> : null}
-    {libraryOpen ? <TemplateLibrary api={api} onClose={() => setLibraryOpen(false)} onUse={applyTemplate} /> : null}
+    {libraryOpen ? <TemplateLibrary api={api} onClose={() => setLibraryOpen(false)} onUse={prompt => { applyTemplate(prompt); setLibraryOpen(false) }} /> : null}
     {skillLibraryOpen ? <SkillLibraryDialog
       library={skillLibrary}
       loading={libraryLoading}
@@ -4398,7 +4428,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       api={api}
       history={history}
       gallery={gallery}
-      imageModels={imageModels}
+      modelGroups={modelGroups}
       defaultChannelId={defaultChannelId}
       canvasId={document?.id ?? ''}
       connected={connected}
@@ -4413,7 +4443,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           id: newId('node'), type: 'image', title: tt('canvas.imageNode'),
           x: Math.round(center.x - size.width / 2), y: Math.round(center.y - size.height / 2),
           width: size.width, height: size.height,
-          metadata: { status: 'generating', prompt: task.request.prompt, model: task.request.model, size: task.request.size, quality: task.request.quality, taskId: task.id, sourceNodeId: task.request.canvas?.sourceNodeId },
+          metadata: { status: 'generating', prompt: task.request.prompt, model: task.request.model, ...(task.request.channelId === undefined ? {} : { channelId: task.request.channelId }), size: task.request.size, quality: task.request.quality, taskId: task.id, sourceNodeId: task.request.canvas?.sourceNodeId },
         }
         placeNewNode(node)
         setPickerOpen(false)
@@ -4658,7 +4688,7 @@ function ImagePicker(props: {
   api: ImageGenApi
   history: HistoryEntry[]
   gallery: HistoryEntry[]
-  imageModels: string[]
+  modelGroups: ImageModelGroup[]
   defaultChannelId?: string
   canvasId: string
   connected: boolean
@@ -4667,12 +4697,21 @@ function ImagePicker(props: {
   onAssets: (assets: CanvasAssetRef[]) => void
   onTask: (task: GenerationTask) => void
 }): React.JSX.Element {
-  const { api, history, gallery, imageModels, defaultChannelId, canvasId, connected, onClose, onAssets } = props
+  const { api, history, gallery, modelGroups, defaultChannelId, canvasId, connected, onClose, onAssets } = props
   const [tab, setTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>(props.initialTab ?? 'upload')
   const [selected, setSelected] = useState<string[]>([])
   const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>({})
   const [prompt, setPrompt] = useState('')
-  const [model, setModel] = useState(imageModels[0] ?? '')
+  const initialChoice = resolveModelChoice(modelGroups, undefined, defaultChannelId)
+  const [model, setModel] = useState(initialChoice.model)
+  const [channelId, setChannelId] = useState(initialChoice.channelId)
+  const pickerGroupsKey = modelGroups.map(group => `${group.id}:${group.models.join(',')}`).join('|')
+  useEffect(() => {
+    const next = resolveModelChoice(modelGroups, { channelId, model }, defaultChannelId)
+    setChannelId(next.channelId)
+    setModel(next.model)
+  }, [pickerGroupsKey, defaultChannelId])
+
   const [size, setSize] = useState('auto')
   const [quality, setQuality] = useState('auto')
   const [busy, setBusy] = useState(false)
@@ -4703,7 +4742,8 @@ function ImagePicker(props: {
     if (!connected || prompt.trim() === '') return
     setBusy(true)
     try {
-      const task = await api.taskSubmit({ mode: 'text', model, prompt: prompt.trim(), size, quality, n: 1, detail: '', ...(defaultChannelId === undefined ? {} : { channelId: defaultChannelId }), canvas: { canvasId } })
+      const choice = resolveModelChoice(modelGroups, { channelId, model }, defaultChannelId)
+      const task = await api.taskSubmit({ mode: 'text', model: choice.model, prompt: prompt.trim(), size, quality, n: 1, detail: '', ...(choice.channelId === '' ? {} : { channelId: choice.channelId }), canvas: { canvasId } })
       props.onTask(task)
     } finally { setBusy(false) }
   }
@@ -4713,7 +4753,7 @@ function ImagePicker(props: {
     <div className={css.pickerBody}>
       {tab === 'upload' ? <label className={css.uploadBox} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); const files = [...(event.dataTransfer.files ?? [])].filter(file => file.type.startsWith('image/')); if (files.length === 0) return; uploadFiles(files) }}><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy} onChange={event => { const files = [...(event.target.files ?? [])]; if (files.length > 0) uploadFiles(files) }} /><span className={css.uploadIcon}><ToolbarIcon name="image" /></span><strong>{tt('canvas.dropHint')}</strong><small>{tt('canvas.dropSub')}</small></label> : null}
       {(tab === 'history' || tab === 'gallery') ? <><div className={css.pickerGrid}>{items.map(item => <button key={item.key} type="button" role="option" aria-selected={selected.includes(item.key)} className={css.pickerCard} data-selected={selected.includes(item.key) ? '' : undefined} onClick={() => toggle(item.key)}><img draggable={false} src={item.image.url} alt={item.entry.prompt} onLoad={event => { const image = event.currentTarget; setDimensions(previous => ({ ...previous, [item.key]: { width: image.naturalWidth || 1, height: image.naturalHeight || 1 } })) }} /><span className={css.pickerCardPrompt}>{item.entry.prompt || tt('canvas.untitledWork')}</span><small>{item.entry.model} · {item.index + 1}/{item.entry.images.length}</small></button>)}</div><footer className={css.pickerFooter}><span>{tt('canvas.picked', { count: selected.length })}</span><button type="button" disabled={busy || selected.length === 0} onClick={() => { void addSelected() }}>{tt('canvas.addToCanvas')}</button></footer></> : null}
-      {tab === 'generate' ? <div className={css.generateForm}><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={tt('canvas.composerPlaceholder')} /><ComposerSelect value={model} options={imageModels.map(item => ({ value: item, label: item }))} ariaLabel={tt('canvas.model')} onChange={setModel} /><div className={css.inspectorRow}><ComposerSelect value={size} options={[{ value: 'auto', label: tt('canvas.sizeAuto') }, { value: '1:1', label: '1:1' }, { value: '3:4', label: '3:4' }, { value: '16:9', label: '16:9' }, { value: '9:16', label: '9:16' }]} ariaLabel={tt('canvas.size')} onChange={setSize} /><ComposerSelect value={quality} options={[{ value: 'auto', label: tt('canvas.qualityAuto') }, { value: '1k', label: '1K' }, { value: '2k', label: '2K' }, { value: '4k', label: '4K' }]} ariaLabel={tt('canvas.quality')} onChange={setQuality} /></div><button type="button" disabled={!connected || busy || prompt.trim() === ''} onClick={() => { void generate() }}><ToolbarIcon name="sparkle" />{tt('canvas.generateAndAdd')}</button>{!connected ? <small>{tt('canvas.needApi')}</small> : null}</div> : null}
+      {tab === 'generate' ? <div className={css.generateForm}><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={tt('canvas.composerPlaceholder')} /><ModelPicker groups={modelGroups} value={{ channelId, model }} channelLabel={tt('model.channel')} modelLabel={tt('model.label')} channelPlaceholder={tt('model.channelPlaceholder')} emptyLabel={tt('canvas.modelPlaceholder')} ariaLabel={tt('canvas.model')} onChange={choice => { setChannelId(choice.channelId); setModel(choice.model) }} /><div className={css.inspectorRow}><ComposerSelect value={size} options={[{ value: 'auto', label: tt('canvas.sizeAuto') }, { value: '1:1', label: '1:1' }, { value: '3:4', label: '3:4' }, { value: '16:9', label: '16:9' }, { value: '9:16', label: '9:16' }]} ariaLabel={tt('canvas.size')} onChange={setSize} /><ComposerSelect value={quality} options={[{ value: 'auto', label: tt('canvas.qualityAuto') }, { value: '1k', label: '1K' }, { value: '2k', label: '2K' }, { value: '4k', label: '4K' }]} ariaLabel={tt('canvas.quality')} onChange={setQuality} /></div><button type="button" disabled={!connected || busy || prompt.trim() === ''} onClick={() => { void generate() }}><ToolbarIcon name="sparkle" />{tt('canvas.generateAndAdd')}</button>{!connected ? <small>{tt('canvas.needApi')}</small> : null}</div> : null}
     </div>
   </section></div>
 }

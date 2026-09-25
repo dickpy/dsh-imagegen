@@ -8,7 +8,7 @@
  * it directly.
  */
 
-import type { GeneratedImage, GenerateRequest, GenerateResult } from './protocol.ts'
+import { isChatCompletionsUrl, resolveChannelProtocol, type ChannelProtocolPreference, type GeneratedImage, type GenerateRequest, type GenerateResult } from './protocol.ts'
 import { detectImageMime } from './image-format.ts'
 import { modelFamily, promptCharLimit } from './model-catalog.ts'
 
@@ -20,6 +20,8 @@ export interface UpstreamConfig {
   apiKey: string
   /** Use apiUrl verbatim as the generation endpoint instead of appending /images/*. */
   apiUrlFull?: boolean
+  /** Request protocol; auto infers chat-completions from an exact chat URL. */
+  protocol?: ChannelProtocolPreference
 }
 
 /** A generation failure with a user-presentable message. */
@@ -458,6 +460,149 @@ function dataRecordsOf(payload: Record<string, unknown>): Array<Record<string, u
           : undefined
   if (data === undefined) return undefined
   return data.filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object')
+}
+
+/** Remove reasoning-model wrappers before treating chat content as a user-visible error. */
+function stripChatReasoning(value: string): string {
+  const withoutClosed = value.replace(/<think>[\s\S]*?<\/think>/gi, '')
+  const dangling = /<think>/i.exec(withoutClosed)
+  return (dangling === null ? withoutClosed : withoutClosed.slice(0, dangling.index)).trim()
+}
+
+/** Whether a URL returned in chat content is plausibly an image resource. */
+function isLikelyImageUrl(value: string): boolean {
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value)) return true
+  try {
+    const url = new URL(value)
+    if (mimeOfExtension(url.pathname) !== undefined) return true
+    const signal = `${url.hostname}${url.pathname}${url.search}`.toLowerCase()
+    return /(?:image|img|photo|picture|cdn|blob|cloudinary|googleusercontent|oaidalle|replicate|fal\.media|files\.oai)/.test(signal)
+  } catch {
+    return false
+  }
+}
+
+/** Parse a complete or fenced JSON value embedded in chat text. */
+function parseEmbeddedJson(value: string): unknown {
+  const cleaned = stripChatReasoning(value).replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
+  if (cleaned === '') return undefined
+  const attempts = [cleaned]
+  const objectStart = cleaned.indexOf('{')
+  const objectEnd = cleaned.lastIndexOf('}')
+  const arrayStart = cleaned.indexOf('[')
+  const arrayEnd = cleaned.lastIndexOf(']')
+  if (objectStart >= 0 && objectEnd > objectStart) attempts.push(cleaned.slice(objectStart, objectEnd + 1))
+  if (arrayStart >= 0 && arrayEnd > arrayStart) attempts.push(cleaned.slice(arrayStart, arrayEnd + 1))
+  for (const attempt of attempts) {
+    try {
+      const parsed: unknown = JSON.parse(attempt)
+      if (parsed !== null && typeof parsed === 'object') return parsed
+    } catch { /* try the next candidate */ }
+  }
+  return undefined
+}
+
+/** Collect image references from structured Chat Completions content. */
+function collectChatImageItems(
+  value: unknown,
+  out: Array<Record<string, unknown>>,
+  seen: Set<object>,
+  depth = 0,
+): void {
+  if (depth > 6 || value === null || value === undefined) return
+  if (typeof value === 'string') {
+    const parsed = parseEmbeddedJson(value)
+    if (parsed !== undefined && parsed !== value) collectChatImageItems(parsed, out, seen, depth + 1)
+    const markdown = /!\[[^\]]*\]\((?:<)?(https?:\/\/[^)\s>]+|data:image\/[^)\s>]+)(?:>)?\)/gi
+    for (const match of value.matchAll(markdown)) if (match[1] !== undefined) out.push({ url: match[1] })
+    const html = /<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi
+    for (const match of value.matchAll(html)) if (match[1] !== undefined) out.push({ url: match[1] })
+    const urls = value.match(/(?:https?:\/\/|data:image\/)[^\s"'<>)\]}]+/gi) ?? []
+    for (const raw of urls) {
+      const url = raw.replace(/[.,;:!?]+$/, '')
+      if (isLikelyImageUrl(url)) out.push({ url })
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectChatImageItems(item, out, seen, depth + 1)
+    return
+  }
+  if (typeof value !== 'object') return
+  const record = value as Record<string, unknown>
+  if (seen.has(record)) return
+  seen.add(record)
+
+  if (typeof record.b64_json === 'string' && record.b64_json.trim() !== '') {
+    out.push({ b64_json: record.b64_json })
+  }
+  for (const key of ['url', 'image_url', 'image', 'output_url']) {
+    const item = record[key]
+    if (typeof item === 'string' && item !== '') {
+      if (key !== 'url' || isLikelyImageUrl(item)) out.push({ url: item })
+    } else if (item !== null && typeof item === 'object') {
+      const nested = item as Record<string, unknown>
+      if (key !== 'url' && typeof nested.url === 'string' && nested.url !== '') out.push({ url: nested.url })
+      else collectChatImageItems(item, out, seen, depth + 1)
+    }
+  }
+  for (const key of ['images', 'content', 'message', 'data', 'output', 'result']) {
+    if (key in record) collectChatImageItems(record[key], out, seen, depth + 1)
+  }
+}
+
+/** Extract every image candidate from one Chat Completions response. */
+function chatImageItemsOf(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  const seenValues = new Set<object>()
+  const data = dataRecordsOf(payload)
+  if (data !== undefined) {
+    for (const record of data) collectChatImageItems(record, out, seenValues)
+  }
+  const choices = Array.isArray(payload.choices) ? payload.choices : []
+  for (const choice of choices) {
+    if (choice === null || typeof choice !== 'object') continue
+    const message = (choice as Record<string, unknown>).message
+    collectChatImageItems(message, out, seenValues)
+    const delta = (choice as Record<string, unknown>).delta
+    collectChatImageItems(delta, out, seenValues)
+  }
+  if (out.length === 0) collectChatImageItems(payload.images, out, seenValues)
+
+  const unique = new Map<string, Record<string, unknown>>()
+  for (const item of out) {
+    const url = typeof item.url === 'string' ? item.url.trim() : ''
+    const b64 = typeof item.b64_json === 'string' ? item.b64_json.trim() : ''
+    const key = url !== '' ? `url:${url}` : b64 !== '' ? `b64:${b64.slice(0, 128)}` : ''
+    if (key !== '' && !unique.has(key)) unique.set(key, item)
+  }
+  return [...unique.values()]
+}
+
+/** User-visible text from a Chat response, used only when no image was found. */
+function chatErrorTextOf(payload: Record<string, unknown>): string | undefined {
+  const choices = Array.isArray(payload.choices) ? payload.choices : []
+  const first = choices[0]
+  const content = first !== null && typeof first === 'object'
+    ? (first as { message?: { content?: unknown } }).message?.content
+    : undefined
+  const pieces: string[] = []
+  if (typeof content === 'string') pieces.push(stripChatReasoning(content))
+  else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (typeof part === 'string') pieces.push(stripChatReasoning(part))
+      else if (part !== null && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
+        pieces.push(stripChatReasoning((part as { text: string }).text))
+      }
+    }
+  }
+  if (pieces.join('\n').trim() !== '') return pieces.join('\n').trim()
+  if (typeof payload.message === 'string' && payload.message.trim() !== '') return payload.message.trim()
+  const error = payload.error
+  if (error !== null && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message.trim()
+  }
+  return undefined
 }
 
 const ASYNC_PENDING_STATUSES = new Set(['submitted', 'pending', 'processing', 'running', 'in_progress', 'queued'])
@@ -955,6 +1100,90 @@ async function generateMiniMaxImage(
   }
 }
 
+/** Resolve the exact Chat Completions endpoint for a channel. */
+function chatEndpointUrl(upstream: UpstreamConfig, baseUrl: string): string {
+  if (isChatCompletionsUrl(baseUrl)) return baseUrl
+  if (upstream.apiUrlFull === true) return baseUrl
+  return `${baseUrl}/chat/completions`
+}
+
+/** One chat-protocol image request; image count is satisfied by parallel calls. */
+async function requestOneChatImage(
+  upstream: UpstreamConfig,
+  baseUrl: string,
+  request: GenerateRequest,
+  signal?: AbortSignal,
+): Promise<GeneratedImage[]> {
+  const content = request.mode === 'edit'
+    ? [
+        { type: 'text', text: request.prompt },
+        ...[request.image, ...(request.images ?? [])]
+          .filter((value): value is string => typeof value === 'string' && value !== '')
+          .slice(0, 5)
+          .map(url => ({ type: 'image_url', image_url: { url } })),
+      ]
+    : request.prompt
+  const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
+  try {
+    let response: Response
+    try {
+      response = await fetch(chatEndpointUrl(upstream, baseUrl), {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${upstream.apiKey.trim()}`,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify({
+          model: wireModel(request),
+          messages: [{ role: 'user', content }],
+          stream: false,
+        }),
+        signal: budget.signal,
+      })
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`无法连接上游接口：${error instanceof Error ? error.message : String(error)}`, 'upstream-unreachable')
+    }
+
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch (error) {
+      if (isBudgetTimeout(error)) throw new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+      if (signal?.aborted === true) throw new ImageGenError('任务已取消', 'cancelled')
+      throw new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+    }
+    if (!response.ok || payload === null || typeof payload !== 'object') {
+      throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+    }
+
+    const items = chatImageItemsOf(payload as Record<string, unknown>)
+    if (items.length === 0) {
+      const detail = chatErrorTextOf(payload as Record<string, unknown>)
+      throw new ImageGenError(detail?.slice(0, 1200) || 'Chat Completions 响应中没有可用的图片结果', 'upstream-empty')
+    }
+    return await Promise.all(items.map(item => normalizeItem(item, upstream, signal)))
+  } finally {
+    budget.dispose()
+  }
+}
+
+/** Run N parallel Chat Completions image calls and flatten the result. */
+async function generateChatCompletionImages(
+  upstream: UpstreamConfig,
+  baseUrl: string,
+  request: GenerateRequest,
+  signal?: AbortSignal,
+): Promise<GeneratedImage[]> {
+  const count = effectiveCount(request)
+  const batches = await Promise.all(
+    Array.from({ length: count }, () => requestOneChatImage(upstream, baseUrl, request, signal)),
+  )
+  return batches.flat()
+}
+
 /**
  * Forward one generate request to the configured endpoint. The requested image
  * count is satisfied with N parallel single-image requests (the `n` batch
@@ -965,6 +1194,9 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   const baseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  if (resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions') {
+    return { images: await generateChatCompletionImages(upstream, baseUrl, request, options.signal) }
+  }
   // A complete URL is an explicit escape hatch to the exact provider endpoint:
   // use the generic OpenAI-compatible request shape instead of native family
   // routing or appending another path.

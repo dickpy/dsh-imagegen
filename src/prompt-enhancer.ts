@@ -1,6 +1,7 @@
 /** OpenAI-compatible chat helpers used by the optional prompt-enhancement UI. */
 
 import { isLikelyImageModelId } from './model-catalog.ts'
+import { isChatCompletionsUrl, resolveChannelProtocol, type ChannelProtocolPreference } from './protocol.ts'
 
 export interface PromptModelConfig {
   apiUrl: string
@@ -12,6 +13,8 @@ export interface PromptModelConfig {
 export interface ModelListConfig {
   apiUrl: string
   apiKey: string
+  apiUrlFull?: boolean
+  protocol?: ChannelProtocolPreference
 }
 
 function endpoint(base: string, suffix: string): string {
@@ -40,7 +43,16 @@ type ModelRecord = Record<string, unknown> & { id: string }
 
 async function listModelRecords(config: ModelListConfig): Promise<ModelRecord[]> {
   if (config.apiUrl.trim() === '') throw new Error('API URL is required')
-  const response = await fetch(endpoint(config.apiUrl, '/models'), { headers: headers(config.apiKey) })
+  const base = config.apiUrl.trim().replace(/\/+$/, '')
+  let modelsUrl = endpoint(base, '/models')
+  if (resolveChannelProtocol(base, config.protocol) === 'chat-completions' && isChatCompletionsUrl(base)) {
+    const url = new URL(base)
+    url.pathname = `${url.pathname.replace(/\/chat\/completions\/?$/, '')}/models`
+    url.search = ''
+    url.hash = ''
+    modelsUrl = url.toString()
+  }
+  const response = await fetch(modelsUrl, { headers: headers(config.apiKey) })
   const body = await responseJson(response)
   const data = Array.isArray(body.data) ? body.data : []
   return data.flatMap(item => {

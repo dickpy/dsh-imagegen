@@ -63,7 +63,7 @@ export interface GrokDeviceLogin {
   expiresInSeconds: number
 }
 
-async function grokForm(url: string, fields: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+async function grokForm(url: string, fields: Record<string, string>, signal?: AbortSignal, allowDevicePollingStatus = false): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
@@ -74,6 +74,8 @@ async function grokForm(url: string, fields: Record<string, string>, signal?: Ab
   if (!response.ok) {
     const error = typeof body.error === 'string' ? body.error : ''
     const description = typeof body.error_description === 'string' ? body.error_description : ''
+    // RFC 8628 polling errors are expected control messages, not fatal errors.
+    if (allowDevicePollingStatus && (error === 'authorization_pending' || error === 'slow_down')) return body
     throw new Error(`xAI OAuth HTTP ${response.status}${error || description ? `: ${[error, description].filter(Boolean).join(': ')}` : ''}`)
   }
   return body
@@ -106,7 +108,7 @@ export async function grokPollDeviceLogin(device: GrokDeviceLogin, signal?: Abor
       grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
       client_id: GROK_CLIENT_ID,
       device_code: device.deviceCode,
-    }, signal)
+    }, signal, true)
     if (typeof body.access_token === 'string' && body.access_token !== '') {
       return { ...tokenBlobFromOAuth(body), label: 'Grok' }
     }

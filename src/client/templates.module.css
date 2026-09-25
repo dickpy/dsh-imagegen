@@ -254,6 +254,41 @@
   to { transform: rotate(360deg); }
 }
 
+.favoriteGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.favoriteGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.favoriteGroupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.favoriteGroupTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.favoriteGroupCount {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  text-align: center;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

@@ -281,7 +281,7 @@ function defaultDocument(id: string, title: string): CanvasDocument {
     title,
     revision: 1,
     viewport: { x: 0, y: 0, k: 1 },
-    background: 'liquid',
+    background: 'lines',
     nodes: [],
     connections: [],
     createdAt: now,

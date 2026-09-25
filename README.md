@@ -328,13 +328,26 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 | 配置项 | 说明 |
 | --- | --- |
 | 提供方 | 预置提供方可直接选择，也可添加自定义渠道。 |
-| API 地址 | OpenAI 兼容接口根地址，例如 `https://api.openai.com/v1`，插件会自动追加图像接口路径；若服务商要求使用完整生成地址（如腾讯 TokenHub 的 `/v1/wand/si-image/generation`），勾选“完整 URL”后会原样请求并跳过 `/models` 自动检测。 |
+| API 地址 | OpenAI 兼容接口根地址，例如 `https://api.openai.com/v1`，插件会自动追加图像接口路径；也可填写完整 `/chat/completions` 地址，插件会识别为 Chat 生图协议并从上级路径检测 `/models`。其他完整地址可勾选“完整 URL”原样请求。 |
+| 接口协议 | 默认“自动检测”：地址以 `/chat/completions` 结尾时使用 Chat 协议，否则使用 Images API；也可手动切换为 `Images API` 或 `Chat Completions`。 |
 | API 密钥 | 每个提供方单独配置；密钥仅保存在 DSH 宿主侧，浏览器与 Agent 都拿不到明文。 |
 | 模型目录 | 保存地址和密钥后点击“检测可用模型”，插件会过滤聊天、Embedding 等非图片模型；没有 `/models` 的网关可手动添加并设置别名。 |
 | 默认生图模型 | 从所有渠道已配置模型中选择一个；普通生图、无限画布、电商套图和 Agent 未指定模型时优先使用它。侧栏“生图”入口始终保留，避免面板无法访问。 |
 | 提示词增强模型 | 可选。选择一个支持 `/chat/completions` 的模型，通常可复用生图 API 凭据；电商模式的「AI 帮写」也使用它。 |
 | 本地图片存储目录 | 可在设置中指定历史记录、素材库和无限画布图片的本地根目录；留空使用 `~/.dsh/dsh-imagegen`。修改后新图片写入新目录，已有数据不会被删除。 |
 | 允许 Agent 调用生图 | 默认开启。关闭后 Agent 不能提交、查询和取消任务，侧边栏工作台不受影响。 |
+
+**仅提供 Chat Completions 的聚合网关**
+
+部分 One-API / New API / LiteLLM 等网关只把图片模型暴露在 `/v1/chat/completions`。配置时：
+
+1. 添加自定义渠道，API 地址填写完整地址，例如 `https://gateway.example.com/v1/chat/completions`。
+2. “接口协议”保持“自动检测”，或手动选择 `Chat Completions`。
+3. 模型目录可点击“检测可用模型”，插件会从 `https://gateway.example.com/v1/models` 获取候选；也可手动添加模型 ID。
+4. 文生图会发送 `messages`；图生图会把参考图作为 `image_url` 多模态内容发送。
+5. 上游返回 Markdown 图片、HTML `<img>`、裸图片链接、结构化 content 或 `message.images` 时，插件会提取图片并下载为本地结果。
+
+Chat 生图没有完全统一的返回规范；若网关需要特殊参数或私有返回结构，可能仍需增加对应适配。
 
 **关于“检测可用模型”**
 
@@ -346,6 +359,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 <summary><b>已适配的接口与模型家族</b></summary>
 
 - **OpenAI 兼容接口**：支持 `/images/generations`、`/images/edits` 和 `{ data: [{ b64_json | url }] }` 格式响应。
+- **Chat Completions 生图通道**：支持以 `/chat/completions` 暴露图片模型的聚合网关，文生图使用 `messages`，图生图使用多模态 `image_url`；兼容 `message.images`、结构化 content、Markdown、HTML、裸 URL、内嵌 JSON 和纯文本错误透传。
 - **异步两步式接口（apimart.ai / apib.ai 等）**：OpenAI 兼容渠道的 `/images/generations` 若返回 `{ data: [{ status, task_id }] }` 提交结果，插件会自动轮询 `GET /v1/tasks/{task_id}`（指数退避，最长 240 秒）直到完成，自动展开 `url` 数组并下载成图；兼容 submitted / pending / processing 与 completed / succeeded 等常见状态词，上游失败原因原样透传，取消任务会同步中断轮询。无需专用预设，任意 OpenAI 兼容渠道自动生效。
 - **Grok Imagine**：原生支持 `grok-imagine-image` 与 `grok-imagine-image-2.0`（地址 `https://api.x.ai/v1`），图生图使用其 JSON `image_url` 协议，比例和清晰度映射为 `aspect_ratio` 与 `resolution`。
 - **Nano Banana（谷歌 Gemini 图像系列）**：内置 `nanobanana2` / `nanobanana2-lite` / `nanobanana-pro`（也识别官方 `gemini-3.x-image*` ID），清晰度映射为 `image_size`（1K/2K/4K）。

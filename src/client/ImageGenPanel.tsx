@@ -16,17 +16,18 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
+import { renderMarkdown } from './markdown.tsx'
 import { openImageGenConfig } from './config-entry.tsx'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
+import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
 import type { EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API } from '../protocol.ts'
-import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
+import type { ImageGenConfig, ImageGenScope, ImageModelGroup } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
-import { normalizeImageModels } from '../image-models.ts'
 import { describeModel, promptCharLimit } from '../model-catalog.ts'
 import {
   addConversationAttachments, conversationInput, createConversationDrafts, releaseConversationDrafts,
@@ -41,6 +42,9 @@ import css from './panel.module.css'
 const SIZES = ['auto', '1:1', '3:4', '4:3', '9:16', '2:3', '3:2', '16:9', '21:9'] as const
 
 /** Size option keys in the locale dictionary. */
+/** Re-check Releases while the panel stays open; the host caches for 15 minutes. */
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60_000
+
 const SIZE_KEYS: Record<string, 'size.auto' | 'size.square' | 'size.portrait34' | 'size.landscape43' | 'size.portrait916' | 'size.portrait23' | 'size.landscape32' | 'size.wide169' | 'size.ultrawide21'> = {
   auto: 'size.auto',
   '1:1': 'size.square',
@@ -479,6 +483,20 @@ function mergeTaskSummary(summary: GenerationTaskSummary, previous: GenerationTa
   return merged
 }
 
+/** Stable key for one channel+model pair in the comparison selector. */
+function modelChoiceKey(choice: ModelPickerValue): string {
+  return `${choice.channelId}\u0000${choice.model}`
+}
+
+/** Decode a comparison key, rejecting malformed persisted state. */
+function modelChoiceFromKey(key: string): ModelPickerValue | undefined {
+  const separator = key.indexOf('\u0000')
+  if (separator < 0) return undefined
+  const channelId = key.slice(0, separator)
+  const model = key.slice(separator + 1)
+  return model === '' ? undefined : { channelId, model }
+}
+
 /** Render the studio. */
 export function ImageGenPanel(props: {
   api: ImageGenApi
@@ -493,13 +511,11 @@ export function ImageGenPanel(props: {
   // library and the inspiration wall render inside this tree.
   useImageGenLanguageTick()
   const enabled = config?.enabled ?? true
-  // Channel-aware model options: the panel lists every configured alias
-  // (default channel first); legacy flat fields remain the upgrade fallback.
+  // Channel-aware model options: every selector keeps the owning channel so
+  // repeated aliases can never route through the wrong endpoint.
   const modelOptions = imageModelOptions(config)
-  const hasChannels = (config?.channels ?? []).length > 0
-  // With channels configured, the model list is exactly the configured aliases
-  // (possibly empty — never fall back to the hardcoded legacy defaults).
-  const imageModels = hasChannels ? modelOptions.models : normalizeImageModels(config?.imageModels)
+  const imageModels = modelOptions.models
+  const modelGroups: ImageModelGroup[] = modelOptions.groups
   const defaultChannelId = modelOptions.defaultChannelId
   const defaultModel = modelOptions.defaultModel
   const apiUrl = defaultChannelId !== undefined && (config?.channels ?? []).length > 0
@@ -530,9 +546,10 @@ export function ImageGenPanel(props: {
   const [count, setCount] = useState(1)
   const [detail, setDetail] = useState('')
   const [model, setModel] = useState<string>('')
+  const [modelChannelId, setModelChannelId] = useState<string>('')
   const [compareEnabled, setCompareEnabled] = useState(false)
+  /** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
   const [compareModels, setCompareModels] = useState<string[]>([])
-  const [modelOpen, setModelOpen] = useState(false)
   const [refImage, setRefImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [addingToConversation, setAddingToConversation] = useState<number | string | null>(null)
@@ -573,6 +590,8 @@ export function ImageGenPanel(props: {
   const [updating, setUpdating] = useState(false)
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [updateResult, setUpdateResult] = useState<'success' | 'failed' | null>(null)
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const updateAreaRef = useRef<HTMLSpanElement>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
@@ -623,9 +642,12 @@ export function ImageGenPanel(props: {
   const configAsideRef = useRef<HTMLElement>(null)
   const currentSessionId = useCurrentSessionId(sessions)
   const sidebarHistoryHost = useSidebarHistoryHost()
-  const modeModels = tab === 'edit'
-    ? imageModels.filter(candidate => describeModel(candidate).supportsEdit)
-    : imageModels
+  const modeGroups: ImageModelGroup[] = tab === 'edit'
+    ? modelGroups
+        .map(group => ({ ...group, models: group.models.filter(candidate => describeModel(candidate).supportsEdit) }))
+        .filter(group => group.models.length > 0)
+    : modelGroups
+  const modeModels = [...new Set(modeGroups.flatMap(group => group.models))]
   const fileInput = useRef<HTMLInputElement>(null)
   const previewStage = useRef<HTMLDivElement>(null)
   const activeTasks = tasks.filter(task => task.status === 'queued' || task.status === 'running')
@@ -690,15 +712,22 @@ export function ImageGenPanel(props: {
   }, [api, tasks, ecommerceAnchor])
 
 
-  // A saved settings change is authoritative. Keep the active selection and
-  // comparison choices in that allow-list without disturbing valid choices.
-  const modelPreferenceKey = `${modeModels.join('\u0000')}\u0000${defaultModel ?? ''}`
+  // A saved settings change is authoritative. Keep both levels of the active
+  // selection and comparison choices inside the current channel/model matrix.
+  const modelPreferenceKey = `${modeGroups.map(group => `${group.id}:${group.models.join(',')}`).join('|')}\u0000${defaultModel ?? ''}`
   useEffect(() => {
     const preferred = defaultModel !== undefined && modeModels.includes(defaultModel) ? defaultModel : modeModels[0] ?? ''
-    setModel(previous => preferred !== '' || modeModels.includes(previous) ? preferred : '')
+    const selected = resolveModelChoice(modeGroups, { channelId: modelChannelId, model: preferred }, defaultChannelId)
+    setModel(selected.model)
+    setModelChannelId(selected.channelId)
     setCompareModels(previous => {
-      const retained = previous.filter(candidate => modeModels.includes(candidate))
-      return retained.length > 0 ? retained : preferred === '' ? [] : [preferred]
+      const retained = previous.filter(key => {
+        const choice = modelChoiceFromKey(key)
+        if (choice === undefined) return false
+        return modeGroups.some(group => group.id === choice.channelId && group.models.includes(choice.model))
+      })
+      if (retained.length > 0) return retained
+      return selected.model === '' ? [] : [modelChoiceKey(selected)]
     })
   }, [modelPreferenceKey])
 
@@ -850,34 +879,46 @@ export function ImageGenPanel(props: {
     return () => { disposed = true; window.clearInterval(timer) }
   }, [api, comparison])
 
-  // Close the model dropdown when clicking anywhere outside it.
-  const modelMenuRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!modelOpen) return
-    const onPointer = (event: MouseEvent | FocusEvent): void => {
-      const target = event.target
-      if (target instanceof Node && modelMenuRef.current?.contains(target)) return
-      setModelOpen(false)
-    }
-    document.addEventListener('mousedown', onPointer)
-    document.addEventListener('focusin', onPointer)
-    return () => {
-      document.removeEventListener('mousedown', onPointer)
-      document.removeEventListener('focusin', onPointer)
-    }
-  }, [modelOpen])
-
   // Release checks are host-mediated and intentionally best-effort: a GitHub
-  // outage must never make the image-generation studio unavailable.
+  // outage must never make the image-generation studio unavailable. The host
+  // caches successful checks, while this timer/focus path picks up new Releases.
   useEffect(() => {
     let disposed = false
-    api.updateCheck()
-      .then(info => {
-        if (!disposed && info.updateAvailable) setUpdate(info)
-      })
-      .catch(() => { /* update discovery is optional */ })
-    return () => { disposed = true }
+    let checking = false
+    const check = (): void => {
+      if (checking) return
+      checking = true
+      api.updateCheck()
+        .then(info => {
+          if (!disposed) {
+            setUpdate(info.updateAvailable ? info : null)
+            if (!info.updateAvailable) setUpdateOpen(false)
+          }
+        })
+        .catch(() => { /* update discovery is optional */ })
+        .finally(() => { checking = false })
+    }
+    check()
+    const timer = window.setInterval(check, UPDATE_CHECK_INTERVAL_MS)
+    const onVisibility = (): void => { if (document.visibilityState === 'visible') check() }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [api])
+
+  useEffect(() => {
+    if (!updateOpen) return
+    const close = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Node && updateAreaRef.current?.contains(target) === true) return
+      setUpdateOpen(false)
+    }
+    window.addEventListener('pointerdown', close, true)
+    return () => window.removeEventListener('pointerdown', close, true)
+  }, [updateOpen])
 
   const applyUpdate = async (): Promise<void> => {
     if (update === null || updating) return
@@ -1018,29 +1059,34 @@ export function ImageGenPanel(props: {
       setError(tt('edit.required'))
       return
     }
-    const request: GenerateRequest = {
+    const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
+    const baseRequest: Omit<GenerateRequest, 'model' | 'channelId'> = {
       mode: tab === 'edit' ? 'edit' : 'text',
-      model: modeModels.includes(model) ? model : modeModels[0] ?? '',
       prompt: promptText,
       size,
       quality,
       n: count,
       detail,
-      ...defaultChannelId !== undefined ? { channelId: defaultChannelId } : {},
       ...tab === 'edit' && refImage !== null ? { image: refImage.dataUrl } : {},
       ...tab === 'edit' && refImage !== null ? { refName: refImage.name } : {},
     }
     setError(null)
     setSubmitting(true)
     try {
-      const targetModels = (compareEnabled ? compareModels : [request.model]).filter(candidate => modeModels.includes(candidate))
-      if (targetModels.length === 0) {
+      const targetChoices = (compareEnabled ? compareModels.map(modelChoiceFromKey).filter((choice): choice is ModelPickerValue => choice !== undefined) : [selectedChoice])
+        .filter(choice => modeGroups.some(group => group.id === choice.channelId && group.models.includes(choice.model)))
+      if (targetChoices.length === 0) {
         setError(tt('compare.selectRequired'))
         return
       }
-      const comparisonId = targetModels.length > 1 ? newComparisonId() : undefined
-      const comparisonFields = comparisonId === undefined ? {} : { comparisonId, comparisonModels: targetModels }
-      const submitted = await Promise.all(targetModels.map(targetModel => api.taskSubmit({ ...request, model: targetModel, ...comparisonFields })))
+      const comparisonId = targetChoices.length > 1 ? newComparisonId() : undefined
+      const comparisonFields = comparisonId === undefined ? {} : { comparisonId, comparisonModels: targetChoices.map(choice => choice.model) }
+      const submitted = await Promise.all(targetChoices.map(choice => api.taskSubmit({
+        ...baseRequest,
+        model: choice.model,
+        ...choice.channelId === '' ? {} : { channelId: choice.channelId },
+        ...comparisonFields,
+      })))
       for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
       setComparison(comparisonId === undefined ? null : { taskIds: submitted.map(task => task.id), prompt: promptText, comparisonId })
@@ -1060,15 +1106,16 @@ export function ImageGenPanel(props: {
       // asset (or 'none') falls back to text-to-image.
       const refRole = slot.refRole ?? 'product'
       const asset = refRole === 'none' ? undefined : ecommerceAssets.find(item => item.role === refRole)
+      const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
       return {
         mode: asset !== undefined ? 'edit' as const : 'text' as const,
-        model: modeModels.includes(model) ? model : modeModels[0] ?? '',
+        model: selectedChoice.model,
         prompt: ecommerceSlotPrompt(ecommerce, slot, index),
         size: ecommerce.size,
         quality,
         n: 1,
         detail,
-        ...(defaultChannelId !== undefined ? { channelId: defaultChannelId } : {}),
+        ...(selectedChoice.channelId === '' ? {} : { channelId: selectedChoice.channelId }),
         ...(asset !== undefined ? { image: asset.dataUrl, refName: asset.name } : {}),
         workflow: 'ecommerce' as const,
         projectId,
@@ -1929,6 +1976,43 @@ export function ImageGenPanel(props: {
           >
             <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
           </a>
+          {update !== null ? (
+            <span ref={updateAreaRef} className={css.updateArea}>
+              <button
+                type="button"
+                className={css.updateButton}
+                data-kind={updateResult === 'failed' ? 'failed' : updateResult === 'success' ? 'ok' : 'available'}
+                aria-haspopup="dialog"
+                aria-expanded={updateOpen}
+                title={tt('update.available', { version: update.latestVersion })}
+                onClick={() => { setUpdateOpen(open => !open) }}
+              >
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 2.5v7" /><path d="M5.5 7L8 9.5 10.5 7" /><path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" /></svg>
+                {tt('update.button', { version: update.latestVersion })}
+              </button>
+              {updateOpen ? (
+                <section className={css.updatePopover} role="dialog" aria-label={tt('update.title')}>
+                  <header className={css.updatePopoverHeader}>
+                    <span className={css.updatePopoverHeading}>
+                      <strong>{tt('update.title')}</strong>
+                      <small>{tt('update.available', { version: update.latestVersion })}</small>
+                    </span>
+                    <button type="button" className={css.updateClose} aria-label={tt('update.close')} title={tt('update.close')} onClick={() => { setUpdateOpen(false) }}>×</button>
+                  </header>
+                  {updateMessage !== null ? <div className={css.updateStatus} data-kind={updateResult === 'failed' ? 'failed' : 'ok'}>{updateMessage}</div> : null}
+                  <div className={css.updateNotes}>
+                    {update.releaseNotes !== undefined && update.releaseNotes.trim() !== '' ? renderMarkdown(update.releaseNotes) : <p>{tt('update.noNotes')}</p>}
+                  </div>
+                  <footer className={css.updatePopoverFooter}>
+                    <a className={css.updateRelease} href={update.releaseUrl} target="_blank" rel="noreferrer">{tt('update.release')}</a>
+                    <Button variant="primary" size="sm" disabled={updating || updateResult === 'success'} onClick={() => { void applyUpdate() }}>
+                      {updating ? tt('update.installing') : updateResult === 'success' ? tt('update.installed') : tt('update.install')}
+                    </Button>
+                  </footer>
+                </section>
+              ) : null}
+            </span>
+          ) : null}
         </span>
         <GooeyNav
           ariaLabel={tt('workspace.label')}
@@ -1969,20 +2053,6 @@ export function ImageGenPanel(props: {
           </button>
         </span>
       </header>
-
-      {update !== null ? (
-        <div className={css.updateBanner} data-kind={updateResult === 'success' ? 'ok' : 'warn'}>
-          <span className={css.updateText}>
-            {updateMessage ?? tt('update.available', { version: update.latestVersion })}
-          </span>
-          <span className={css.updateActions}>
-            <a className={css.updateRelease} href={update.releaseUrl} target="_blank" rel="noreferrer">{tt('update.release')}</a>
-            <Button variant="primary" size="sm" disabled={updating || updateMessage !== null} onClick={() => { void applyUpdate() }}>
-              {updating ? tt('update.installing') : tt('update.install')}
-            </Button>
-          </span>
-        </div>
-      ) : null}
 
       <div className={css.studio}>
         {/* ------------------------------- left history + generation workspace */}
@@ -2267,7 +2337,17 @@ export function ImageGenPanel(props: {
                 </div>
                 <div className={css.ecommerceSection}>
                   <h3>{tt('ecommerce.generation')}</h3>
-                  <select value={modeModels.includes(model) ? model : modeModels[0] ?? ''} aria-label={tt('model.label')} onChange={event => setModel(event.target.value)}>{modeModels.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                  <ModelPicker
+                    groups={modeGroups}
+                    value={{ channelId: modelChannelId, model }}
+                    channelLabel={tt('model.channel')}
+                    modelLabel={tt('model.label')}
+                    channelPlaceholder={tt('model.channelPlaceholder')}
+                    emptyLabel={tt('model.noEditModels')}
+                    ariaLabel={tt('model.label')}
+                    disabled={submitting}
+                    onChange={choice => { setModelChannelId(choice.channelId); setModel(choice.model) }}
+                  />
                   <div className={css.optionRow}>{QUALITIES.map(option => <Pill key={option} active={quality === option} onClick={() => { setQuality(option) }} className={css.optionPill}>{tt(`quality.${option}` as const)}</Pill>)}</div>
                 </div>
                 <input
@@ -2465,37 +2545,18 @@ export function ImageGenPanel(props: {
               </div>
             ) : null}
             {isGeneration ? <label className={css.modelWrap}>
-              <span className={css.modelLabel}>{tt('model.label')}</span>
-              <span ref={modelMenuRef} className={css.modelMenu} data-open={modelOpen ? 'true' : 'false'}>
-                <button
-                  type="button"
-                  className={css.modelSelect}
-                  disabled={submitting}
-                  aria-haspopup="listbox"
-                  aria-expanded={modelOpen}
-                  onClick={() => { setModelOpen(open => !open) }}
-                >
-                  <span>{model || tt('model.noEditModels')}</span>
-                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 10.5L4 6h8z"/></svg>
-                </button>
-                {modelOpen ? (
-                  <div className={css.modelMenuList} role="listbox" aria-label={tt('model.label')}>
-                    {modeModels.map(option => (
-                      <button
-                        key={option}
-                        type="button"
-                        role="option"
-                        aria-selected={model === option}
-                        className={css.modelMenuItem}
-                        data-selected={model === option ? '' : undefined}
-                        onClick={() => { setModel(option); setModelOpen(false) }}
-                      >
-                        {option}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </span>
+              <span className={css.modelLabel}>{tt('model.channel')} / {tt('model.label')}</span>
+              <ModelPicker
+                groups={modeGroups}
+                value={{ channelId: modelChannelId, model }}
+                channelLabel={tt('model.channel')}
+                modelLabel={tt('model.label')}
+                channelPlaceholder={tt('model.channelPlaceholder')}
+                emptyLabel={tt('model.noEditModels')}
+                ariaLabel={tt('model.label')}
+                disabled={submitting}
+                onChange={choice => { setModelChannelId(choice.channelId); setModel(choice.model) }}
+              />
             </label> : null}
             {isGeneration ? <div className={css.compareControl}>
               <label className={css.compareToggle}>
@@ -2504,12 +2565,16 @@ export function ImageGenPanel(props: {
               </label>
               {compareEnabled ? (
                 <div className={css.compareModelChoices} role="group" aria-label={tt('compare.models')}>
-                  {modeModels.map(option => (
-                    <label key={option}>
-                      <input type="checkbox" checked={compareModels.includes(option)} onChange={() => { setCompareModels(previous => previous.includes(option) ? previous.filter(value => value !== option) : [...previous, option]) }} />
-                      <span>{option}</span>
-                    </label>
-                  ))}
+                  {modeGroups.map(group => <div key={group.id || '__default__'} className={css.compareChannelGroup}>
+                    <span className={css.compareChannelName}>{group.name || tt('model.channelPlaceholder')}</span>
+                    {group.models.map(option => {
+                      const key = modelChoiceKey({ channelId: group.id, model: option })
+                      return <label key={key} title={option}>
+                        <input type="checkbox" checked={compareModels.includes(key)} onChange={() => { setCompareModels(previous => previous.includes(key) ? previous.filter(value => value !== key) : [...previous, key]) }} />
+                        <span>{option}</span>
+                      </label>
+                    })}
+                  </div>)}
                 </div>
               ) : null}
             </div> : null}
@@ -2533,7 +2598,7 @@ export function ImageGenPanel(props: {
           {workspace === 'canvas' ? (
             <CanvasWorkspace
               api={api}
-              imageModels={imageModels}
+              modelGroups={modelGroups}
               defaultChannelId={defaultChannelId}
               connected={connected}
               history={history}

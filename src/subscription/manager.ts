@@ -16,6 +16,7 @@
  *   adapter in this bundle.
  */
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
+import type CredentialProvider from '@deepseek-ai/dsh-credentials'
 import type { Context } from '@deepseek-ai/cordis'
 import { createPkce, type Pkce } from './oauth.js'
 import { startLoopback } from './loopback.js'
@@ -134,10 +135,17 @@ export class SubscriptionManager {
 
   constructor(private readonly ctx: Context) {}
 
+  /** Resolve Credentials dynamically so this service stays optional. */
+  private credentials(): CredentialProvider {
+    const credentials = this.ctx.get('credentials') as CredentialProvider | undefined
+    if (credentials === undefined) throw new Error('当前部署未挂载 DSH Credentials，订阅账号不可用')
+    return credentials
+  }
+
   /** Read a vendor's stored blob, or undefined when signed out. */
   async readBlob(vendor: SubscriptionVendor): Promise<SubscriptionBlob | undefined> {
     try {
-      const resolved = await this.ctx.credentials.resolve(subscriptionOauthRef(vendor))
+      const resolved = await this.credentials().resolve(subscriptionOauthRef(vendor))
       const raw = resolved?.value ?? ''
       if (raw.trim().length === 0) return undefined
       return parseBlob(raw)
@@ -255,14 +263,14 @@ export class SubscriptionManager {
 
   /** Sign out: clear the blob and the caches. No other setting changes. */
   async logout(vendor: SubscriptionVendor): Promise<void> {
-    await this.ctx.credentials.unset(subscriptionOauthRef(vendor))
+    await this.credentials().unset(subscriptionOauthRef(vendor))
     this.loginErrors.delete(vendor)
     this.blobCache.delete(vendor)
     this.projectCache.clear()
   }
 
   private async saveBlob(vendor: SubscriptionVendor, blob: SubscriptionBlob): Promise<void> {
-    await this.ctx.credentials.set(subscriptionOauthRef(vendor), serializeBlob(blob))
+    await this.credentials().set(subscriptionOauthRef(vendor), serializeBlob(blob))
     this.blobCache.set(vendor, blob)
   }
 

@@ -20,7 +20,7 @@ import { CardForm, booleanField, secretField, textField, type CardActions, type 
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
-import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isSubscriptionProvider, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
+import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isChatCompletionsUrl, isSubscriptionProvider, resolveChannelProtocol, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -279,6 +279,8 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   const [subscriptionBusy, setSubscriptionBusy] = useState<Partial<Record<SubscriptionProvider, 'login' | 'logout'>>>({})
   const [subscriptionPending, setSubscriptionPending] = useState<SubscriptionProvider[]>([])
   const [subscriptionMessage, setSubscriptionMessage] = useState<Partial<Record<SubscriptionProvider, string>>>({})
+  /** Browser OAuth/device tabs opened for each pending subscription login. */
+  const subscriptionPopups = useRef<Partial<Record<SubscriptionProvider, Window>>>({})
   // Channel list local states.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [presetPickerOpen, setPresetPickerOpen] = useState(false)
@@ -286,6 +288,13 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   const [presetError, setPresetError] = useState<string | null>(null)
   const [usage, setUsage] = useState<UsageCounters | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+
+  useEffect(() => () => {
+    for (const popup of Object.values(subscriptionPopups.current)) {
+      try { popup?.close() } catch { /* ignore */ }
+    }
+    subscriptionPopups.current = {}
+  }, [])
 
   const refreshSubscriptions = async (): Promise<SubscriptionStatusMap> => {
     const response = await fetch(SUBSCRIPTION_API.status, { method: 'POST', cache: 'no-store' })
@@ -327,6 +336,13 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
       void refreshSubscriptions().then(next => {
         const landed = pending.filter(provider => next[provider].state === 'logged-in')
         if (landed.length > 0) {
+          for (const provider of landed) {
+            const popup = subscriptionPopups.current[provider]
+            if (popup !== undefined) {
+              try { popup.close() } catch { /* cross-origin close is still best-effort */ }
+              delete subscriptionPopups.current[provider]
+            }
+          }
           setSubscriptionPending(current => current.filter(provider => next[provider].state !== 'logged-in'))
           setSubscriptionMessage(current => ({ ...current, ...Object.fromEntries(landed.map(provider => [provider, t('settings.subscriptionLoginOk')])) }))
         }
@@ -337,8 +353,13 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   }, [open, subscriptionPending.join(','), subscriptionStatus])
 
   const subscriptionLogin = async (provider: SubscriptionProvider): Promise<void> => {
+    const previous = subscriptionPopups.current[provider]
+    if (previous !== undefined) { try { previous.close() } catch { /* ignore */ } }
     const popup = window.open('about:blank', '_blank')
-    if (popup !== null) { try { popup.opener = null } catch { /* ignore */ } }
+    if (popup !== null) {
+      subscriptionPopups.current[provider] = popup
+      try { popup.opener = null } catch { /* ignore */ }
+    }
     setSubscriptionBusy(current => ({ ...current, [provider]: 'login' }))
     setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
     try {
@@ -357,6 +378,7 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
       setSubscriptionPending(current => current.includes(provider) ? current : [...current, provider])
     } catch (error) {
       popup?.close()
+      delete subscriptionPopups.current[provider]
       setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
     } finally {
       setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
@@ -375,6 +397,11 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
       const body = await response.json() as { ok?: boolean; message?: string }
       if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
       await refreshSubscriptions()
+      const popup = subscriptionPopups.current[provider]
+      if (popup !== undefined) {
+        try { popup.close() } catch { /* ignore */ }
+        delete subscriptionPopups.current[provider]
+      }
       setSubscriptionPending(current => current.filter(item => item !== provider))
       setSubscriptionMessage(current => ({ ...current, [provider]: t('settings.subscriptionLoginOk') }))
     } catch (error) {
@@ -395,6 +422,11 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
       })
       const body = await response.json() as { ok?: boolean; message?: string }
       if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+      const popup = subscriptionPopups.current[provider]
+      if (popup !== undefined) {
+        try { popup.close() } catch { /* ignore */ }
+        delete subscriptionPopups.current[provider]
+      }
       setSubscriptionStatus(current => ({ ...current, [provider]: { state: 'logged-out' } }))
       setSubscriptionPending(current => current.filter(item => item !== provider))
     } catch (error) {
@@ -453,7 +485,10 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   }
 
   const channels = state.channels.channels
-  const modelAliases = [...new Set(channels.flatMap(channel => channel.models.map(model => model.alias)).filter(alias => alias !== ''))]
+  const modelGroups = channels
+    .map(channel => ({ id: channel.id, name: channel.name.trim() || channel.id, models: [...new Set(channel.models.map(model => model.alias).filter(alias => alias !== ''))] }))
+    .filter(group => group.models.length > 0)
+  const modelAliases = [...new Set(modelGroups.flatMap(group => group.models))]
   const editing = editingId === null ? undefined : channels.find(channel => channel.id === editingId)
   const readyChannels = channels.filter(channel => state.channels.keySet[channel.id] === true && channel.models.length > 0).length
   const totalModels = channels.reduce((total, channel) => total + channel.models.length, 0)
@@ -624,7 +659,9 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                     disabled={disabled}
                     onChange={event => { props.channels.setDefaultModel(event.target.value) }}
                   >
-                    {modelAliases.map(model => <option key={model} value={model}>{model}</option>)}
+                    {modelGroups.map(group => <optgroup key={group.id} label={group.name}>
+                      {group.models.map(model => <option key={`${group.id}:${model}`} value={model}>{model}</option>)}
+                    </optgroup>)}
                   </select>
                 </div>
               ) : null}
@@ -1072,6 +1109,7 @@ function newChannelDraft(preset: PresetProviderView | undefined): ChannelDraft {
     name: preset?.name ?? '',
     apiUrl: preset?.apiUrl ?? '',
     apiUrlFull: false,
+    protocol: 'auto',
     ...preset?.subscription === undefined ? {} : { auth: 'subscription' as const, subscription: preset.subscription },
     models: (preset?.models ?? []).map(model => ({ ...model })),
   }
@@ -1210,10 +1248,14 @@ function ChannelEditor(props: {
   }
 
   const detect = (): void => {
-    if (channel.apiUrlFull) return
+    if (channel.apiUrlFull && resolveChannelProtocol(channel.apiUrl, channel.protocol) !== 'chat-completions') return
     setDetecting(true)
     setDetectError(null)
-    const payload: Record<string, unknown> = { channelId: channel.id }
+    const payload: Record<string, unknown> = {
+      channelId: channel.id,
+      apiUrlFull: channel.apiUrlFull,
+      protocol: channel.protocol ?? 'auto',
+    }
     if (channel.apiUrl.trim() !== '') payload.apiUrl = channel.apiUrl.trim()
     if (keyDraft.trim() !== '') payload.apiKey = keyDraft.trim()
     void fetch(IMAGE_MODEL_API.models, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
@@ -1231,7 +1273,7 @@ function ChannelEditor(props: {
   useEffect(() => {
     if (autoDetected.current) return
     autoDetected.current = true
-    if (!subscriptionMode && !channel.apiUrlFull && channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
+    if (!subscriptionMode && (!channel.apiUrlFull || resolveChannelProtocol(channel.apiUrl, channel.protocol) === 'chat-completions') && channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
   }, [])
 
   const addManual = (): void => {
@@ -1346,7 +1388,23 @@ function ChannelEditor(props: {
         ) : <>
         <div className={css.editorField}>
           <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
-          <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrl: event.target.value }) }} />
+          <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => {
+            const apiUrl = event.target.value
+            props.onPatch({ apiUrl, ...isChatCompletionsUrl(apiUrl) ? { apiUrlFull: true } : {} })
+          }} />
+          <label className={css.label} htmlFor="dsh-imagegen-channel-protocol">{t('channels.protocol')}</label>
+          <select
+            id="dsh-imagegen-channel-protocol"
+            className={css.input}
+            value={channel.protocol ?? 'auto'}
+            disabled={!props.writable}
+            onChange={event => { props.onPatch({ protocol: event.target.value as ChannelDraft['protocol'] }) }}
+          >
+            <option value="auto">{t('channels.protocolAuto')}</option>
+            <option value="images">{t('channels.protocolImages')}</option>
+            <option value="chat-completions">{t('channels.protocolChat')}</option>
+          </select>
+          <p className={css.fieldHint}>{t('channels.protocolHint')}</p>
           <label className={css.checkboxRow}>
             <input type="checkbox" checked={channel.apiUrlFull} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrlFull: event.target.checked }) }} />
             <span>{t('channels.apiUrlFull')}</span>
@@ -1380,7 +1438,7 @@ function ChannelEditor(props: {
 
         <div className={css.editorSectionHeader}>
           <h4 className={css.label}>{t('channels.modelCatalogTitle')}</h4>
-          <button type="button" className={css.modelFetch} disabled={!props.writable || detecting || channel.apiUrlFull} onClick={detect}>
+          <button type="button" className={css.modelFetch} disabled={!props.writable || detecting || (channel.apiUrlFull && resolveChannelProtocol(channel.apiUrl, channel.protocol) !== 'chat-completions')} onClick={detect}>
             {detecting ? t('channels.detecting') : t('channels.detect')}
           </button>
         </div>

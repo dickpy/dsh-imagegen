@@ -17,12 +17,15 @@ export interface UpdateInfo {
   updateAvailable: boolean
   releaseUrl: string
   publishedAt?: string
+  /** Markdown release body shown in the update popover. */
+  releaseNotes?: string
 }
 
 interface GitHubRelease {
   tag_name?: unknown
   html_url?: unknown
   published_at?: unknown
+  body?: unknown
   draft?: unknown
   prerelease?: unknown
 }
@@ -64,12 +67,14 @@ export async function checkForUpdate(fetchFn: typeof fetch = fetch, now = Date.n
   const latestVersion = normalizedReleaseVersion(release.tag_name)
   if (latestVersion === undefined) throw new Error('latest GitHub Release has an invalid version tag')
   const releaseUrl = typeof release.html_url === 'string' ? release.html_url : 'https://github.com/dickpy/dsh-imagegen/releases'
+  const releaseNotes = typeof release.body === 'string' ? release.body.trim() : ''
   const value: UpdateInfo = {
     currentVersion: CURRENT_VERSION,
     latestVersion,
     updateAvailable: compareVersions(latestVersion, CURRENT_VERSION) > 0,
     releaseUrl,
     ...typeof release.published_at === 'string' ? { publishedAt: release.published_at } : {},
+    ...releaseNotes === '' ? {} : { releaseNotes: releaseNotes.slice(0, 20_000) },
   }
   cached = { expiresAt: now + CACHE_TTL_MS, value }
   return value

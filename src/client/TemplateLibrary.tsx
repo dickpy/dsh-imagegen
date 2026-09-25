@@ -6,8 +6,8 @@
  * auto-synced in the background) and reference images load lazily through the
  * host's caching proxy, so browsing progressively mirrors the gallery onto the
  * local disk. Templates can be starred; favorites persist host-side as full
- * case snapshots and are reachable through the ★ filter pill per tab. Picking
- * a template hands its prompt back to the studio form.
+ * case snapshots and are reachable through a top-level tab grouped by source.
+ * Picking a template hands its prompt back and closes the library.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -17,6 +17,15 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TEMPLATE_SOURCES, TEMPLATES_API, type TemplateCase, type TemplateFavorite, type TemplateListResult } from '../protocol.ts'
 import css from './templates.module.css'
+
+/** One case paired with the source that owns it (favorites mix sources). */
+interface TemplateEntry {
+  sourceId: string
+  item: TemplateCase
+}
+
+/** Detail-view selection keeps its source so proxy URLs and stars stay scoped. */
+interface SelectedTemplate extends TemplateEntry {}
 
 /** Concurrent image downloads while caching the whole gallery offline. */
 const CACHE_ALL_CONCURRENCY = 4
@@ -90,8 +99,8 @@ export function TemplateLibrary(props: {
   const [favorites, setFavorites] = useState<TemplateFavorite[]>([])
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('')
-  const [favoritesOnly, setFavoritesOnly] = useState(false)
-  const [selected, setSelected] = useState<TemplateCase | null>(null)
+  const [favoritesView, setFavoritesView] = useState(false)
+  const [selected, setSelected] = useState<SelectedTemplate | null>(null)
   const [copied, setCopied] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -99,7 +108,7 @@ export function TemplateLibrary(props: {
   const searchRef = useRef<HTMLInputElement>(null)
 
   const list = lists[activeSource]
-  const loadError = loadErrors[activeSource] || null
+  const loadError = favoritesView ? null : loadErrors[activeSource] || null
 
   /** Fetch one source's list into the per-source cache. */
   const loadSource = (sourceId: string): void => {
@@ -123,41 +132,43 @@ export function TemplateLibrary(props: {
     if (sourceId === activeSource) return
     setActiveSource(sourceId)
     setCategory('')
-    setFavoritesOnly(false)
+    setFavoritesView(false)
     setSelected(null)
     setNotice(null)
     if (lists[sourceId] === undefined) loadSource(sourceId)
   }
 
+  /** Every favorite keeps its source so the favorites tab can group libraries. */
+  const favoriteItems = useMemo<TemplateEntry[]>(
+    () => favorites.map(entry => ({ sourceId: entry.sourceId, item: entry.case })),
+    [favorites],
+  )
+  const visibleItems = useMemo<TemplateEntry[]>(() => {
+    if (favoritesView) return favoriteItems
+    return (list?.cases ?? []).map(item => ({ sourceId: activeSource, item }))
+  }, [activeSource, favoriteItems, favoritesView, list])
+  const favKeys = useMemo(() => new Set(favorites.map(entry => entry.key)), [favorites])
+
   const categories = useMemo(() => {
-    if (list === undefined) return [] as Array<{ key: string; label: string; count: number }>
     const counts = new Map<string, { label: string; count: number }>()
-    for (const item of list.cases) {
+    for (const { item } of visibleItems) {
       const entry = counts.get(item.category) ?? { label: item.categoryZh || item.category, count: 0 }
       entry.count += 1
       counts.set(item.category, entry)
     }
     return [...counts.entries()].map(([key, value]) => ({ key, label: value.label, count: value.count }))
-  }, [list])
-
-  /** Favorites of the active source, as standalone case snapshots. */
-  const activeFavorites = useMemo(
-    () => favorites.filter(entry => entry.sourceId === activeSource).map(entry => entry.case),
-    [favorites, activeSource],
-  )
-  const favKeys = useMemo(() => new Set(favorites.map(entry => entry.key)), [favorites])
+  }, [visibleItems])
 
   const filtered = useMemo(() => {
-    const pool = favoritesOnly ? activeFavorites : list?.cases ?? []
     const needle = query.trim().toLowerCase()
-    return pool.filter(item => {
+    return visibleItems.filter(({ item }) => {
       if (category !== '' && item.category !== category) return false
       if (needle === '') return true
       return item.title.toLowerCase().includes(needle)
         || item.prompt.toLowerCase().includes(needle)
         || item.sourceLabel.toLowerCase().includes(needle)
     })
-  }, [list, activeFavorites, favoritesOnly, query, category])
+  }, [visibleItems, query, category])
 
   // Escape backs out of the detail view first, then closes the modal.
   useEffect(() => {
@@ -187,12 +198,12 @@ export function TemplateLibrary(props: {
     }
   }
 
-  /** Star / unstar one template of the active source. */
-  const toggleFavorite = (item: TemplateCase): void => {
-    const key = favoriteKeyOf(activeSource, item)
+  /** Star / unstar one template, preserving its owning source. */
+  const toggleFavorite = (sourceId: string, item: TemplateCase): void => {
+    const key = favoriteKeyOf(sourceId, item)
     const pending = favKeys.has(key)
       ? api.favoritesRemove(key)
-      : api.favoritesAdd(activeSource, item)
+      : api.favoritesAdd(sourceId, item)
     pending.then(setFavorites).catch(() => { /* leave the star as-is on failure */ })
   }
 
@@ -238,6 +249,42 @@ export function TemplateLibrary(props: {
     }
   }
 
+  const renderCard = ({ sourceId, item }: TemplateEntry): React.JSX.Element => {
+    const key = favoriteKeyOf(sourceId, item)
+    const active = favKeys.has(key)
+    return <button
+      key={key}
+      type="button"
+      className={css.card}
+      onClick={() => { setSelected({ sourceId, item }); setCopied(false) }}
+    >
+      <span className={css.thumbWrap}>
+        <TemplateThumb sourceId={sourceId} item={item} />
+        {item.featured ? <span className={css.featuredBadge}>{tt('templates.featured')}</span> : null}
+        <FavoriteStar
+          active={active}
+          title={active ? tt('templates.favoriteRemove') : tt('templates.favoriteAdd')}
+          onToggle={() => { toggleFavorite(sourceId, item) }}
+        />
+      </span>
+      <span className={css.cardBody}>
+        <span className={css.cardTitle}>{item.title}</span>
+        <span className={css.cardMeta}>
+          <span className={css.cardCategory}>{item.categoryZh || item.category}</span>
+          {item.sourceLabel !== '' ? <span className={css.cardSource}>{item.sourceLabel}</span> : null}
+        </span>
+      </span>
+    </button>
+  }
+
+  const applySelected = (): void => {
+    if (selected === null) return
+    const prompt = selected.item.prompt
+    setSelected(null)
+    onUse(prompt)
+    onClose()
+  }
+
   const originLabel = list === undefined ? '' : tt(list.origin === 'refreshed' ? 'templates.origin.refreshed' : 'templates.origin.bundled')
   const activeMeta = TEMPLATE_SOURCES.find(source => source.id === activeSource)!
 
@@ -247,18 +294,20 @@ export function TemplateLibrary(props: {
         <header className={css.header}>
           <span className={css.heading}>
             <h3 className={css.title}>{tt('templates.title')}</h3>
-            {list !== undefined ? (
+            {favoritesView ? (
+              <span className={css.meta}>{tt('templates.favoritesCount', { count: favorites.length })}</span>
+            ) : list !== undefined ? (
               <span className={css.meta}>{tt('templates.meta', { count: list.total, origin: originLabel })}</span>
             ) : null}
           </span>
           <span className={css.headerActions}>
-            <Button variant="outline" size="sm" disabled={refreshing || cacheAll.running} onClick={() => { void refresh() }}>
+            <Button variant="outline" size="sm" disabled={refreshing || cacheAll.running || favoritesView} onClick={() => { void refresh() }}>
               {refreshing ? tt('templates.refreshing') : tt('templates.refresh')}
             </Button>
             <Button
               variant="outline"
               size="sm"
-              disabled={list === undefined || cacheAll.running}
+              disabled={favoritesView || list === undefined || cacheAll.running}
               title={tt('templates.cacheAllHint')}
               onClick={() => { void cacheAllImages() }}
             >
@@ -280,9 +329,9 @@ export function TemplateLibrary(props: {
               key={source.id}
               type="button"
               role="tab"
-              aria-selected={source.id === activeSource}
+              aria-selected={!favoritesView && source.id === activeSource}
               className={css.sourceTab}
-              data-active={source.id === activeSource ? '' : undefined}
+              data-active={!favoritesView && source.id === activeSource ? '' : undefined}
               title={source.description}
               onClick={() => { switchSource(source.id) }}
             >
@@ -290,6 +339,23 @@ export function TemplateLibrary(props: {
               {lists[source.id] !== undefined ? <span className={css.sourceTabCount}>{lists[source.id]!.total}</span> : null}
             </button>
           ))}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={favoritesView}
+            className={css.sourceTab}
+            data-active={favoritesView ? '' : undefined}
+            title={tt('templates.favoritesHint')}
+            onClick={() => {
+              setFavoritesView(true)
+              setCategory('')
+              setSelected(null)
+              setNotice(null)
+            }}
+          >
+            ★ {tt('templates.favorites')}
+            {favorites.length > 0 ? <span className={css.sourceTabCount}>{favorites.length}</span> : null}
+          </button>
         </div>
 
         <div className={css.toolbar}>
@@ -305,27 +371,18 @@ export function TemplateLibrary(props: {
             <button
               type="button"
               className={css.categoryPill}
-              data-active={favoritesOnly ? '' : undefined}
-              title={tt('templates.favoritesHint')}
-              onClick={() => { setFavoritesOnly(value => !value) }}
+              data-active={category === '' ? '' : undefined}
+              onClick={() => { setCategory('') }}
             >
-              ★ {tt('templates.favorites')}{activeFavorites.length > 0 ? ` ${activeFavorites.length}` : ''}
-            </button>
-            <button
-              type="button"
-              className={css.categoryPill}
-              data-active={!favoritesOnly && category === '' ? '' : undefined}
-              onClick={() => { setFavoritesOnly(false); setCategory('') }}
-            >
-              {tt('templates.all')}{list !== undefined ? ` ${list.total}` : ''}
+              {tt('templates.all')}{visibleItems.length > 0 ? ` ${visibleItems.length}` : ''}
             </button>
             {categories.map(entry => (
               <button
                 key={entry.key}
                 type="button"
                 className={css.categoryPill}
-                data-active={!favoritesOnly && category === entry.key ? '' : undefined}
-                onClick={() => { setFavoritesOnly(false); setCategory(entry.key) }}
+                data-active={category === entry.key ? '' : undefined}
+                onClick={() => { setCategory(entry.key) }}
               >
                 {entry.label} {entry.count}
               </button>
@@ -336,14 +393,14 @@ export function TemplateLibrary(props: {
         {notice !== null ? <div className={css.notice} role="status">{notice}</div> : null}
 
         <div className={css.body}>
-          {list === undefined && loadError === null ? (
+          {!favoritesView && list === undefined && loadError === null ? (
             <div className={css.state} role="status">
               <span className={css.spinner} />
               <span>{tt('templates.loading')}</span>
             </div>
           ) : null}
 
-          {loadError !== null ? (
+          {!favoritesView && loadError !== null ? (
             <div className={css.state} role="alert">
               <span>{tt('templates.loadFailed', { error: loadError })}</span>
               <Button variant="outline" size="sm" onClick={() => { setLoadErrors(current => ({ ...current, [activeSource]: '' })); loadSource(activeSource) }}>
@@ -352,48 +409,40 @@ export function TemplateLibrary(props: {
             </div>
           ) : null}
 
-          {loadError === null && (list !== undefined || favoritesOnly) && filtered.length === 0 ? (
-            <div className={css.state}>
-              {favoritesOnly && activeFavorites.length === 0 ? tt('templates.favoritesEmpty') : tt('templates.empty')}
+          {favoritesView && filtered.length === 0 ? (
+            <div className={css.state}>{tt('templates.favoritesEmpty')}</div>
+          ) : null}
+
+          {!favoritesView && loadError === null && list !== undefined && filtered.length === 0 ? (
+            <div className={css.state}>{tt('templates.empty')}</div>
+          ) : null}
+
+          {favoritesView && filtered.length > 0 ? (
+            <div className={css.favoriteGroups}>
+              {TEMPLATE_SOURCES.map(source => {
+                const group = filtered.filter(entry => entry.sourceId === source.id)
+                if (group.length === 0) return null
+                return <section key={source.id} className={css.favoriteGroup}>
+                  <div className={css.favoriteGroupHead}>
+                    <span className={css.favoriteGroupTitle}>{source.label}</span>
+                    <span className={css.favoriteGroupCount}>{group.length}</span>
+                  </div>
+                  <div className={css.grid}>{group.map(renderCard)}</div>
+                </section>
+              })}
             </div>
           ) : null}
 
-          {filtered.length > 0 ? (
-            <div className={css.grid}>
-              {filtered.map(item => (
-                <button
-                  key={`${activeSource}:${item.id}`}
-                  type="button"
-                  className={css.card}
-                  onClick={() => { setSelected(item); setCopied(false) }}
-                >
-                  <span className={css.thumbWrap}>
-                    <TemplateThumb sourceId={activeSource} item={item} />
-                    {item.featured ? <span className={css.featuredBadge}>{tt('templates.featured')}</span> : null}
-                    <FavoriteStar
-                      active={favKeys.has(favoriteKeyOf(activeSource, item))}
-                      title={favKeys.has(favoriteKeyOf(activeSource, item)) ? tt('templates.favoriteRemove') : tt('templates.favoriteAdd')}
-                      onToggle={() => { toggleFavorite(item) }}
-                    />
-                  </span>
-                  <span className={css.cardBody}>
-                    <span className={css.cardTitle}>{item.title}</span>
-                    <span className={css.cardMeta}>
-                      <span className={css.cardCategory}>{item.categoryZh || item.category}</span>
-                      {item.sourceLabel !== '' ? <span className={css.cardSource}>{item.sourceLabel}</span> : null}
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
+          {!favoritesView && filtered.length > 0 ? (
+            <div className={css.grid}>{filtered.map(renderCard)}</div>
           ) : null}
         </div>
 
         <footer className={css.footer}>
           <span className={css.attribution}>{tt('templates.attribution')}</span>
-          <a className={css.sourceLink} href={activeMeta.homepage} target="_blank" rel="noreferrer">
+          {!favoritesView ? <a className={css.sourceLink} href={activeMeta.homepage} target="_blank" rel="noreferrer">
             {tt('templates.source', { label: activeMeta.label })}
-          </a>
+          </a> : null}
         </footer>
       </section>
 
@@ -401,37 +450,37 @@ export function TemplateLibrary(props: {
         <div className={css.detailOverlay} onClick={() => { setSelected(null) }}>
           <section className={css.detail} onClick={(event) => { event.stopPropagation() }}>
             <div className={css.detailMedia}>
-              {selected.image !== '' ? (
-                <img className={css.detailImage} src={imageUrlOf(activeSource, selected)} alt={selected.title} />
+              {selected.item.image !== '' ? (
+                <img className={css.detailImage} src={imageUrlOf(selected.sourceId, selected.item)} alt={selected.item.title} />
               ) : (
                 <span className={css.thumbPlaceholder} aria-hidden="true" />
               )}
             </div>
             <div className={css.detailInfo}>
-              <h4 className={css.detailTitle}>{selected.title}</h4>
+              <h4 className={css.detailTitle}>{selected.item.title}</h4>
               <div className={css.detailMeta}>
-                <span className={css.cardCategory}>{selected.categoryZh || selected.category}</span>
-                {selected.sourceUrl !== '' ? (
-                  <a className={css.detailLink} href={selected.sourceUrl} target="_blank" rel="noreferrer">{selected.sourceLabel || selected.sourceUrl}</a>
+                <span className={css.cardCategory}>{selected.item.categoryZh || selected.item.category}</span>
+                {selected.item.sourceUrl !== '' ? (
+                  <a className={css.detailLink} href={selected.item.sourceUrl} target="_blank" rel="noreferrer">{selected.item.sourceLabel || selected.item.sourceUrl}</a>
                 ) : null}
-                {selected.githubUrl !== '' ? (
-                  <a className={css.detailLink} href={selected.githubUrl} target="_blank" rel="noreferrer">GitHub</a>
+                {selected.item.githubUrl !== '' ? (
+                  <a className={css.detailLink} href={selected.item.githubUrl} target="_blank" rel="noreferrer">GitHub</a>
                 ) : null}
               </div>
-              <pre className={css.detailPrompt}>{selected.prompt}</pre>
+              <pre className={css.detailPrompt}>{selected.item.prompt}</pre>
               <div className={css.detailActions}>
-                <Button variant="primary" size="md" onClick={() => { onUse(selected.prompt) }}>
+                <Button variant="primary" size="md" onClick={applySelected}>
                   {tt('templates.use')}
                 </Button>
-                <Button variant="outline" size="md" onClick={() => { void copyPrompt(selected.prompt) }}>
+                <Button variant="outline" size="md" onClick={() => { void copyPrompt(selected.item.prompt) }}>
                   {copied ? tt('templates.copied') : tt('templates.copy')}
                 </Button>
                 <Button
                   variant="outline"
                   size="md"
-                  onClick={() => { toggleFavorite(selected) }}
+                  onClick={() => { toggleFavorite(selected.sourceId, selected.item) }}
                 >
-                  {favKeys.has(favoriteKeyOf(activeSource, selected)) ? tt('templates.unfavorite') : tt('templates.favorite')}
+                  {favKeys.has(favoriteKeyOf(selected.sourceId, selected.item)) ? tt('templates.unfavorite') : tt('templates.favorite')}
                 </Button>
                 <Button variant="outline" size="md" onClick={() => { setSelected(null) }}>
                   {tt('templates.back')}

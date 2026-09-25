@@ -25,7 +25,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 // packages at runtime, and this deployment does not resolve them at
 // type-check time either.
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { IMAGEGEN_SETTINGS_NAMESPACE, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
+import { IMAGEGEN_SETTINGS_NAMESPACE, isChannelProtocolPreference, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
 import { SubscriptionManager } from './subscription/manager.ts'
 import { syncAllTemplates } from './templates-store.ts'
@@ -433,6 +433,7 @@ const configSchema = z.object({
     name: z.string().default(''),
     apiUrl: z.string().default(''),
     apiUrlFull: z.boolean().default(false),
+    protocol: z.union([z.const('auto'), z.const('images'), z.const('chat-completions')]).default('auto'),
     auth: z.union([z.const('api-key'), z.const('subscription')]).default('api-key'),
     subscription: z.string().default(''),
     models: z.array(z.object({
@@ -548,6 +549,7 @@ function normalizeChannels(value: unknown): ChannelConfig[] {
       name: typeof raw.name === 'string' ? raw.name.trim() : '',
       apiUrl: typeof raw.apiUrl === 'string' ? raw.apiUrl.trim() : '',
       apiUrlFull: raw.apiUrlFull === true,
+      ...isChannelProtocolPreference(raw.protocol) ? { protocol: raw.protocol } : {},
       ...raw.auth === 'subscription' ? { auth: 'subscription' as const } : {},
       ...isSubscriptionProvider(raw.subscription) ? { subscription: raw.subscription } : {},
       models,

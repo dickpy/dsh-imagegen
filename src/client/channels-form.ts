@@ -13,7 +13,7 @@
  */
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { ChannelConfig, ModelMapping, SubscriptionProvider } from '../protocol.ts'
+import type { ChannelConfig, ChannelProtocolPreference, ModelMapping, SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenScope, SettingsOp } from './settings-scope.ts'
 
 /** One channel as the editor stages it (secrets never travel here). */
@@ -23,6 +23,7 @@ export interface ChannelDraft {
   name: string
   apiUrl: string
   apiUrlFull: boolean
+  protocol?: ChannelProtocolPreference
   auth?: 'api-key' | 'subscription'
   subscription?: SubscriptionProvider
   models: ModelMapping[]
@@ -93,6 +94,7 @@ function stripChannel(channel: ChannelDraft): ChannelDraft {
     name: channel.name.trim(),
     apiUrl: channel.apiUrl.trim(),
     apiUrlFull: channel.apiUrlFull === true,
+    ...channel.protocol === undefined ? {} : { protocol: channel.protocol },
     ...channel.auth === undefined ? {} : { auth: channel.auth },
     ...channel.subscription === undefined ? {} : { subscription: channel.subscription },
     models: [...new Map(models.map(model => [model.alias, model])).values()],
@@ -290,7 +292,7 @@ export class ChannelsForm {
 
 /** Project a stored channel into a draft (secrets never travel in channels). */
 function toDraft(channel: ChannelConfig): ChannelDraft {
-  return { id: channel.id, preset: channel.preset, name: channel.name, apiUrl: channel.apiUrl, apiUrlFull: channel.apiUrlFull === true, ...channel.auth === undefined ? {} : { auth: channel.auth }, ...channel.subscription === undefined ? {} : { subscription: channel.subscription }, models: channel.models.map(model => ({ ...model })) }
+  return { id: channel.id, preset: channel.preset, name: channel.name, apiUrl: channel.apiUrl, apiUrlFull: channel.apiUrlFull === true, ...channel.protocol === undefined ? {} : { protocol: channel.protocol }, ...channel.auth === undefined ? {} : { auth: channel.auth }, ...channel.subscription === undefined ? {} : { subscription: channel.subscription }, models: channel.models.map(model => ({ ...model })) }
 }
 
 /** The scope's current channels value (a plain array), for change detection. */
