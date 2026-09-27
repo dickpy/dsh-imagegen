@@ -16,7 +16,7 @@ import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@d
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { SubscriptionManager } from './subscription/manager.ts'
 import type { UpstreamConfig } from './engine.ts'
-import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
+import { enhancePrompt, listImageModels, listPromptModels, polishPrompt, type PromptModelConfig } from './prompt-enhancer.ts'
 import { analyzeLayers, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
 import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
@@ -748,7 +748,8 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         try {
-          writeJson(res, 200, { ok: true, prompt: await enhancePrompt(resolvePrompt(), prompt) })
+          const polished = body?.mode === 'polish'
+          writeJson(res, 200, { ok: true, prompt: polished ? await polishPrompt(resolvePrompt(), prompt) : await enhancePrompt(resolvePrompt(), prompt) })
         } catch (error) {
           writeJson(res, 200, { ok: false, code: 'prompt-enhance-failed', message: messageOf(error) })
         }

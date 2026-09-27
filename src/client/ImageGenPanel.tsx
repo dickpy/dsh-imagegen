@@ -395,20 +395,43 @@ function effectiveEcommerceLanguage(draft: ProductSetDraft): string {
   return draft.language === 'custom' ? draft.customLanguage?.trim() ?? '' : draft.language
 }
 
-function ecommercePrompt(draft: ProductSetDraft, slot: ProductSetSlot): string {
+function ecommerceVisualBrief(slot: ProductSetSlot, index: number): string {
+  const variants: Record<string, string[]> = {
+    main: ['以纯净高级背景完整展示商品主体，突出正面与侧面结构、材质和屏幕/镜头等关键设计，商品居中但保留自然阴影和真实比例'],
+    'selling-point': [
+      '制作卖点视觉图：用局部放大、功能结果或使用场景形成构图分区，突出核心功能和购买理由，不要只是商品正面照',
+      '制作第二张卖点视觉图：聚焦差异化优势和附加价值，使用与第一张不同的视角、背景、光线和视觉重点',
+    ],
+    scene: [
+      '制作真实生活场景图：商品自然融入室内或日常环境，加入合理背景道具和环境光，呈现使用氛围，不要白底棚拍',
+      '制作第二张场景图：换成不同环境或使用时刻，如户外、办公或休闲场景，机位、背景、光线和整体氛围必须与第一张明显不同',
+    ],
+    detail: ['制作微距细节图：近距离突出材质、工艺、接口或结构，浅景深、高细节，构图聚焦局部而非完整商品'],
+    spec: ['制作规格信息图：突出尺寸、容量或参数关系，使用清晰的辅助构图和留白，不复制主图构图'],
+    model: ['制作人物使用图：展示手持、佩戴或实际使用状态，突出人与商品的交互和真实尺度'],
+  }
+  const choices = variants[slot.key] ?? ['使用与同组其他图片不同的构图、视角、背景和视觉重点']
+  return choices[Math.min(index, choices.length - 1)]!
+}
+
+function ecommercePrompt(draft: ProductSetDraft, slot: ProductSetSlot, index = 0): string {
   const info = draft.promptInfo.trim() || '突出商品真实材质、结构和核心价值；保持商品颜色、形状、Logo、包装文字和结构真实，不添加不存在的配件'
   const language = effectiveEcommerceLanguage(draft) || '中文'
+  const product = draft.productName.trim() || '该商品'
   const refClause = slot.refRole !== undefined && slot.refRole !== 'none'
     ? `本图以上传的${ECOMMERCE_ROLE_PROMPT_LABELS[slot.refRole]}图片为参考，商品与风格必须与参考图保持一致；`
     : ''
-  return `电商${slot.label}：为${draft.productName.trim() || '该商品'}制作${slot.description}。商品品类：${draft.category}；平台：${draft.platform}；语言：${language}。${refClause}商品信息与要求：${info}。整体要求：商品主体清晰、比例真实、光线自然、画面干净、适合电商发布。`
+  const distinct = slot.key === 'main'
+    ? ''
+    : '这不是商品主图的简单复刻：只复用参考图中的商品外观和身份，必须重新设计背景、机位、构图、道具和光效，不得输出与主图相同的白底正面居中画面。'
+  return `生成一张电商${slot.label}。视觉目标：${ecommerceVisualBrief(slot, index)}。${distinct}商品身份与一致性约束：${product}的外形、比例、颜色、材质、镜头模组、Logo 与核心结构必须与${refClause === '' ? '文字描述' : '参考图'}保持一致，只允许改变场景、视角、构图和光效，不得重新发明或替换商品。商品品类：${draft.category}；平台：${draft.platform}；语言：${language}。${refClause}商品信息与要求：${info}。整体要求：商品主体清晰、比例真实、光线自然、细节真实、适合电商发布。`
 }
 
 /** Effective prompt for one image of a slot: the per-image override written in
  *  the pre-generation preview board wins over the auto-composed prompt. */
 function ecommerceSlotPrompt(draft: ProductSetDraft, slot: ProductSetSlot, index: number): string {
   const override = draft.promptOverrides?.[`${slot.key}-${index + 1}`]
-  return override !== undefined && override.trim() !== '' ? override : ecommercePrompt(draft, slot)
+  return override !== undefined && override.trim() !== '' ? override : ecommercePrompt(draft, slot, index)
 }
 
 /** Consistency prefix for slots generated after the main image exists. */
@@ -578,6 +601,24 @@ export function ImageGenPanel(props: {
   const connected = enabled && (config?.channels ?? []).length > 0
     ? connectedChannelIds.size > 0
     : enabled && configured && apiKeySet
+  /** Whether the channel behind one concrete model choice can submit now. */
+  const channelReady = (channelId: string): boolean => (config?.channels ?? []).length > 0
+    ? connectedChannelIds.has(channelId)
+    : enabled && configured && apiKeySet
+  const reusablePromptChannelIds = new Set(
+    (config?.channels ?? [])
+      .filter(channel => channel.auth !== 'subscription'
+        && channel.apiUrlFull !== true
+        && channel.apiUrl.trim() !== ''
+        && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
+      .map(channel => channel.id),
+  )
+  const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || reusablePromptChannelIds.size > 0
+  const promptKeyConfigured = promptKeySet || reusablePromptChannelIds.size > 0
+  const promptReady = enabled
+    && (config?.promptModel ?? '').trim() !== ''
+    && promptEndpointConfigured
+    && promptKeyConfigured
 
   const [tab, setTab] = useState<PanelTab>('text')
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
@@ -679,6 +720,7 @@ export function ImageGenPanel(props: {
   const [ecommercePreview, setEcommercePreview] = useState(false)
   const [ecommerceGenerating, setEcommerceGenerating] = useState(false)
   const [ecommerceEnhancing, setEcommerceEnhancing] = useState(false)
+  const [ecommercePolishingKey, setEcommercePolishingKey] = useState<string | null>(null)
   const [ecommerceProjectId, setEcommerceProjectId] = useState<string | null>(null)
   const [ecommerceAssets, setEcommerceAssets] = useState<ProductAsset[]>([])
   /** History-restored product set currently shown in the results canvas. */
@@ -997,8 +1039,7 @@ export function ImageGenPanel(props: {
 
   const enhanceCurrentPrompt = async (): Promise<void> => {
     if (prompt.trim() === '' || enhancing) return
-    const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || configured
-    if ((config?.promptModel ?? '').trim() === '' || !promptEndpointConfigured || (!promptKeySet && !apiKeySet)) {
+    if (!promptReady) {
       openSettingsGuide('enhancement')
       return
     }
@@ -1016,8 +1057,7 @@ export function ImageGenPanel(props: {
   /** AI 帮写:整理/补全电商参数信息(提示词),走提示词增强通道。 */
   const ecommerceEnhanceInfo = async (): Promise<void> => {
     if (ecommerceEnhancing) return
-    const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || configured
-    if ((config?.promptModel ?? '').trim() === '' || !promptEndpointConfigured || (!promptKeySet && !apiKeySet)) {
+    if (!promptReady) {
       openSettingsGuide('enhancement')
       return
     }
@@ -1038,6 +1078,29 @@ export function ImageGenPanel(props: {
       setError(errorMessage(caught))
     } finally {
       setEcommerceEnhancing(false)
+    }
+  }
+
+  /** Polish one pre-generation ecommerce prompt through the chat model. */
+  const polishEcommercePrompt = async (slot: ProductSetSlot, index: number, key: string): Promise<void> => {
+    if (ecommercePolishingKey !== null) return
+    if (!promptReady) {
+      openSettingsGuide('enhancement')
+      return
+    }
+    const source = ecommerce.promptOverrides?.[key]?.trim() || ecommerceSlotPrompt(ecommerce, slot, index)
+    setEcommercePolishingKey(key)
+    setError(null)
+    try {
+      const polished = await api.polishPrompt(source)
+      setEcommerce(previous => ({
+        ...previous,
+        promptOverrides: { ...previous.promptOverrides, [key]: polished },
+      }))
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setEcommercePolishingKey(null)
     }
   }
 
@@ -1099,7 +1162,8 @@ export function ImageGenPanel(props: {
       openSettingsGuide('disabled')
       return
     }
-    if (!configured || !apiKeySet) {
+    const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
+    if (!channelReady(selectedChoice.channelId)) {
       openSettingsGuide('generation')
       return
     }
@@ -1112,7 +1176,6 @@ export function ImageGenPanel(props: {
       setError(tt('edit.required'))
       return
     }
-    const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
     const baseRequest: Omit<GenerateRequest, 'model' | 'channelId'> = {
       mode: tab === 'edit' ? 'edit' : 'text',
       prompt: promptText,
@@ -1130,6 +1193,10 @@ export function ImageGenPanel(props: {
         .filter(choice => modeGroups.some(group => group.id === choice.channelId && group.models.includes(choice.model)))
       if (targetChoices.length === 0) {
         setError(tt('compare.selectRequired'))
+        return
+      }
+      if (!targetChoices.every(choice => channelReady(choice.channelId))) {
+        openSettingsGuide('generation')
         return
       }
       const comparisonId = targetChoices.length > 1 ? newComparisonId() : undefined
@@ -1152,14 +1219,14 @@ export function ImageGenPanel(props: {
 
   const handleEcommerceGenerate = async (): Promise<void> => {
     if (ecommerceGenerateDisabled) return
-    if (!enabled || !configured || !apiKeySet) { openSettingsGuide('generation'); return }
+    const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
+    if (!enabled || !channelReady(selectedChoice.channelId)) { openSettingsGuide('generation'); return }
     const projectId = ecommerce.projectId || newComparisonId()
     const buildRequest = (slot: ProductSetSlot, index: number): GenerateRequest => {
       // Each slot picks one reference by asset role; a slot without a matching
       // asset (or 'none') falls back to text-to-image.
       const refRole = slot.refRole ?? 'product'
       const asset = refRole === 'none' ? undefined : ecommerceAssets.find(item => item.role === refRole)
-      const selectedChoice = resolveModelChoice(modeGroups, { channelId: modelChannelId, model }, defaultChannelId)
       return {
         mode: asset !== undefined ? 'edit' as const : 'text' as const,
         model: selectedChoice.model,
@@ -2655,12 +2722,13 @@ export function ImageGenPanel(props: {
               defaultChannelId={defaultChannelId}
               connected={connected}
               connectedChannelIds={connectedChannelIds}
+              promptReady={promptReady}
               history={history}
               gallery={gallery}
               tasks={tasks}
               importRequest={canvasImportRequest}
               onImportRequestHandled={() => { setCanvasImportRequest(undefined) }}
-              onOpenSettings={() => { openSettingsGuide('generation') }}
+              onOpenSettings={(kind = 'generation') => { openSettingsGuide(kind) }}
             />
           ) : null}
 
@@ -2802,21 +2870,31 @@ export function ImageGenPanel(props: {
                     <div key={key} className={css.ecommercePromptCard}>
                       <header>
                         <span className={css.ecommercePromptBadge}>{slot.label}{slot.count > 1 ? ` · 第 ${index + 1} 张` : ''}</span>
-                        {edited ? (
+                        <div className={css.ecommercePromptActions}>
+                          {edited ? (
+                            <button
+                              type="button"
+                              className={css.galleryBulkButton}
+                              onClick={() => setEcommerce(previous => {
+                                const overrides = { ...previous.promptOverrides }
+                                delete overrides[key]
+                                return { ...previous, promptOverrides: overrides }
+                              })}
+                            >
+                              {tt('ecommerce.promptReset')}
+                            </button>
+                          ) : (
+                            <span className={css.ecommercePromptAuto}>{tt('ecommerce.promptAutoHint')}</span>
+                          )}
                           <button
                             type="button"
-                            className={css.galleryBulkButton}
-                            onClick={() => setEcommerce(previous => {
-                              const overrides = { ...previous.promptOverrides }
-                              delete overrides[key]
-                              return { ...previous, promptOverrides: overrides }
-                            })}
+                            className={css.ecommercePromptPolish}
+                            disabled={ecommercePolishingKey !== null}
+                            onClick={() => { void polishEcommercePrompt(slot, index, key) }}
                           >
-                            {tt('ecommerce.promptReset')}
+                            {ecommercePolishingKey === key ? tt('ecommerce.promptPolishing') : tt('ecommerce.promptPolish')}
                           </button>
-                        ) : (
-                          <span className={css.ecommercePromptAuto}>{tt('ecommerce.promptAutoHint')}</span>
-                        )}
+                        </div>
                       </header>
                       <textarea
                         value={edited ? override : ecommerceSlotPrompt(ecommerce, slot, index)}

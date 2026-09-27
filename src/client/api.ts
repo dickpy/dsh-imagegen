@@ -85,6 +85,17 @@ export class ImageGenApi {
     return body.prompt
   }
 
+  /** Polish one existing generation prompt through the configured chat model. */
+  async polishPrompt(prompt: string): Promise<string> {
+    const response = await fetch(PROMPT_ENHANCE_API.enhance, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt, mode: 'polish' }),
+    })
+    const body = await readEnvelope<{ ok: true; prompt: string }>(response)
+    return body.prompt
+  }
+
   /** Stage a generated image as a durable reference for `/edit_image`. */
   async attachConversationImage(sessionId: string, dataUrl: string, name: string): Promise<void> {
     const response = await fetch(CONVERSATION_IMAGE_API, {

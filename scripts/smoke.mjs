@@ -1290,6 +1290,9 @@ await check('C0b prompt enhance strips reasoning-model <think> blocks', async ()
   // Clean content passes through untouched.
   const clean = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'clean please' })
   assert.equal(clean.body.prompt, 'A calm meadow under morning light.')
+  const polished = await post('/api/dsh-imagegen/prompt-enhance', { prompt: 'clean please', mode: 'polish' })
+  assert.equal(polished.body.ok, true)
+  assert.equal(polished.body.prompt, 'A calm meadow under morning light.')
 })
 
 await check('C0c canvas layer decomposition parses a fenced vision plan and clamps it', async () => {
@@ -3536,6 +3539,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     }],
     defaultChannelId: 'default',
     defaultModel: 'gpt-image-2-alt',
+    promptModel: 'chat-test',
   }
   const channelSecrets = () => [{ path: ['channelSecrets', 'default'], set: keyState.set }]
   const mutateCalls = []
@@ -4078,7 +4082,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(canvasSwitch !== undefined, 'infinite canvas top-nav entry is present')
     ecommerceSwitch.click()
     await new Promise(resolve => setTimeout(resolve, 50))
-    assert.ok(view.querySelector('[data-ecommerce-workspace]') !== null, 'ecommerce workspace is rendered')
+    const ecommerceWorkspace = view.querySelector('[data-ecommerce-workspace]')
+    assert.ok(ecommerceWorkspace !== null, 'ecommerce workspace is rendered')
+    assert.equal(jsdomWindow.getComputedStyle(ecommerceWorkspace).fontSize, '12px', 'ecommerce UI inherits the compact panel type scale')
     assert.equal(view.querySelectorAll('[role="tablist"] button').length, 4, 'generation sub-modes hide in the ecommerce workspace')
     assert.equal([...view.querySelectorAll('textarea')].some(textarea => (textarea.getAttribute('placeholder') ?? '').includes('描述你想要的画面')), false, 'normal prompt card is hidden in ecommerce workspace')
     const ecommerceName = view.querySelector('input[placeholder="商品名称（必填）"]')
@@ -4125,6 +4131,11 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     previewSet.click()
     await new Promise(resolve => setTimeout(resolve, 30))
     assert.ok(view.textContent?.includes('预计生成'), 'ecommerce plan preview is shown')
+    const ecommercePreviewTextareas = [...view.querySelectorAll('[data-ecommerce-preview] textarea')]
+    assert.equal(ecommercePreviewTextareas.length, 6, 'every planned ecommerce image gets a preview prompt')
+    assert.equal(new Set(ecommercePreviewTextareas.map(textarea => textarea.value)).size, 6, 'multi-image slots receive distinct automatic prompts')
+    const polishButtons = [...view.querySelectorAll('[data-ecommerce-preview] button')].filter(button => button.textContent?.includes('AI 润色'))
+    assert.equal(polishButtons.length, 6, 'every ecommerce preview prompt exposes AI polish')
     assert.equal(ecommerceSubmissions.length, 0, 'plan preview must not submit generation tasks')
     // Back to the normal workspace via the top nav: gallery works as before.
     normalSwitch.click()

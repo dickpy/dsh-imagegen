@@ -309,3 +309,12 @@ export async function enhancePrompt(config: PromptModelConfig, prompt: string): 
     content: prompt,
   })
 }
+
+/** Polish one existing generation prompt without changing its purpose. */
+export async function polishPrompt(config: PromptModelConfig, prompt: string): Promise<string> {
+  return chatComplete(config, {
+    temperature: 0.35,
+    system: '你是电商生图提示词编辑。请在保持图片用途、商品事实、平台、语言和原有结构不变的前提下，润色文字并补充可执行的视觉细节，减少重复和空泛表达。只输出最终提示词，不要解释、标题或 Markdown。',
+    content: prompt,
+  })
+}

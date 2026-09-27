@@ -71,12 +71,14 @@ interface CanvasWorkspaceProps {
   connected: boolean
   /** Channels whose credentials are currently usable. */
   connectedChannelIds?: ReadonlySet<string>
+  /** Whether the chat model used by canvas light actions is configured. */
+  promptReady?: boolean
   history: HistoryEntry[]
   gallery: HistoryEntry[]
   tasks: GenerationTask[]
   importRequest?: { source: 'history' | 'gallery'; entryId: string; imageIndex: number }
   onImportRequestHandled?: () => void
-  onOpenSettings?: () => void
+  onOpenSettings?: (kind?: 'generation' | 'enhancement') => void
 }
 
 type Point = { x: number; y: number }
@@ -1179,7 +1181,7 @@ function ComposerSelect(props: {
 }
 
 export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element {
-  const { api, modelGroups, defaultChannelId, connected, connectedChannelIds, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
+  const { api, modelGroups, defaultChannelId, connected, connectedChannelIds, promptReady = connected, history, gallery, tasks, importRequest, onImportRequestHandled, onOpenSettings } = props
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [document, setDocument] = useState<CanvasDocument | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
@@ -2516,7 +2518,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const splitLayers = useCallback(async (node: CanvasNode): Promise<void> => {
     const asset = usableAsset(node)
     if (asset === undefined) return
-    if (!connected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
+    if (!promptReady) { setError(tt('canvas.skills.noChat')); onOpenSettings?.('enhancement'); return }
     setError(null)
     await withNodeBusy(node.id, tt('canvas.splittingLayers'), async () => {
       const dataUrl = await assetToDataUrl(asset)
@@ -2587,7 +2589,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       mutate(previous => ({ ...previous, nodes: [...previous.nodes, ...created], connections: [...previous.connections, ...connections] }))
       setNotice(tt('canvas.layerSplitDone', { count: created.length }))
     })
-  }, [api, connected, mutate, onOpenSettings, withNodeBusy])
+  }, [api, mutate, onOpenSettings, promptReady, withNodeBusy])
 
 
   // ----------------------------------------------------------- generation
@@ -2689,13 +2691,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
    * re-deriving the edit base from the connected source config node. */
   const retryGeneration = useCallback(async (node: CanvasNode): Promise<void> => {
     const current = documentRef.current
-    if (current === null || !connected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
+    if (current === null) return
     const metadata = nodeMetadata(node)
     const prompt = (metadata.prompt ?? '').trim()
     if (prompt === '') { setError(tt('canvas.needPrompt')); return }
     const retryChoice = resolveModelChoice(modelGroups, { channelId: metadata.channelId, model: metadata.model }, defaultChannelId)
     const model = retryChoice.model
     if (model === '') { setError(tt('canvas.needModel')); return }
+    if (!channelIsConnected(retryChoice.channelId)) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const sourceId = metadata.sourceNodeId
     const sourceNode = sourceId === undefined ? undefined : current.nodes.find(item => item.id === sourceId)
     const directAsset = sourceNode !== undefined && sourceNode.type === 'image' ? usableAsset(sourceNode) : undefined
@@ -2749,7 +2752,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     }
-  }, [annotatedReference, api, connected, defaultChannelId, modelGroups, onOpenSettings, patchNode, upstreamNodes])
+  }, [annotatedReference, api, channelIsConnected, defaultChannelId, modelGroups, onOpenSettings, patchNode, upstreamNodes])
 
   // Orphan reconciliation: a generating placeholder whose task no longer exists
   // in the host feed (e.g. the host restarted) can never complete on its own.
@@ -4490,6 +4493,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       defaultChannelId={defaultChannelId}
       canvasId={document?.id ?? ''}
       connected={connected}
+      connectedChannelIds={connectedChannelIds}
       initialTab={pickerTab}
       onClose={() => setPickerOpen(false)}
       onAssets={assets => { addAssets(assets); setPickerOpen(false) }}
@@ -4750,12 +4754,13 @@ function ImagePicker(props: {
   defaultChannelId?: string
   canvasId: string
   connected: boolean
+  connectedChannelIds?: ReadonlySet<string>
   initialTab?: 'upload' | 'history' | 'gallery' | 'generate'
   onClose: () => void
   onAssets: (assets: CanvasAssetRef[]) => void
   onTask: (task: GenerationTask) => void
 }): React.JSX.Element {
-  const { api, history, gallery, modelGroups, defaultChannelId, canvasId, connected, onClose, onAssets } = props
+  const { api, history, gallery, modelGroups, defaultChannelId, canvasId, connected, connectedChannelIds, onClose, onAssets } = props
   const [tab, setTab] = useState<'upload' | 'history' | 'gallery' | 'generate'>(props.initialTab ?? 'upload')
   const [selected, setSelected] = useState<string[]>([])
   const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>({})
@@ -4797,7 +4802,7 @@ function ImagePicker(props: {
     } finally { setBusy(false) }
   }
   const generate = async (): Promise<void> => {
-    if (!connected || prompt.trim() === '') return
+    if (!(connectedChannelIds?.has(channelId) ?? connected) || prompt.trim() === '') return
     setBusy(true)
     try {
       const choice = resolveModelChoice(modelGroups, { channelId, model }, defaultChannelId)
@@ -4811,7 +4816,7 @@ function ImagePicker(props: {
     <div className={css.pickerBody}>
       {tab === 'upload' ? <label className={css.uploadBox} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); const files = [...(event.dataTransfer.files ?? [])].filter(file => file.type.startsWith('image/')); if (files.length === 0) return; uploadFiles(files) }}><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy} onChange={event => { const files = [...(event.target.files ?? [])]; if (files.length > 0) uploadFiles(files) }} /><span className={css.uploadIcon}><ToolbarIcon name="image" /></span><strong>{tt('canvas.dropHint')}</strong><small>{tt('canvas.dropSub')}</small></label> : null}
       {(tab === 'history' || tab === 'gallery') ? <><div className={css.pickerGrid}>{items.map(item => <button key={item.key} type="button" role="option" aria-selected={selected.includes(item.key)} className={css.pickerCard} data-selected={selected.includes(item.key) ? '' : undefined} onClick={() => toggle(item.key)}><img draggable={false} src={item.image.url} alt={item.entry.prompt} onLoad={event => { const image = event.currentTarget; setDimensions(previous => ({ ...previous, [item.key]: { width: image.naturalWidth || 1, height: image.naturalHeight || 1 } })) }} /><span className={css.pickerCardPrompt}>{item.entry.prompt || tt('canvas.untitledWork')}</span><small>{item.entry.model} · {item.index + 1}/{item.entry.images.length}</small></button>)}</div><footer className={css.pickerFooter}><span>{tt('canvas.picked', { count: selected.length })}</span><button type="button" disabled={busy || selected.length === 0} onClick={() => { void addSelected() }}>{tt('canvas.addToCanvas')}</button></footer></> : null}
-      {tab === 'generate' ? <div className={css.generateForm}><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={tt('canvas.composerPlaceholder')} /><ModelPicker groups={modelGroups} value={{ channelId, model }} channelLabel={tt('model.channel')} modelLabel={tt('model.label')} channelPlaceholder={tt('model.channelPlaceholder')} emptyLabel={tt('canvas.modelPlaceholder')} ariaLabel={tt('canvas.model')} onChange={choice => { setChannelId(choice.channelId); setModel(choice.model) }} /><div className={css.inspectorRow}><ComposerSelect value={size} options={[{ value: 'auto', label: tt('canvas.sizeAuto') }, { value: '1:1', label: '1:1' }, { value: '3:4', label: '3:4' }, { value: '16:9', label: '16:9' }, { value: '9:16', label: '9:16' }]} ariaLabel={tt('canvas.size')} onChange={setSize} /><ComposerSelect value={quality} options={[{ value: 'auto', label: tt('canvas.qualityAuto') }, { value: '1k', label: '1K' }, { value: '2k', label: '2K' }, { value: '4k', label: '4K' }]} ariaLabel={tt('canvas.quality')} onChange={setQuality} /></div><button type="button" disabled={!connected || busy || prompt.trim() === ''} onClick={() => { void generate() }}><ToolbarIcon name="sparkle" />{tt('canvas.generateAndAdd')}</button>{!connected ? <small>{tt('canvas.needApi')}</small> : null}</div> : null}
+      {tab === 'generate' ? <div className={css.generateForm}><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={tt('canvas.composerPlaceholder')} /><ModelPicker groups={modelGroups} value={{ channelId, model }} channelLabel={tt('model.channel')} modelLabel={tt('model.label')} channelPlaceholder={tt('model.channelPlaceholder')} emptyLabel={tt('canvas.modelPlaceholder')} ariaLabel={tt('canvas.model')} onChange={choice => { setChannelId(choice.channelId); setModel(choice.model) }} /><div className={css.inspectorRow}><ComposerSelect value={size} options={[{ value: 'auto', label: tt('canvas.sizeAuto') }, { value: '1:1', label: '1:1' }, { value: '3:4', label: '3:4' }, { value: '16:9', label: '16:9' }, { value: '9:16', label: '9:16' }]} ariaLabel={tt('canvas.size')} onChange={setSize} /><ComposerSelect value={quality} options={[{ value: 'auto', label: tt('canvas.qualityAuto') }, { value: '1k', label: '1K' }, { value: '2k', label: '2K' }, { value: '4k', label: '4K' }]} ariaLabel={tt('canvas.quality')} onChange={setQuality} /></div><button type="button" disabled={!(connectedChannelIds?.has(channelId) ?? connected) || busy || prompt.trim() === ''} onClick={() => { void generate() }}><ToolbarIcon name="sparkle" />{tt('canvas.generateAndAdd')}</button>{!(connectedChannelIds?.has(channelId) ?? connected) ? <small>{tt('canvas.needApi')}</small> : null}</div> : null}
     </div>
   </section></div>
 }
