@@ -7,7 +7,7 @@
 <div align="center">
   <a href="https://www.npmjs.com/package/@dickpy/dsh-imagegen"><img src="https://img.shields.io/npm/v/@dickpy/dsh-imagegen?color=cb3837&logo=npm&label=npm" alt="npm" /></a>
   &nbsp;
-  <a href="https://www.npmjs.com/package/@dickpy/dsh-imagegen"><img src="https://img.shields.io/npm/dm/@dickpy/dsh-imagegen?logo=npm&label=downloads%2Fmonth" alt="npm monthly downloads" /></a>
+  <a href="https://www.npmjs.com/package/@dickpy/dsh-imagegen"><img src="https://badgen.net/npm/dt/@dickpy/dsh-imagegen?label=downloads&color=blue" alt="npm total downloads" /></a>
   &nbsp;
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-3b82f6.svg" alt="License" /></a>
   &nbsp;
