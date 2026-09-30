@@ -1,9 +1,5 @@
 # dsh-imagegen
 
-<p align="center">
-  <img src="docs/images/readme-cover.png" alt="dsh-imagegen：DeepSeek Harness AI 图像创作工作台" width="100%" />
-</p>
-
 <div align="center">
   <a href="https://www.npmjs.com/package/@dickpy/dsh-imagegen"><img src="https://img.shields.io/npm/v/@dickpy/dsh-imagegen?color=cb3837&logo=npm&label=npm" alt="npm" /></a>
   &nbsp;
