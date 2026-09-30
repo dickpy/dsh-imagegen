@@ -68,7 +68,8 @@
     "src",
     "cordis.patch.yml",
     "docs",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "license": "Apache-2.0",
   "repository": {

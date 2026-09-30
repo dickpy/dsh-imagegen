@@ -1798,10 +1798,14 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         const record = rawCase as Record<string, unknown>
-        const id = Number(record.id)
+        const id = typeof record.id === 'number' && Number.isFinite(record.id)
+          ? String(record.id)
+          : typeof record.id === 'string'
+            ? record.id.trim()
+            : ''
         const title = typeof record.title === 'string' ? record.title.trim() : ''
         const prompt = typeof record.prompt === 'string' ? record.prompt.trim() : ''
-        if (!Number.isInteger(id) || title === '' || prompt === '') {
+        if (id === '' || title === '' || prompt === '') {
           writeJson(res, 200, { ok: false, code: 'template-favorite-invalid', message: '收藏请求缺少有效的模板数据' })
           return
         }

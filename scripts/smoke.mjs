@@ -1655,6 +1655,12 @@ await check('C6b template favorites persist host-side and round-trip', async () 
   const removed = await post('/api/dsh-imagegen/templates/favorites/remove', { key: 'vibeui:1' })
   assert.equal(removed.body.ok, true)
   assert.deepEqual(removed.body.favorites, [])
+
+  const stringItem = { ...item, id: 's-001', title: 'Hand-drawn template' }
+  const stringAdded = await post('/api/dsh-imagegen/templates/favorites/add', { source: 'handraw', case: stringItem })
+  assert.equal(stringAdded.body.ok, true)
+  assert.equal(stringAdded.body.favorites[0].key, 'handraw:s-001')
+  await post('/api/dsh-imagegen/templates/favorites/remove', { key: 'handraw:s-001' })
 })
 
 await check('C6c template sample route draws random inspiration picks', async () => {
@@ -1664,6 +1670,21 @@ await check('C6c template sample route draws random inspiration picks', async ()
   assert.equal(body.samples[0].sourceId, 'vibeui')
   assert.equal(body.samples[0].case.prompt, 'Create a bright product poster')
   assert.deepEqual(templateSamples, [9])
+})
+
+await check('C6c2 bundled community template snapshots expose stable ids and images', async () => {
+  const expected = {
+    handraw: { total: 441, first: 's-001' },
+    'prompt-signal': { total: 577, first: 'raw-subway' },
+    evolink: { total: 462, first: 'case-1' },
+  }
+  for (const [sourceId, meta] of Object.entries(expected)) {
+    const list = await host.listTemplates(sourceId)
+    assert.equal(list.sourceId, sourceId)
+    assert.equal(list.total, meta.total)
+    assert.equal(list.cases[0].id, meta.first)
+    assert.match(list.cases[0].image, /^https:\/\//)
+  }
 })
 
 
