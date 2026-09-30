@@ -229,6 +229,8 @@ export interface TemplateSourceMeta {
   homepage: string
   /** One-line description of the source (tab tooltip). */
   description: string
+  /** False for bundled snapshots that are refreshed with plugin releases. */
+  refreshable?: boolean
 }
 
 /**
@@ -250,6 +252,27 @@ export const TEMPLATE_SOURCES: TemplateSourceMeta[] = [
     homepage: 'https://gpt-image2.canghe.ai/',
     description: 'GPT-Image2 Prompt Gallery（gpt-image2.canghe.ai，定期更新）',
   },
+  {
+    id: 'handraw',
+    label: '手绘模板库',
+    homepage: 'https://github.com/yang0/handraw-style',
+    description: '手绘风格、排版图型与主题色图鉴（yang0/handraw-style）',
+    refreshable: false,
+  },
+  {
+    id: 'prompt-signal',
+    label: 'Prompt/Signal',
+    homepage: 'https://github.com/andy7076/image_prompt',
+    description: 'andy7076/image_prompt 的 570+ 精选生图提示词',
+    refreshable: false,
+  },
+  {
+    id: 'evolink',
+    label: 'GPT Image 2 案例库',
+    homepage: 'https://github.com/EvoLinkAI/awesome-gpt-image-2-prompts',
+    description: 'EvoLink 整理的 GPT Image 2 电商、广告、人像、海报、角色与 UI 案例',
+    refreshable: false,
+  },
 ]
 
 /** Default source id when a request does not name one (legacy clients). */
@@ -262,8 +285,8 @@ export function isTemplateSourceId(id: string): boolean {
 
 /** One prompt-library case as the browser consumes it. */
 export interface TemplateCase {
-  /** Upstream case number (stable across refreshes). */
-  id: number
+  /** Upstream case id (stable across refreshes; numeric legacy ids are accepted). */
+  id: string
   /** Short case title. */
   title: string
   /** Full reusable prompt text. */
@@ -282,7 +305,7 @@ export interface TemplateCase {
   sourceUrl: string
   /** awesome-gpt-image-2 repo anchor link. */
   githubUrl: string
-  /** Reference-image file name served through the image route ('' when none). */
+  /** Reference-image key or absolute URL served through the image route ('' when none). */
   image: string
   /** Whether the source gallery featured the case. */
   featured: boolean

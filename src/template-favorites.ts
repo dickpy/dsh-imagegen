@@ -23,7 +23,7 @@ const MAX_FAVORITES = 1000
 let memo: TemplateFavorite[] | undefined
 
 /** Build the stable key of one case within a source. */
-export function templateFavoriteKey(sourceId: string, caseId: number): string {
+export function templateFavoriteKey(sourceId: string, caseId: string): string {
   return `${sourceId}:${caseId}`
 }
 
@@ -34,14 +34,19 @@ function normalizeFavorite(raw: unknown): TemplateFavorite | undefined {
   if (typeof record.key !== 'string' || typeof record.savedAt !== 'string') return undefined
   const sourceId = typeof record.sourceId === 'string' ? record.sourceId : ''
   if (!isTemplateSourceId(sourceId)) return undefined
-  if (record.key !== templateFavoriteKey(sourceId, Number(record.case && (record.case as TemplateCase).id))) return undefined
+  const rawId = record.case && (record.case as TemplateCase).id
+  const id = typeof rawId === 'number' && Number.isFinite(rawId)
+    ? String(rawId)
+    : typeof rawId === 'string'
+      ? rawId.trim()
+      : ''
+  if (record.key !== templateFavoriteKey(sourceId, id)) return undefined
   const rawCase = record.case
   if (rawCase === null || typeof rawCase !== 'object') return undefined
   const item = rawCase as Record<string, unknown>
-  const id = Number(item.id)
   const title = typeof item.title === 'string' ? item.title : ''
   const prompt = typeof item.prompt === 'string' ? item.prompt : ''
-  if (!Number.isInteger(id) || title === '' || prompt === '') return undefined
+  if (id === '' || title === '' || prompt === '') return undefined
   // Keep only the wire fields so hand-edited files cannot smuggle extras.
   const snapshot: TemplateCase = {
     id,

@@ -95,7 +95,7 @@ dsh plugin --profile web add @dickpy/dsh-imagegen
 
 <a id="gallery"></a>
 
-从案例模板获取灵感，再用画廊搜索、筛选、标记和整理生成结果。
+提示词模板库内置精选案例、沧河、手绘、Prompt/Signal 与 GPT Image 2 五个来源，可搜索、筛选、收藏并直接带入生图。生成结果可在画廊中用标签和收藏继续整理。
 
 <p align="center">
   <img src="docs/images/prompt-template-library.png" alt="提示词案例模板库" width="49%" />
@@ -164,3 +164,5 @@ dsh plugin --profile web add ./dickpy-dsh-imagegen-<版本>.tgz
 ## 许可证
 
 [Apache-2.0](./LICENSE)
+
+内置模板所引用的第三方项目与许可见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
