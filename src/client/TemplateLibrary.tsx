@@ -10,19 +10,16 @@
  * Picking a template hands its prompt back and closes the library.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { BookOpen, Maximize2, Minimize2 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { TEMPLATE_SOURCES, TEMPLATES_API, type TemplateCase, type TemplateFavorite, type TemplateListResult } from '../protocol.ts'
+import { DRAWER_WIDTH_KEY, readDrawerWidth, readRecentTemplates, rememberTemplate, type TemplateApplyMode, type TemplateEntry } from './template-library-state.ts'
 import css from './templates.module.css'
 
-/** One case paired with the source that owns it (favorites mix sources). */
-interface TemplateEntry {
-  sourceId: string
-  item: TemplateCase
-}
 
 /** Detail-view selection keeps its source so proxy URLs and stars stay scoped. */
 interface SelectedTemplate extends TemplateEntry {}
@@ -85,14 +82,36 @@ function FavoriteStar(props: { active: boolean; title: string; onToggle: () => v
   )
 }
 
-/** The template-library modal. Rendered through a portal above the studio. */
+/** Shared floating entry, positioned inside the active creation workspace. */
+export function TemplateLibraryButton(props: { onClick: () => void; expanded: boolean }): React.JSX.Element {
+  return <button type="button" className={css.floatingEntry} data-template-library-trigger="" aria-label={tt('templates.open')} aria-haspopup="dialog" aria-expanded={props.expanded} onPointerDown={event => event.stopPropagation()} onClick={props.onClick}>
+    <BookOpen size={18} aria-hidden="true" /><span>{tt('templates.shortLabel')}</span>
+  </button>
+}
+
+/** The shared wide drawer. Existing callers keep the same prompt callback. */
 export function TemplateLibrary(props: {
   api: ImageGenApi
   /** Hand a picked prompt back to the studio form and close the library. */
-  onUse: (prompt: string) => void
+  onUse: (prompt: string, mode?: TemplateApplyMode) => void
+  anchor?: HTMLElement | null
+  hasExistingPrompt?: boolean
+  appendOnly?: boolean
   onClose: () => void
 }) {
   const { api, onUse, onClose } = props
+  const shellRef = useRef<HTMLElement>(null)
+  const detailRef = useRef<HTMLElement>(null)
+  const [bounds, setBounds] = useState<CSSProperties>({})
+  const [widthRatio, setWidthRatio] = useState(readDrawerWidth)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [resizing, setResizing] = useState(false)
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const requestedSources = useRef(new Set<string>())
+  const previousFocus = useRef(document.activeElement as HTMLElement | null)
+  const [recents, setRecents] = useState(readRecentTemplates)
+  const [recentView, setRecentView] = useState(false)
+  const [searchAll, setSearchAll] = useState(false)
   const [activeSource, setActiveSource] = useState(TEMPLATE_SOURCES[0]!.id)
   const [lists, setLists] = useState<Record<string, TemplateListResult>>({})
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
@@ -108,17 +127,23 @@ export function TemplateLibrary(props: {
   const searchRef = useRef<HTMLInputElement>(null)
 
   const list = lists[activeSource]
-  const loadError = favoritesView ? null : loadErrors[activeSource] || null
+  const specialView = favoritesView || recentView
+  const sourceIds = searchAll ? TEMPLATE_SOURCES.map(source => source.id) : [activeSource]
+  const loadError = specialView ? null : sourceIds.map(id => loadErrors[id]).filter(Boolean).join(' · ') || null
+  const loading = !specialView && sourceIds.some(id => lists[id] === undefined && !loadErrors[id])
 
   /** Fetch one source's list into the per-source cache. */
-  const loadSource = (sourceId: string): void => {
+  const loadSource = useCallback((sourceId: string, retry = false): void => {
+    if (!retry && requestedSources.current.has(sourceId)) return
+    requestedSources.current.add(sourceId)
+    setLoadErrors(current => ({ ...current, [sourceId]: '' }))
     api.templatesList(sourceId)
       .then(result => {
         setLists(current => ({ ...current, [sourceId]: result }))
         setLoadErrors(current => ({ ...current, [sourceId]: '' }))
       })
       .catch(caught => { setLoadErrors(current => ({ ...current, [sourceId]: errorMessage(caught) })) })
-  }
+  }, [api])
 
   // Load the first source plus the favorites on open; focus the search box.
   useEffect(() => {
@@ -129,13 +154,52 @@ export function TemplateLibrary(props: {
   }, [])
 
   const switchSource = (sourceId: string): void => {
-    if (sourceId === activeSource) return
+    if (sourceId === activeSource && !specialView && !searchAll) return
     setActiveSource(sourceId)
     setCategory('')
     setFavoritesView(false)
+    setRecentView(false)
+    setSearchAll(false)
     setSelected(null)
     setNotice(null)
     if (lists[sourceId] === undefined) loadSource(sourceId)
+  }
+
+  // Bound the portal to the active work area rather than covering the host shell.
+  useEffect(() => {
+    const anchor = props.anchor
+    if (!anchor) return
+    const measure = (): void => {
+      const rect = anchor.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) setBounds({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: 'auto', bottom: 'auto' })
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure)
+    observer?.observe(anchor)
+    window.addEventListener('resize', measure)
+    window.addEventListener('scroll', measure, true)
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure, true) }
+  }, [props.anchor])
+
+  useEffect(() => {
+    if (searchAll && !specialView) TEMPLATE_SOURCES.forEach(source => loadSource(source.id))
+  }, [loadSource, searchAll, specialView])
+
+  useEffect(() => {
+    const previous = previousFocus.current
+    return () => { if (previous?.isConnected) previous.focus() }
+  }, [])
+
+  useEffect(() => {
+    if (shellRef.current) shellRef.current.inert = selected !== null
+    if (selected !== null) detailRef.current?.focus()
+    else searchRef.current?.focus()
+  }, [selected])
+
+  const changeWidth = (value: number): void => {
+    const next = Math.max(0.55, Math.min(1, value))
+    setWidthRatio(next)
+    try { window.localStorage.setItem(DRAWER_WIDTH_KEY, String(next)) } catch { /* optional preference */ }
   }
 
   /** Every favorite keeps its source so the favorites tab can group libraries. */
@@ -145,8 +209,10 @@ export function TemplateLibrary(props: {
   )
   const visibleItems = useMemo<TemplateEntry[]>(() => {
     if (favoritesView) return favoriteItems
+    if (recentView) return recents
+    if (searchAll) return TEMPLATE_SOURCES.flatMap(source => (lists[source.id]?.cases ?? []).map(item => ({ sourceId: source.id, item })))
     return (list?.cases ?? []).map(item => ({ sourceId: activeSource, item }))
-  }, [activeSource, favoriteItems, favoritesView, list])
+  }, [activeSource, favoriteItems, favoritesView, recentView, recents, searchAll, lists, list])
   const favKeys = useMemo(() => new Set(favorites.map(entry => entry.key)), [favorites])
 
   const categories = useMemo(() => {
@@ -170,13 +236,20 @@ export function TemplateLibrary(props: {
     })
   }, [visibleItems, query, category])
 
-  // Escape backs out of the detail view first, then closes the modal.
+  // Isolate the drawer from the canvas shortcuts; Escape returns from details first.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.stopPropagation()
-      if (selected !== null) setSelected(null)
-      else onClose()
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopImmediatePropagation()
+        if (selected !== null) setSelected(null)
+        else onClose()
+      } else if (event.key === 'Tab') {
+        const container = selected !== null ? detailRef.current : shellRef.current
+        const items = [...(container?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]') ?? [])].filter(item => !item.hidden)
+        const first = items[0], last = items[items.length - 1]
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === container)) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === container)) { event.preventDefault(); first?.focus() }
+      }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -278,11 +351,12 @@ export function TemplateLibrary(props: {
     </button>
   }
 
-  const applySelected = (): void => {
+  const applySelected = (mode: TemplateApplyMode = 'replace'): void => {
     if (selected === null) return
     const prompt = selected.item.prompt
+    setRecents(rememberTemplate(selected, recents))
     setSelected(null)
-    onUse(prompt)
+    onUse(prompt, props.appendOnly ? 'append' : mode)
     onClose()
   }
 
@@ -290,27 +364,34 @@ export function TemplateLibrary(props: {
   const activeMeta = TEMPLATE_SOURCES.find(source => source.id === activeSource)!
 
   return createPortal(
-    <div className={css.overlay} role="dialog" aria-modal="true" aria-label={tt('templates.title')} onClick={onClose}>
-      <section className={css.shell} onClick={(event) => { event.stopPropagation() }}>
+    <div ref={overlayRef} className={css.overlay} style={bounds} data-template-drawer="" role="dialog" aria-modal="true" aria-label={tt('templates.title')} onClick={onClose} onKeyDown={event => event.stopPropagation()} onKeyUp={event => event.stopPropagation()} onPaste={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}>
+      <section ref={shellRef} className={css.shell} data-fullscreen={fullscreen ? '' : undefined} data-resizing={resizing ? '' : undefined} style={{ width: fullscreen ? '100%' : `${widthRatio * 100}%` }} onClick={(event) => { event.stopPropagation() }}>
+        {!fullscreen ? <div className={css.resizeHandle} role="separator" aria-label={tt('templates.resize')} aria-orientation="vertical" aria-valuemin={55} aria-valuemax={100} aria-valuenow={Math.round(widthRatio * 100)} tabIndex={0}
+          onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); setResizing(true) }}
+          onPointerMove={event => { if (!resizing) return; const rect = overlayRef.current?.getBoundingClientRect(); if (rect && rect.width > 0) changeWidth((rect.right - event.clientX) / rect.width) }}
+          onPointerUp={() => setResizing(false)} onPointerCancel={() => setResizing(false)} onLostPointerCapture={() => setResizing(false)}
+          onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); changeWidth(widthRatio + (event.key === 'ArrowLeft' ? 0.05 : -0.05)) } }}
+        /> : null}
         <header className={css.header}>
           <span className={css.heading}>
             <h3 className={css.title}>{tt('templates.title')}</h3>
-            {favoritesView ? (
-              <span className={css.meta}>{tt('templates.favoritesCount', { count: favorites.length })}</span>
+            {specialView ? (
+              <span className={css.meta}>{tt(recentView ? 'templates.recentsCount' : 'templates.favoritesCount', { count: recentView ? recents.length : favorites.length })}</span>
             ) : list !== undefined ? (
-              <span className={css.meta}>{tt('templates.meta', { count: list.total, origin: originLabel })}</span>
+              <span className={css.meta}>{tt('templates.meta', { count: searchAll ? visibleItems.length : list.total, origin: searchAll ? tt('templates.allSources') : originLabel })}</span>
             ) : null}
           </span>
           <span className={css.headerActions}>
+            <button type="button" className={css.close} aria-label={tt(fullscreen ? 'templates.restore' : 'templates.fullscreen')} title={tt(fullscreen ? 'templates.restore' : 'templates.fullscreen')} onClick={() => setFullscreen(value => !value)}>{fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
             {activeMeta.refreshable === false ? null : (
-              <Button variant="outline" size="sm" disabled={refreshing || cacheAll.running || favoritesView} onClick={() => { void refresh() }}>
+              <Button variant="outline" size="sm" disabled={refreshing || cacheAll.running || specialView || searchAll} onClick={() => { void refresh() }}>
                 {refreshing ? tt('templates.refreshing') : tt('templates.refresh')}
               </Button>
             )}
             <Button
               variant="outline"
               size="sm"
-              disabled={favoritesView || list === undefined || cacheAll.running}
+              disabled={specialView || searchAll || list === undefined || cacheAll.running}
               title={tt('templates.cacheAllHint')}
               onClick={() => { void cacheAllImages() }}
             >
@@ -332,9 +413,9 @@ export function TemplateLibrary(props: {
               key={source.id}
               type="button"
               role="tab"
-              aria-selected={!favoritesView && source.id === activeSource}
+              aria-selected={!specialView && !searchAll && source.id === activeSource}
               className={css.sourceTab}
-              data-active={!favoritesView && source.id === activeSource ? '' : undefined}
+              data-active={!specialView && !searchAll && source.id === activeSource ? '' : undefined}
               title={source.description}
               onClick={() => { switchSource(source.id) }}
             >
@@ -342,34 +423,26 @@ export function TemplateLibrary(props: {
               {lists[source.id] !== undefined ? <span className={css.sourceTabCount}>{lists[source.id]!.total}</span> : null}
             </button>
           ))}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={favoritesView}
-            className={css.sourceTab}
-            data-active={favoritesView ? '' : undefined}
-            title={tt('templates.favoritesHint')}
-            onClick={() => {
-              setFavoritesView(true)
-              setCategory('')
-              setSelected(null)
-              setNotice(null)
-            }}
-          >
-            ★ {tt('templates.favorites')}
-            {favorites.length > 0 ? <span className={css.sourceTabCount}>{favorites.length}</span> : null}
-          </button>
+        </div>
+        <div className={css.viewTabs} role="tablist" aria-label={tt('templates.views')}>
+          <button type="button" role="tab" aria-selected={!specialView} data-active={!specialView ? '' : undefined} className={css.viewTab} onClick={() => { setFavoritesView(false); setRecentView(false); setCategory(''); setSelected(null) }}>{tt('templates.browse')}</button>
+          <button type="button" role="tab" aria-selected={favoritesView} data-active={favoritesView ? '' : undefined} className={css.viewTab} title={tt('templates.favoritesHint')} onClick={() => { setFavoritesView(true); setRecentView(false); setCategory(''); setSelected(null); setNotice(null) }}>★ {tt('templates.favorites')}{favorites.length > 0 ? ` ${favorites.length}` : ''}</button>
+          <button type="button" role="tab" aria-selected={recentView} data-active={recentView ? '' : undefined} className={css.viewTab} onClick={() => { setRecentView(true); setFavoritesView(false); setCategory(''); setSelected(null); setNotice(null) }}>{tt('templates.recents')}</button>
         </div>
 
         <div className={css.toolbar}>
+          <div className={css.searchRow}>
           <input
             ref={searchRef}
             type="search"
+            aria-label={tt('templates.search')}
             className={css.search}
             placeholder={tt('templates.search')}
             value={query}
             onChange={(event) => { setQuery(event.target.value) }}
           />
+          {!specialView ? <select className={css.searchScope} aria-label={tt('templates.searchScope')} value={searchAll ? 'all' : 'current'} onChange={event => { setSearchAll(event.target.value === 'all'); setCategory('') }}><option value="current">{tt('templates.currentSource')}</option><option value="all">{tt('templates.allSources')}</option></select> : null}
+          </div>
           <div className={css.categoryRow}>
             <button
               type="button"
@@ -396,27 +469,27 @@ export function TemplateLibrary(props: {
         {notice !== null ? <div className={css.notice} role="status">{notice}</div> : null}
 
         <div className={css.body}>
-          {!favoritesView && list === undefined && loadError === null ? (
+          {loading && visibleItems.length === 0 ? (
             <div className={css.state} role="status">
               <span className={css.spinner} />
               <span>{tt('templates.loading')}</span>
             </div>
           ) : null}
 
-          {!favoritesView && loadError !== null ? (
-            <div className={css.state} role="alert">
+          {!specialView && loadError !== null ? (
+            <div className={filtered.length > 0 ? css.partialError : css.state} role="alert">
               <span>{tt('templates.loadFailed', { error: loadError })}</span>
-              <Button variant="outline" size="sm" onClick={() => { setLoadErrors(current => ({ ...current, [activeSource]: '' })); loadSource(activeSource) }}>
+              <Button variant="outline" size="sm" onClick={() => { sourceIds.filter(id => loadErrors[id]).forEach(id => loadSource(id, true)) }}>
                 {tt('templates.retry')}
               </Button>
             </div>
           ) : null}
 
-          {favoritesView && filtered.length === 0 ? (
-            <div className={css.state}>{tt('templates.favoritesEmpty')}</div>
+          {specialView && filtered.length === 0 ? (
+            <div className={css.state}>{tt(query.trim() !== '' || category !== '' ? 'templates.empty' : recentView ? 'templates.recentsEmpty' : 'templates.favoritesEmpty')}</div>
           ) : null}
 
-          {!favoritesView && loadError === null && list !== undefined && filtered.length === 0 ? (
+          {!specialView && !loading && loadError === null && filtered.length === 0 ? (
             <div className={css.state}>{tt('templates.empty')}</div>
           ) : null}
 
@@ -443,7 +516,7 @@ export function TemplateLibrary(props: {
 
         <footer className={css.footer}>
           <span className={css.attribution}>{tt('templates.attribution')}</span>
-          {!favoritesView ? <a className={css.sourceLink} href={activeMeta.homepage} target="_blank" rel="noreferrer">
+          {!specialView && !searchAll ? <a className={css.sourceLink} href={activeMeta.homepage} target="_blank" rel="noreferrer">
             {tt('templates.source', { label: activeMeta.label })}
           </a> : null}
         </footer>
@@ -451,7 +524,7 @@ export function TemplateLibrary(props: {
 
       {selected !== null ? (
         <div className={css.detailOverlay} onClick={() => { setSelected(null) }}>
-          <section className={css.detail} onClick={(event) => { event.stopPropagation() }}>
+          <section ref={detailRef} className={css.detail} tabIndex={-1} role="dialog" aria-modal="true" aria-label={selected.item.title} data-template-detail="" onClick={(event) => { event.stopPropagation() }}>
             <div className={css.detailMedia}>
               {selected.item.image !== '' ? (
                 <img className={css.detailImage} src={imageUrlOf(selected.sourceId, selected.item)} alt={selected.item.title} />
@@ -470,11 +543,13 @@ export function TemplateLibrary(props: {
                   <a className={css.detailLink} href={selected.item.githubUrl} target="_blank" rel="noreferrer">GitHub</a>
                 ) : null}
               </div>
+              {props.appendOnly ? <p className={css.applyHint}>{tt('templates.ecommerceHint')}</p> : null}
               <pre className={css.detailPrompt}>{selected.item.prompt}</pre>
               <div className={css.detailActions}>
-                <Button variant="primary" size="md" onClick={applySelected}>
-                  {tt('templates.use')}
+                <Button variant="primary" size="md" onClick={() => applySelected(props.appendOnly ? 'append' : 'replace')}>
+                  {tt(props.appendOnly ? 'templates.applyStyle' : props.hasExistingPrompt ? 'templates.replace' : 'templates.use')}
                 </Button>
+                {props.hasExistingPrompt && !props.appendOnly ? <Button variant="outline" size="md" onClick={() => applySelected('append')}>{tt('templates.append')}</Button> : null}
                 <Button variant="outline" size="md" onClick={() => { void copyPrompt(selected.item.prompt) }}>
                   {copied ? tt('templates.copied') : tt('templates.copy')}
                 </Button>

@@ -17,22 +17,24 @@
   z-index: 130;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 28px;
+  justify-content: flex-end;
+  padding: 0;
   background: var(--dsw-alias-bg-mask-1);
   color: var(--dsw-alias-label-primary);
   font-family: var(--dsw-font-family);
 }
 
 .shell {
+  position: relative;
+  min-width: min(620px, 100%);
   display: flex;
   flex-direction: column;
   width: min(1180px, 100%);
   height: 100%;
   max-height: 100%;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 14px;
+  border-radius: 18px 0 0 18px;
   background: var(--dsw-alias-bg-base);
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
 }
@@ -95,6 +97,7 @@
 /* --- source tabs --------------------------------------------------------- */
 
 .sourceTabs {
+  overflow-x: auto;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -291,7 +294,7 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -320,7 +323,7 @@
   position: relative;
   display: block;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 4 / 3;
   background: var(--dsw-alias-bg-layer-2);
 }
 
@@ -563,6 +566,7 @@
 }
 
 .detailActions {
+  flex-wrap: wrap;
   display: flex;
   gap: 8px;
   flex: none;
@@ -581,3 +585,55 @@
     grid-template-rows: minmax(0, 3fr) minmax(0, 4fr);
   }
 }
+
+/* Floating entry stays within the active studio, with a quiet neutral surface. */
+.floatingEntry {
+  position: absolute;
+  right: 24px;
+  bottom: 88px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 18px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, .12);
+  font: 600 13px var(--dsw-font-family);
+  cursor: pointer;
+}
+.floatingEntry:hover { background: var(--dsw-alias-bg-layer-1); }
+.floatingEntry:focus-visible, .viewTab:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; }
+.shell[data-fullscreen] { border-radius: 0; }
+.shell[data-resizing] { user-select: none; }
+.resizeHandle { position: absolute; z-index: 2; left: -5px; top: 0; bottom: 0; width: 10px; cursor: ew-resize; touch-action: none; }
+.resizeHandle::after { content: ''; position: absolute; top: 45%; bottom: 45%; left: 4px; width: 3px; border-radius: 2px; background: var(--dsw-alias-border-l1); }
+.resizeHandle:hover::after, .resizeHandle:focus-visible::after { background: var(--dsw-alias-brand-primary); }
+.viewTabs { display: flex; gap: 18px; padding: 10px 18px 12px; flex: none; }
+.viewTab { padding: 5px 0; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--dsw-alias-label-tertiary); font: 500 13px var(--dsw-font-family); cursor: pointer; }
+.viewTab[data-active] { color: var(--dsw-alias-label-primary); border-bottom-color: currentColor; }
+.searchRow { display: flex; gap: 10px; min-width: 0; }
+.search { min-width: 0; }
+.searchScope { max-width: 42%; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-family: inherit; }
+.applyHint { margin: 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary); }
+.partialError { display: flex; align-items: center; gap: 10px; padding: 12px; font-size: 12px; }
+@media (max-width: 760px) {
+  .shell { width: 100% !important; min-width: 0; border-radius: 0; }
+  .resizeHandle { display: none; }
+  .header { flex-wrap: wrap; gap: 8px; padding: 12px; }
+  .heading { flex-wrap: wrap; gap: 4px 10px; }
+  .headerActions { margin-left: auto; }
+  .sourceTabs { padding: 0 12px 10px; }
+  .sourceTab { padding: 0 10px; }
+  .toolbar, .viewTabs { padding-left: 12px; padding-right: 12px; }
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .favStar { opacity: 1; }
+  .detailOverlay { padding: 12px; }
+  .detail { height: 100%; }
+  .detailActions { gap: 6px; }
+  .footer { flex-wrap: wrap; padding: 8px 12px; }
+  .floatingEntry { right: 16px; bottom: 88px; padding: 11px 15px; }
+}
+@media (prefers-reduced-motion: reduce) { .card { transition: none; } }

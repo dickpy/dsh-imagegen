@@ -17,7 +17,7 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { autoRemoveBackground, canvasToDataUrl, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
 import { PosterEditor } from './PosterEditor.tsx'
-import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { TemplateLibrary, TemplateLibraryButton } from './TemplateLibrary.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import type { ImageModelGroup } from './settings-scope.ts'
 import { CanvasFileBody, CanvasFileOverlay, fileKindLabel, fileKindOfAsset, fileSizeLabel } from './CanvasFilePreview.tsx'
@@ -4106,6 +4106,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   })()
 
   return <section ref={rootRef} className={css.root} data-canvas-workspace="">
+    <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} />
     <header className={css.topBar} data-canvas-no-zoom="">
       <Select className={css.projectSelect} value={document?.id ?? ''} onChange={value => { void selectProject(value) }} aria-label={tt('canvas.project')}>
         {favoriteProjects.length > 0 ? <optgroup label={tt('canvas.favoriteProjects', { count: favoriteProjects.length })}>
@@ -4440,7 +4441,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       title={filePreviewNode.node.title}
       onClose={() => setFilePreviewNodeId(null)}
     /> : null}
-    {libraryOpen ? <TemplateLibrary api={api} onClose={() => setLibraryOpen(false)} onUse={prompt => { applyTemplate(prompt); setLibraryOpen(false) }} /> : null}
+    {libraryOpen ? <TemplateLibrary api={api} anchor={rootRef.current} onClose={() => setLibraryOpen(false)} onUse={prompt => { applyTemplate(prompt); setLibraryOpen(false) }} /> : null}
     {skillLibraryOpen ? <SkillLibraryDialog
       library={skillLibrary}
       loading={libraryLoading}

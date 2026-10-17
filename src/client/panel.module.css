@@ -655,6 +655,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 }
 
 .generation {
+  position: relative;
   display: flex;
   width: 100%;
   gap: 14px;

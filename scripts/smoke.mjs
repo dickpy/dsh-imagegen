@@ -3689,7 +3689,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     + '<div data-other-plugin-entry></div>'
     + '</div>'
     + '</body></html>',
-    { pretendToBeVisual: true },
+    { pretendToBeVisual: true, url: 'http://localhost/' },
   )
   const jsdomWindow = dom.window
   const jsdomDocument = jsdomWindow.document
@@ -4478,6 +4478,23 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(noReferenceOption !== undefined, 'the rounded reference menu offers reference-free generation')
     noReferenceOption.click()
     await new Promise(resolve => setTimeout(resolve, 20))
+    const productInfo = view.querySelector('[data-ecommerce-workspace] textarea')
+    nativeTextAreaSetter.call(productInfo, '保留商品瓶身和品牌标识')
+    productInfo.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 25))
+    view.querySelector('[data-template-library-trigger]').click()
+    await waitForSelector(jsdomDocument, '[data-template-drawer]')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const productDrawer = jsdomDocument.querySelector('[data-template-drawer]')
+    ;[...productDrawer.querySelectorAll('button')].find(button => button.textContent?.includes('Template poster')).click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.equal([...productDrawer.querySelectorAll('button')].some(button => button.textContent?.includes('替换当前提示词')), false, 'ecommerce never replaces product requirements')
+    ;[...productDrawer.querySelectorAll('button')].find(button => button.textContent?.includes('添加到风格要求')).click()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.equal(view.querySelector('input[placeholder="商品名称（必填）"]').value, '测试保温杯', 'template retains product name')
+    assert.equal(view.querySelector('[data-ecommerce-workspace] textarea').value, '保留商品瓶身和品牌标识\n\nA reusable template prompt', 'ecommerce template appends to product information')
+    assert.ok(view.querySelector('[data-ecommerce-asset]'), 'template retains uploaded product reference')
+    assert.equal(view.querySelectorAll('button[data-ecommerce-ref-select]').length, 4, 'template retains slot reference settings')
     const previewSet = [...view.querySelectorAll('button')].find(button => button.textContent?.includes('生成套图预览'))
     assert.ok(previewSet !== undefined, 'ecommerce preview action is rendered')
     previewSet.click()
@@ -4557,7 +4574,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Template-library regression: choose a card, use its prompt, and verify
     // the text editor receives it while the modal closes.
     const templateTrigger = [...jsdomDocument.querySelectorAll('button')]
-      .find(button => button.textContent?.includes('模板库'))
+      .find(button => button.hasAttribute('data-template-library-trigger'))
     assert.ok(templateTrigger !== undefined, 'template library trigger rendered')
     templateTrigger.click()
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -4569,12 +4586,67 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     templateCard.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     const useTemplate = [...libraryModal.querySelectorAll('button')]
-      .find(button => button.textContent?.includes('使用此提示词'))
+      .find(button => button.textContent?.includes('替换当前提示词'))
     assert.ok(useTemplate !== undefined, 'use-template action rendered')
     useTemplate.click()
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.equal(jsdomDocument.querySelector('textarea')?.value, 'A reusable template prompt')
     assert.equal(jsdomDocument.querySelector('[role="dialog"][aria-label="提示词模板库"]'), null, 'template modal closed after use')
+
+    // The drawer remembers use, searches every source and appends without loss.
+    templateTrigger.click()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const drawer = jsdomDocument.querySelector('[data-template-drawer]')
+    assert.equal(drawer.querySelector('section').style.width, '75%', 'wide drawer defaults to 75%')
+    const drawerButton = label => [...drawer.querySelectorAll('button')].find(button => button.textContent?.includes(label))
+    drawerButton('最近使用').click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.ok(drawerButton('Template poster'), 'applied template appears in recents')
+    drawerButton('全部模板').click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const scope = drawer.querySelector('select[aria-label="搜索范围"]')
+    scope.value = 'all'
+    scope.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(drawer.querySelectorAll('[role="tablist"]')[0].children.length, 5, 'all five template libraries retained')
+    assert.equal(drawer.querySelectorAll('[role="tablist"]')[0].querySelector('[aria-selected="true"]'), null, 'cross-library scope does not mislabel active source')
+    const fullscreen = drawer.querySelector('[aria-label="铺满工作区"]')
+    fullscreen.click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.equal(drawer.querySelector('section').style.width, '100%', 'fullscreen fills the workspace')
+    drawer.querySelector('[aria-label="恢复宽度"]').click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    drawerButton('Template poster').click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    drawerButton('追加到提示词').click()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.equal(jsdomDocument.querySelector('textarea')?.value, 'A reusable template prompt\n\nA reusable template prompt', 'append preserves existing prompt')
+    templateTrigger.click()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    jsdomWindow.dispatchEvent(new jsdomWindow.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.equal(jsdomDocument.querySelector('[data-template-drawer]'), null, 'Escape closes drawer')
+
+
+    const editMode = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent === '图生图')
+    editMode.click()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    const editUpload = view.querySelector('input[type="file"]:not([multiple])')
+    Object.defineProperty(editUpload, 'files', { value: { 0: new dom.window.File(['ref'], 'retained-reference.png', { type: 'image/png' }), length: 1 }, configurable: true })
+    editUpload.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.ok(view.querySelector('img[alt="retained-reference.png"]'), 'edit reference loaded')
+    view.querySelector('[data-template-library-trigger]').click()
+    await new Promise(resolve => setTimeout(resolve, 60))
+    const editDrawer = jsdomDocument.querySelector('[data-template-drawer]')
+    ;[...editDrawer.querySelectorAll('button')].find(button => button.textContent?.includes('Template poster')).click()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    ;[...editDrawer.querySelectorAll('button')].find(button => button.textContent?.includes('替换当前提示词')).click()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.ok(view.querySelector('img[alt="retained-reference.png"]'), 'template retains edit mode and reference image')
+    assert.equal(view.querySelector('textarea').value, 'A reusable template prompt', 'edit prompt receives template')
+    normalSwitch.click()
+    await new Promise(resolve => setTimeout(resolve, 25))
 
     // --- save-flow regression: a secret field's save must report success ---
     // The redacted wire view never returns the key, so the form judges the
@@ -4704,6 +4776,24 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
       return predicate()
     }
+
+    // Drawer keyboard events cannot reach canvas delete/undo shortcuts.
+    view.querySelector('[data-node-id="node-image"]').dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+    dom.window.dispatchEvent(new dom.window.MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.ok(view.querySelector('[data-node-id="node-image"]').className.includes('nodeSelected'), 'canvas node is selected before drawer keyboard regression')
+    view.querySelector('[data-canvas-workspace] [data-template-library-trigger]').click()
+    await waitForSelector(jsdomDocument, '[data-template-drawer]')
+    await new Promise(resolve => setTimeout(resolve, 60))
+    const canvasDrawer = jsdomDocument.querySelector('[data-template-drawer]')
+    const beforeDrawerNodes = view.querySelectorAll('[data-node-id]').length
+    canvasDrawer.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+    canvasDrawer.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(view.querySelectorAll('[data-node-id]').length, beforeDrawerNodes, 'drawer cannot delete or undo canvas nodes')
+    canvasDrawer.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(jsdomDocument.querySelector('[data-template-drawer]'), null, 'canvas drawer closes independently')
 
     // Editable poster end-to-end: the source stays untouched, local overlays
     // survive the real save payload, and reopening edits the original recipe.
@@ -5087,7 +5177,11 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(view.querySelector('[role="dialog"]').textContent.includes('paper.pdf'), 'the reader names the PDF')
     view.querySelector('[role="dialog"] [title="关闭预览"]').dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
     assert.ok(await waitUntil(() => view.querySelector('[role="dialog"]') === null), 'the close button dismisses the reader')
+  } catch (error) {
+    console.error('Client regression:', error)
+    throw error
   } finally {
+    await new Promise(resolve => setTimeout(resolve, 100))
     if (previousWindow === undefined) delete globalThis.window
     else globalThis.window = previousWindow
     if (previousDocument === undefined) delete globalThis.document

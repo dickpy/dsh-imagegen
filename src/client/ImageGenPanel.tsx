@@ -18,7 +18,8 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { renderMarkdown } from './markdown.tsx'
 import { openImageGenConfig } from './config-entry.tsx'
-import { TemplateLibrary } from './TemplateLibrary.tsx'
+import { TemplateLibrary, TemplateLibraryButton } from './TemplateLibrary.tsx'
+import { mergeTemplatePrompt } from './template-library-state.ts'
 import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
@@ -686,6 +687,8 @@ export function ImageGenPanel(props: {
   const [updateOpen, setUpdateOpen] = useState(false)
   const updateAreaRef = useRef<HTMLSpanElement>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const generationRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { setLibraryOpen(false) }, [workspace, tab])
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
   const initialDataRequestedRef = useRef(false)
@@ -2179,7 +2182,8 @@ export function ImageGenPanel(props: {
 
       <div className={css.studio}>
         {/* ------------------------------- left history + generation workspace */}
-        <div className={css.generation} data-workspace={workspace}>
+        <div ref={generationRef} className={css.generation} data-workspace={workspace}>
+          {workspace !== 'canvas' ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
           {/* ------------------------------------------------ config sidebar */}
           <aside
             ref={configAsideRef}
@@ -2544,15 +2548,6 @@ export function ImageGenPanel(props: {
                 onChange={(event) => { setPrompt(event.target.value) }}
               />
               <div className={css.promptFooter}>
-                <button
-                  type="button"
-                  className={css.templatesButton}
-                  title={tt('templates.title')}
-                  onClick={() => { setLibraryOpen(true) }}
-                >
-                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
-                  {tt('templates.open')}
-                </button>
                 <button
                   type="button"
                   className={css.enhanceButton}
@@ -3125,10 +3120,18 @@ export function ImageGenPanel(props: {
       {libraryOpen ? (
         <TemplateLibrary
           api={api}
+          anchor={generationRef.current}
+          hasExistingPrompt={prompt.trim() !== ''}
+          appendOnly={workspace === 'ecommerce'}
           onClose={() => { setLibraryOpen(false) }}
-          onUse={(text) => {
-            openTab('text')
-            setPrompt(text)
+          onUse={(text, mode) => {
+            if (workspace === 'ecommerce') {
+              setEcommerce(current => ({ ...current, promptInfo: mergeTemplatePrompt(current.promptInfo, text, 'append') }))
+              setEcommercePreview(false)
+            } else {
+              if (tab === 'gallery') openTab('text')
+              setPrompt(current => mergeTemplatePrompt(current, text, mode))
+            }
             setError(null)
             setLibraryOpen(false)
           }}
