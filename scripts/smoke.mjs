@@ -2329,6 +2329,139 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
   }
 })
 
+await check('C9b Agent tools and /edit_image support subscription-only channels (#57)', async () => {
+  const tools = new Map()
+  const commands = new Map()
+  const saved = new Map()
+  const calls = []
+  let serial = 0
+  const attachments = {
+    async saveImages(images) {
+      return images.map(image => {
+        const attachmentId = `subscription-${++serial}`
+        const ref = { attachmentId, mediaType: image.mediaType, bytes: image.data.byteLength, width: 1, height: 1, name: image.name }
+        saved.set(attachmentId, { ref, data: image.data })
+        return ref
+      })
+    },
+    async readImage(ref) {
+      const image = saved.get(ref.attachmentId)
+      assert.ok(image, 'source image must be in the attachment store')
+      return image
+    },
+  }
+  const providers = [
+    ['chatgpt-sub', 'codex'],
+    ['grok-sub', 'grok'],
+    ['google-sub', 'antigravity'],
+    ['openrouter-sub', 'openrouter'],
+  ]
+  const channelFor = provider => ({
+    id: provider, preset: '', name: provider, apiUrl: '', apiUrlFull: false, apiKey: '',
+    auth: 'subscription', subscription: provider,
+    models: [{ alias: `${provider}-model`, id: `${provider}-model` }],
+  })
+  let channel = channelFor('chatgpt-sub')
+  let config = { enabled: true, allowAgentImageGeneration: true, channels: [channel], defaultChannelId: channel.id }
+  let manager = {
+    async generate(options) {
+      calls.push(options)
+      if (options.prompt === 'hold generation') {
+        return await new Promise((resolve, reject) => {
+          if (options.signal.aborted) reject(new Error('cancelled'))
+          else options.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true })
+        })
+      }
+      return [{ b64_json: pngBytes.toString('base64') }]
+    },
+  }
+  const runtime = new host.ImageGenerationRuntime(
+    () => ({ channels: config.channels, defaultChannelId: config.defaultChannelId }),
+    { append: async () => [] },
+    { generate: options => manager.generate(options) },
+  )
+  const disposeTools = host.registerAgentImageTools({
+    tools: { register: definition => { tools.set(definition.name, definition); return () => tools.delete(definition.name) } },
+    attachments,
+  }, runtime, () => config)
+  const disposeCommand = host.registerEditImageCommand({
+    commands: { register: definition => { commands.set(definition.name, definition); return () => commands.delete(definition.name) } },
+    attachments,
+  }, runtime, () => config)
+  try {
+    let generated
+    for (const [provider, vendor] of providers) {
+      channel = channelFor(provider)
+      config = { ...config, channels: [channel], defaultChannelId: channel.id }
+      generated = await tools.get('generate_image').execute({ prompt: `generate ${provider}` }, {})
+      assert.equal(generated.status, 'completed', `${provider} must generate without an API key`)
+      assert.equal(calls.at(-1).vendor, vendor)
+    }
+
+    channel = channelFor('chatgpt-sub')
+    config = { ...config, channels: [channel], defaultChannelId: channel.id }
+    generated = await tools.get('generate_image').execute({ prompt: 'subscription generation' }, {})
+    assert.equal((await tools.get('get_image_generation_task').execute({ task_id: generated.task_id }, {})).status, 'completed')
+    const edited = await tools.get('edit_image').execute({ prompt: 'subscription edit', source_image: generated.images[0] }, {})
+    assert.equal(edited.status, 'completed')
+    assert.equal(calls.at(-1).vendor, 'codex')
+    assert.deepEqual(calls.at(-1).referenceImages[0].data, pngBytes)
+
+    const image = generated.images[0]
+    const attachment = { attachmentId: image.attachment_id, mediaType: image.media_type, bytes: image.bytes, width: image.width, height: image.height, name: image.name }
+    const commandResult = await commands.get('edit_image').handler({
+      agent: { id: 'subscription-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment }] }] } },
+      rawInput: 'subscription command edit',
+    })
+    assert.equal(commandResult.kind, 'success')
+    assert.equal(calls.at(-1).vendor, 'codex')
+    assert.deepEqual(calls.at(-1).referenceImages[0].data, pngBytes)
+
+    const background = await tools.get('generate_image').execute({ prompt: 'hold generation', wait_for_completion: false }, {})
+    assert.equal((await tools.get('cancel_image_generation_task').execute({ task_id: background.task_id }, {})).status, 'cancelled')
+
+    const emptyApi = { id: 'empty-api', preset: '', name: 'Empty API', apiUrl: 'https://example.test/v1', apiKey: '', models: [{ alias: 'empty-model', id: 'empty-model' }] }
+    config = { ...config, channels: [channel, emptyApi] }
+    await assert.rejects(
+      tools.get('generate_image').execute({ prompt: 'wrong channel', model: 'empty-model' }, {}),
+      error => error.code === 'image-api-not-configured',
+      'an unrelated subscription must not make an unconfigured API channel usable',
+    )
+    await assert.rejects(
+      tools.get('edit_image').execute({ prompt: 'wrong channel', model: 'empty-model', source_image: generated.images[0] }, {}),
+      error => error.code === 'image-api-not-configured',
+    )
+    config = { ...config, defaultChannelId: emptyApi.id }
+    const badCommand = await commands.get('edit_image').handler({
+      agent: { id: 'subscription-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment }] }] } },
+      rawInput: 'edit through unconfigured API',
+    })
+    assert.equal(badCommand.kind, 'error')
+    assert.match(badCommand.text, /credentials are not configured/)
+    config = { ...config, channels: [emptyApi], defaultChannelId: emptyApi.id }
+    await assert.rejects(tools.get('generate_image').execute({ prompt: 'missing key' }, {}), error => error.code === 'image-api-not-configured')
+    config = { ...config, channels: [{ ...emptyApi, apiUrl: ' ', apiKey: 'sk-test' }] }
+    await assert.rejects(tools.get('generate_image').execute({ prompt: 'missing URL' }, {}), error => error.code === 'image-api-not-configured')
+    config = { ...config, channels: [{ ...channel, subscription: undefined }], defaultChannelId: channel.id }
+    await assert.rejects(tools.get('generate_image').execute({ prompt: 'missing provider' }, {}), error => error.code === 'image-api-not-configured')
+    config = { ...config, channels: [{ ...channel, models: [] }] }
+    await assert.rejects(tools.get('generate_image').execute({ prompt: 'missing model' }, {}), error => error.code === 'no-models-configured')
+
+    config = { ...config, channels: [channel], enabled: false }
+    await assert.rejects(tools.get('generate_image').execute({ prompt: 'disabled' }, {}), error => error.code === 'plugin-disabled')
+    config = { ...config, enabled: true, allowAgentImageGeneration: false }
+    await assert.rejects(tools.get('generate_image').execute({ prompt: 'agent disabled' }, {}), error => error.code === 'agent-generation-disabled')
+    config = { ...config, allowAgentImageGeneration: true }
+    manager = new host.SubscriptionManager({ get: () => ({ resolve: async () => undefined }) })
+    const loggedOut = await tools.get('generate_image').execute({ prompt: 'logged out' }, {})
+    assert.equal(loggedOut.status, 'failed')
+    assert.match(loggedOut.error, /未登录/, 'the subscription manager reports the actual login failure')
+  } finally {
+    disposeCommand()
+    disposeTools()
+  }
+})
+
 await check('C10 canvas file upload accepts arbitrary bytes and serves them as an attachment', async () => {
   const bytes = Buffer.from('name,role\nalice,admin\n', 'utf8')
   const response = await fetch(`http://127.0.0.1:${port}/api/dsh-imagegen/canvas/file/upload?name=people.csv`, {
@@ -3376,6 +3509,53 @@ await check('C12c an install the host registry would ignore is refused with copy
     assert.deepEqual((await host.listLocalSkills(issueRoot)).map(skill => skill.name), [])
   } finally {
     rmSync(issueRoot, { recursive: true, force: true })
+  }
+})
+
+await check('C12d official PPT repository and explicit GitHub skill paths install the complete bundle', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-imagegen-ppt-skill-'))
+  const skill = '---\nname: image-to-editable-ppt\ndescription: Rebuild slides\n---\n\n# PPT\n'
+  const other = '---\nname: other-skill\ndescription: Another skill\n---\n\n# Other\n'
+  const files = [
+    { name: 'repo-main/.github/workflows/ci.yml', body: 'name: test\n' },
+    { name: 'repo-main/docs/readme.md', body: '# docs\n' },
+    { name: 'repo-main/assets/logo.png', body: 'logo' },
+    { name: 'repo-main/skills/image-to-editable-ppt/SKILL.md', body: skill },
+    { name: 'repo-main/skills/image-to-editable-ppt/cli/pyproject.toml', body: '[project]\nname = "editppt"\n' },
+    { name: 'repo-main/skills/image-to-editable-ppt/prompts/page-worker.md', body: '# Worker\n' },
+  ]
+  const archive = buildZip(files)
+  const originalFetch = globalThis.fetch
+  let requested = ''
+  try {
+    assert.equal(await host.installFromArchive(archive, root, 'repo', false), 'image-to-editable-ppt')
+    assert.match(readFileSync(join(root, 'image-to-editable-ppt', 'cli', 'pyproject.toml'), 'utf8'), /editppt/)
+    assert.match(readFileSync(join(root, 'image-to-editable-ppt', 'prompts', 'page-worker.md'), 'utf8'), /Worker/)
+
+    globalThis.fetch = async url => { requested = String(url); return new Response(archive, { status: 200 }) }
+    const source = 'https://github.com/ningzimu/image-to-editable-ppt-skill/tree/main/skills/image-to-editable-ppt'
+    assert.equal(await host.installFromUrl(source, root, { force: true }), 'image-to-editable-ppt')
+    assert.match(requested, /codeload\.github\.com\/ningzimu\/image-to-editable-ppt-skill\/zip\/main$/)
+    const blob = 'https://github.com/ningzimu/image-to-editable-ppt-skill/blob/main/skills/image-to-editable-ppt/SKILL.md'
+    assert.equal(await host.installFromUrl(blob, root, { force: true }), 'image-to-editable-ppt')
+    await assert.rejects(
+      () => host.installFromUrl('https://github.com/o/r/tree/main/skills/missing', root, { force: true }),
+      /指定.*路径|路径.*不存在/,
+      'a missing explicit path must not silently install a different skill',
+    )
+    await assert.rejects(
+      () => host.installFromUrl('https://github.com/o/r/tree/main/../../outside', root, { force: true }),
+      /路径.*不合法|路径.*无效/,
+    )
+
+    const multi = buildZip([...files, { name: 'repo-main/skills/other-skill/SKILL.md', body: other }])
+    await assert.rejects(() => host.installFromArchive(multi, root, 'repo', true), /多个技能/)
+    globalThis.fetch = async () => new Response(multi, { status: 200 })
+    assert.equal(await host.installFromUrl(source, root, { force: true }), 'image-to-editable-ppt')
+    assert.equal(await host.installFromUrl('https://github.com/o/r/tree/main/skills/other-skill', root, { force: true }), 'other-skill')
+  } finally {
+    globalThis.fetch = originalFetch
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
@@ -4589,9 +4769,17 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   // Evaluate the bundle in a jsdom-backed sandbox.
   const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   let handoff
+  const copiedImages = []
+  let rejectImageCopy = false
   const sandbox = {
     window: jsdomWindow,
     document: jsdomDocument,
+    Blob,
+    ClipboardItem: class { constructor(data) { this.data = data } },
+    navigator: { clipboard: { async write(items) {
+      if (rejectImageCopy) throw new Error('clipboard denied')
+      copiedImages.push(Buffer.from(await (await items[0].data['image/png']).arrayBuffer()))
+    } } },
     MutationObserver: jsdomWindow.MutationObserver,
     ResizeObserver: jsdomWindow.ResizeObserver,
     CustomEvent: jsdomWindow.CustomEvent,
@@ -5771,6 +5959,40 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     completeGenerationTasks = true
     assert.ok(await waitUntil(() => view.querySelector('[data-generation-animation]') === null, 5000), 'the animation unmounts when host tasks complete')
     await waitForSelector(view, '[data-result-preview-grid] img')
+    jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
+    assert.ok(await waitUntil(() => jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-active')))
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    // #59: right-click and the visible action copy actual image bytes; denied
+    // clipboard permissions surface an error instead of a false success.
+    const resultImage = view.querySelector('[data-result-preview-grid] img')
+    const menuEvent = new jsdomWindow.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 80 })
+    resultImage.dispatchEvent(menuEvent)
+    assert.equal(menuEvent.defaultPrevented, true)
+    await waitForSelector(jsdomDocument, '[data-image-copy-menu] [role="menuitem"]')
+    jsdomDocument.querySelector('[data-image-copy-menu] [role="menuitem"]').click()
+    assert.ok(await waitUntil(() => copiedImages.length === 1), 'the context menu writes an image to the clipboard')
+    assert.deepEqual(copiedImages[0], Buffer.from(resultImage.getAttribute('src').split(',')[1], 'base64'))
+    rejectImageCopy = true
+    view.querySelector('[data-result-preview-grid] [data-copy-image]').click()
+    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[role="alert"]')?.textContent.includes('复制图片失败')), 'clipboard errors are visible')
+    rejectImageCopy = false
+
+    // #60: hiding covers normal results and the portaled history and preview;
+    // the shortcut restores the exact same image without changing the task.
+    const privacy = view.querySelector('[data-privacy-toggle]')
+    privacy.click()
+    assert.ok(await waitUntil(() => privacy.getAttribute('aria-pressed') === 'true'))
+    assert.equal(jsdomWindow.getComputedStyle(resultImage).visibility, 'hidden')
+    const historyImage = jsdomDocument.querySelector('[data-dsh-imagegen-history] img')
+    if (historyImage) assert.equal(jsdomWindow.getComputedStyle(historyImage).visibility, 'hidden')
+    resultImage.closest('figure').click()
+    await waitForSelector(jsdomDocument, '[role="dialog"][data-imagegen-private="true"] img')
+    assert.equal(jsdomWindow.getComputedStyle(jsdomDocument.querySelector('[role="dialog"][data-imagegen-private="true"] img')).visibility, 'hidden')
+    jsdomWindow.dispatchEvent(new jsdomWindow.KeyboardEvent('keydown', { bubbles: true, cancelable: true, code: 'KeyH', key: 'H', altKey: true, shiftKey: true }))
+    assert.ok(await waitUntil(() => privacy.getAttribute('aria-pressed') === 'false'))
+    assert.notEqual(jsdomWindow.getComputedStyle(resultImage).visibility, 'hidden')
+    jsdomDocument.querySelector('[role="dialog"][aria-label="图片预览"] [aria-label="关闭"]').click()
 
     // Exercise real comparison submissions in BOTH modes, not only the shared
     // decorative component. Each pending slot must retain its own animation.

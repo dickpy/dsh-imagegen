@@ -3,6 +3,12 @@
  */
 
 export const zh = {
+  'image.copy': '复制图片',
+  'image.copied': '图片已复制，可粘贴到其他应用',
+  'image.copyFailed': '复制图片失败，请检查剪贴板权限或下载图片。',
+  'image.hide': '隐藏图片',
+  'image.show': '显示图片',
+  'image.privacyHint': '隐藏或显示工作室图片（Alt+Shift+H）',
   "ppt.activityPreparing": "正在准备输入图片",
   "ppt.activityTextHints": "正在处理页面文字提示",
   "ppt.activityAssets": "正在重建页面图片素材",
@@ -1085,6 +1091,12 @@ export const zh = {
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
+  'image.copy': 'Copy image',
+  'image.copied': 'Image copied. Paste it into another app.',
+  'image.copyFailed': 'Could not copy the image. Check clipboard permissions or download it.',
+  'image.hide': 'Hide images',
+  'image.show': 'Show images',
+  'image.privacyHint': 'Hide or show studio images (Alt+Shift+H)',
   "ppt.activityPreparing": "Preparing input images",
   "ppt.activityTextHints": "Processing page text hints",
   "ppt.activityAssets": "Rebuilding page image assets",
@@ -2157,6 +2169,12 @@ export type ImageGenKey = keyof typeof zh
 
 /** Russian mirror of every key (полный словарь интерфейса). */
 export const ru: Record<keyof typeof zh, string> = {
+  'image.copy': 'Копировать изображение',
+  'image.copied': 'Изображение скопировано. Вставьте его в другое приложение.',
+  'image.copyFailed': 'Не удалось скопировать изображение. Проверьте разрешение буфера обмена или скачайте его.',
+  'image.hide': 'Скрыть изображения',
+  'image.show': 'Показать изображения',
+  'image.privacyHint': 'Скрыть или показать изображения в студии (Alt+Shift+H)',
   "ppt.activityPreparing": "Подготовка исходных изображений",
   "ppt.activityTextHints": "Обработка текстовых подсказок",
   "ppt.activityAssets": "Воссоздание изображений",
