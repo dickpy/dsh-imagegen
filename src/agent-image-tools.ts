@@ -64,12 +64,18 @@ const taskResultSchema = {
 /** Agent calls stay pending until the provider and history write settle. */
 const AGENT_GENERATION_TIMEOUT_MS = 300_000
 
-export function ensureAgentImageConfigured(config: AgentImageToolConfig): void {
+/** Subscription login and token refresh are checked by the runtime when the task runs. */
+function hasChannelAuthentication(channel: RuntimeChannel): boolean {
+  return channel.auth === 'subscription'
+    ? channel.subscription !== undefined
+    : channel.apiUrl.trim() !== '' && channel.apiKey.trim() !== ''
+}
+
+export function ensureAgentImageConfigured(config: AgentImageToolConfig, channel?: RuntimeChannel): void {
   if (!config.enabled) throw new ImageGenError('AI image generation is disabled. Open Settings → Image settings and enable it.', 'plugin-disabled')
   if (!config.allowAgentImageGeneration) throw new ImageGenError('Agent image generation is disabled in Settings → Image settings.', 'agent-generation-disabled')
-  const usable = config.channels.some(channel => (channel.auth === 'subscription' && channel.subscription !== undefined)
-    || (channel.apiUrl.trim() !== '' && channel.apiKey.trim() !== ''))
-  if (!usable) throw new ImageGenError('Image API credentials are not configured. Open Settings → Image settings, add a channel and fill in its API URL and API key.', 'image-api-not-configured')
+  const usable = channel === undefined ? config.channels.some(hasChannelAuthentication) : hasChannelAuthentication(channel)
+  if (!usable) throw new ImageGenError('Image credentials are not configured. Open Settings → Image settings and configure an API channel with a URL and API key, or choose a subscription provider.', 'image-api-not-configured')
 }
 
 /** Resolve a configured image alias and its owning channel. */
@@ -172,10 +178,11 @@ export async function submitAgentImageEdit(
 ): Promise<GenerationTask> {
   const config = resolve()
   ensureAgentImageConfigured(config)
-  const reference = await attachments.readImage(input.sourceImage, input.signal)
   const defaultChannel = config.channels.find(channel => channel.id === config.defaultChannelId) ?? config.channels[0]
   const fallbackModel = defaultChannel?.models[0]?.alias ?? config.channels.flatMap(channel => channel.models)[0]?.alias ?? ''
   const picked = resolveAgentImageModel(config, config.defaultModel?.trim() || fallbackModel)
+  ensureAgentImageConfigured(config, picked.channel)
+  const reference = await attachments.readImage(input.sourceImage, input.signal)
   const task = runtime.queue.submit({
     mode: 'edit',
     model: picked.alias,
@@ -289,7 +296,13 @@ function presentImageResult(_args: unknown, result: ToolResult): ToolResultView 
 export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRuntime, resolve: () => AgentImageToolConfig): () => void {
   const attachmentRefs = new Map<string, Promise<AgentImageRef[]>>()
   const ensureConfigured = (): void => { ensureAgentImageConfigured(resolve()) }
-  const resolveModel = (requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } => resolveAgentImageModel(resolve(), requested)
+  const resolveModel = (requested: unknown): { channel: RuntimeChannel; alias: string; upstream: string } => {
+    const config = resolve()
+    ensureAgentImageConfigured(config)
+    const picked = resolveAgentImageModel(config, requested)
+    ensureAgentImageConfigured(config, picked.channel)
+    return picked
+  }
   const materializeTaskImages = (task: GenerationTask): Promise<AgentImageRef[]> => {
     if (task.status !== 'completed') return Promise.resolve([])
     const existing = attachmentRefs.get(task.id)
@@ -340,7 +353,6 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
       },
       presentResult: presentImageResult,
       async execute(args, exec) {
-        ensureConfigured()
         const picked = resolveModel(args.model)
         const task = runtime.queue.submit({
           mode: 'text',
@@ -377,9 +389,8 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
       },
       presentResult: presentImageResult,
       async execute(args, exec) {
-        ensureConfigured()
-        const reference = await ctx.attachments.readImage(restoreRef(args.source_image), exec.signal)
         const picked = resolveModel(args.model)
+        const reference = await ctx.attachments.readImage(restoreRef(args.source_image), exec.signal)
         const task = runtime.queue.submit({
           mode: 'edit',
           model: picked.alias,

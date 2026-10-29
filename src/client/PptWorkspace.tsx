@@ -12,7 +12,7 @@ import css from './ppt-workspace.module.css'
 export interface PptImport { id: number; file: File }
 const running = (task: CanvasSkillTask): boolean => task.status === 'queued' || task.status === 'running'
 
-function PptDialog({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+function PptDialog({ title, close, children, privacyMode }: { title: string; close: () => void; children: ReactNode; privacyMode?: boolean }) {
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
@@ -31,7 +31,7 @@ function PptDialog({ title, close, children }: { title: string; close: () => voi
     const element = root.current
     return () => { element?.removeEventListener('keydown', onKey); previous?.focus() }
   }, [])
-  return createPortal(<div className={css.overlay} onClick={event => { if (event.target === event.currentTarget) close() }}>
+  return createPortal(<div className={css.overlay} data-imagegen-private={privacyMode ? 'true' : undefined} onClick={event => { if (event.target === event.currentTarget) close() }}>
     <div ref={root} className={css.dialog} role="dialog" aria-modal="true" aria-label={title}>
       <header><h3>{title}</h3><button type="button" aria-label={tt('ppt.close')} onClick={close}>×</button></header>
       <div className={css.dialogBody}>{children}</div>
@@ -39,7 +39,7 @@ function PptDialog({ title, close, children }: { title: string; close: () => voi
   </div>, document.body)
 }
 
-export function PptWorkspace({ api, active, importRequest, onImported }: { api: ImageGenApi; active: boolean; importRequest?: PptImport; onImported: () => void }) {
+export function PptWorkspace({ api, active, importRequest, onImported, privacyMode }: { api: ImageGenApi; active: boolean; importRequest?: PptImport; onImported: () => void; privacyMode?: boolean }) {
   useImageGenLanguageTick()
   const [images, setImages] = useState<CanvasAssetRef[]>([])
   const current = useRef(images)
@@ -181,12 +181,12 @@ export function PptWorkspace({ api, active, importRequest, onImported }: { api: 
         </section> : null}
       </>}
     </main>
-    {settingsOpen ? <PptDialog title={tt('ppt.settingsTitle')} close={() => setSettingsOpen(false)}><PptSetup /></PptDialog> : null}
-    {diagnostic ? <PptDialog title={tt('ppt.diagnostic')} close={() => setDiagnostic(undefined)}>
+    {settingsOpen ? <PptDialog title={tt('ppt.settingsTitle')} privacyMode={privacyMode} close={() => setSettingsOpen(false)}><PptSetup /></PptDialog> : null}
+    {diagnostic ? <PptDialog title={tt('ppt.diagnostic')} privacyMode={privacyMode} close={() => setDiagnostic(undefined)}>
       <p className={css.diagnosticHint}>{tt(diagnostic.agentSessionId ? 'ppt.diagnosticHint' : 'ppt.legacyDiagnostic')}</p>
       <textarea className={css.diagnosticText} readOnly rows={14} aria-label={tt('ppt.diagnostic')} onFocus={event => event.currentTarget.select()} value={JSON.stringify({ taskId: diagnostic.id, status: diagnostic.status, startedAt: new Date(diagnostic.startedAt).toISOString(), finishedAt: diagnostic.finishedAt ? new Date(diagnostic.finishedAt).toISOString() : undefined, agentSessionId: diagnostic.agentSessionId, runDirectory: diagnostic.runDirectory, error: diagnostic.error, persistenceError: diagnostic.persistenceError, stage: diagnostic.stage, phase: diagnostic.phase, progress: diagnostic.progress, inputCount: diagnostic.pptImages?.length }, null, 2)} />
     </PptDialog> : null}
-    {pptPreview ? <PptDialog title={pptPreview.name || 'PPTX'} close={() => setPptPreview(undefined)}><PptDeckPreview key={pptPreview.assetId} api={api} asset={pptPreview} /></PptDialog> : null}
-    {sourcePreview ? <PptDialog title={sourcePreview.name || tt('ppt.previewSource')} close={() => setSourcePreview(undefined)}><img className={css.sourcePreview} src={sourcePreview.url} alt={sourcePreview.name || ''} /></PptDialog> : null}
+    {pptPreview ? <PptDialog title={pptPreview.name || 'PPTX'} privacyMode={privacyMode} close={() => setPptPreview(undefined)}><PptDeckPreview key={pptPreview.assetId} api={api} asset={pptPreview} /></PptDialog> : null}
+    {sourcePreview ? <PptDialog title={sourcePreview.name || tt('ppt.previewSource')} privacyMode={privacyMode} close={() => setSourcePreview(undefined)}><img className={css.sourcePreview} src={sourcePreview.url} alt={sourcePreview.name || ''} /></PptDialog> : null}
   </div>
 }
