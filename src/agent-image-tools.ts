@@ -7,7 +7,7 @@ import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deeps
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-tools'
 import { ImageGenError } from './engine.ts'
-import { ImageGenerationRuntime, type RuntimeChannel } from './generation-runtime.ts'
+import type { ImageGenerationRuntime, RuntimeChannel } from './generation-runtime.ts'
 import { detectImageMime } from './image-format.ts'
 import type { GenerationTask, GeneratedImage } from './protocol.ts'
 
@@ -67,7 +67,8 @@ const AGENT_GENERATION_TIMEOUT_MS = 300_000
 export function ensureAgentImageConfigured(config: AgentImageToolConfig): void {
   if (!config.enabled) throw new ImageGenError('AI image generation is disabled. Open Settings → Image settings and enable it.', 'plugin-disabled')
   if (!config.allowAgentImageGeneration) throw new ImageGenError('Agent image generation is disabled in Settings → Image settings.', 'agent-generation-disabled')
-  const usable = config.channels.some(channel => channel.apiUrl.trim() !== '' && channel.apiKey.trim() !== '')
+  const usable = config.channels.some(channel => (channel.auth === 'subscription' && channel.subscription !== undefined)
+    || (channel.apiUrl.trim() !== '' && channel.apiKey.trim() !== ''))
   if (!usable) throw new ImageGenError('Image API credentials are not configured. Open Settings → Image settings, add a channel and fill in its API URL and API key.', 'image-api-not-configured')
 }
 

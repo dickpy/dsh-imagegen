@@ -81,7 +81,7 @@
     "prepare": "tsdown",
     "build": "tsdown",
     "test": "pnpm run test:unit && pnpm run test:e2e",
-    "test:unit": "node --test scripts/conversation-sync.test.mjs",
+    "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs",
     "test:e2e": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-dom-e2e.mjs",
     "test:browser": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-browser-test.mjs",
     "watch": "tsdown --watch",
