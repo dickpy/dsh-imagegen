@@ -8,7 +8,7 @@
  * a platform module) so the studio matches the dsh shell look by construction.
  */
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GenerationLoading } from './GenerationLoading'
 import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -22,6 +22,7 @@ import { openImageGenConfig } from './config-entry.tsx'
 import { TemplateLibrary, TemplateLibraryButton } from './TemplateLibrary.tsx'
 import { ReferenceImages } from './ReferenceImages.tsx'
 import { clipboardImageFiles, EDIT_REFERENCE_LIMIT, editReferenceLimit, useEditReferences } from './reference-images.ts'
+import { copyGeneratedImage } from './image-clipboard.ts'
 import { mergeTemplatePrompt } from './template-library-state.ts'
 import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
@@ -654,6 +655,42 @@ export function ImageGenPanel(props: {
   /** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
   const [compareModels, setCompareModels] = useState<string[]>([])
   const [images, setImages] = useState<GeneratedImage[]>([])
+  const [privacyMode, setPrivacyMode] = useState(false)
+  const [copyMenu, setCopyMenu] = useState<{ image: GeneratedImage; x: number; y: number } | null>(null)
+  const [copyNotice, setCopyNotice] = useState<'copied' | 'failed' | null>(null)
+  const copyNoticeTimer = useRef<number>()
+  useEffect(() => () => { if (copyNoticeTimer.current !== undefined) window.clearTimeout(copyNoticeTimer.current) }, [])
+  useEffect(() => {
+    if (!active) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.repeat && event.code === 'KeyH') {
+        event.preventDefault()
+        setPrivacyMode(value => !value)
+        setCopyMenu(null)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => { window.removeEventListener('keydown', onKey, true) }
+  }, [active])
+  useEffect(() => {
+    if (copyMenu === null) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setCopyMenu(null) }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => { window.removeEventListener('keydown', onKey, true) }
+  }, [copyMenu])
+  const openCopyMenu = (event: ReactMouseEvent<HTMLElement>, image: GeneratedImage): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setCopyMenu({ image, x: Math.max(6, Math.min(event.clientX, window.innerWidth - 170)), y: Math.max(6, Math.min(event.clientY, window.innerHeight - 50)) })
+  }
+  const copyImage = async (image: GeneratedImage): Promise<void> => {
+    setCopyMenu(null)
+    try { await copyGeneratedImage(image); setCopyNotice('copied') } catch { setCopyNotice('failed') }
+    if (copyNoticeTimer.current !== undefined) window.clearTimeout(copyNoticeTimer.current)
+    copyNoticeTimer.current = window.setTimeout(() => setCopyNotice(null), 2500)
+  }
   const [galleryConversationAddingId, setGalleryConversationAddingId] = useState<string | null>(null)
   const [historyConversationAddingId, setHistoryConversationAddingId] = useState<string | null>(null)
   const [conversationMessage, setConversationMessage] = useState<string | null>(null)
@@ -1832,7 +1869,7 @@ export function ImageGenPanel(props: {
                 title={tt('preview.open')}
                 onClick={() => { openPreview(item.images, imageIndex) }}
               >
-                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} />
+                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} onContextMenu={event => openCopyMenu(event, image)} />
                 <span className={css.ecommerceResultBadge}>{group.label}</span>
                 <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
                   <a className={css.ecommerceActionChip} href={srcOf(image)} download={`product-${item.slotKey || item.id}-${imageIndex + 1}.${extensionOf(image.mime)}`}>{tt('download')}</a>
@@ -1922,7 +1959,7 @@ export function ImageGenPanel(props: {
   // Render history into the shell sidebar so it remains a separate navigation
   // surface from both the image workspace and the native conversation.
   const historyPanel = (
-    <aside className={css.history} data-dsh-imagegen-history>
+    <aside className={css.history} data-dsh-imagegen-history data-imagegen-private={privacyMode ? 'true' : undefined}>
       <header className={css.historyHeader}>
         <span className={css.historyTitle}>{tt('history.title')}</span>
         <div className={css.historyHeaderActions}>
@@ -2068,7 +2105,7 @@ export function ImageGenPanel(props: {
   const isGeneration = workspace === 'normal' && tab !== 'gallery'
 
   return (
-    <div className={css.panel}>
+    <div className={css.panel} data-imagegen-private={privacyMode ? 'true' : undefined}>
       <header className={css.panelHeader}>
         <span className={css.panelHeading}>
           <h2 className={css.panelTitle}>{tt('panel.title')}</h2>
@@ -2142,6 +2179,10 @@ export function ImageGenPanel(props: {
           ]}
         />
         <span className={css.panelHeaderActions}>
+          <button type="button" className={css.privacyToggle} data-privacy-toggle="" aria-pressed={privacyMode}
+            aria-keyshortcuts="Alt+Shift+H" title={tt('image.privacyHint')} onClick={() => { setPrivacyMode(value => !value); setCopyMenu(null) }}>
+            {tt(privacyMode ? 'image.show' : 'image.hide')}
+          </button>
           <button
             type="button"
             className={css.chatToggle}
@@ -2663,7 +2704,7 @@ export function ImageGenPanel(props: {
             </section>
           </aside>
 
-          <PptWorkspace api={api} active={active && workspace === 'ppt'} importRequest={pptImport} onImported={() => setPptImport(undefined)} />
+          <PptWorkspace api={api} active={active && workspace === 'ppt'} importRequest={pptImport} privacyMode={privacyMode} onImported={() => setPptImport(undefined)} />
 
           {workspace === 'canvas' ? (
             <CanvasWorkspace
@@ -2943,7 +2984,7 @@ export function ImageGenPanel(props: {
                           title={tt('preview.open')}
                           onClick={() => { openPreview(taskImages, 0) }}
                         >
-                          <img src={srcOf(image)} alt={task.request.model} />
+                          <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />
                         </button>
                       ) : task.status === 'queued' || task.status === 'running' ? (
                         <div className={css.comparisonPending} role="status">
@@ -3022,6 +3063,7 @@ export function ImageGenPanel(props: {
                       className={css.image}
                       src={srcOf(image)}
                       alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
+                      onContextMenu={event => openCopyMenu(event, image)}
                     />
                     {image.revisedPrompt !== undefined ? (
                       <figcaption className={css.imageCaption} title={image.revisedPrompt}>
@@ -3053,6 +3095,7 @@ export function ImageGenPanel(props: {
                         {conversationAttachment.busyKey === index ? tt('conversation.adding') : tt('conversation.add')}
                       </button>
                       <button type="button" className={css.pptAction} data-image-to-ppt="" onClick={event => { event.stopPropagation(); openPpt(image, index) }}>{tt('ppt.action')}</button>
+                      <button type="button" className={css.imageCopyAction} data-copy-image="" onClick={event => { event.stopPropagation(); void copyImage(image) }}>{tt('image.copy')}</button>
                       <a
                       className={css.download}
                       href={srcOf(image)}
@@ -3079,6 +3122,7 @@ export function ImageGenPanel(props: {
       {libraryOpen ? (
         <TemplateLibrary
           api={api}
+          privacyMode={privacyMode}
           anchor={generationRef.current}
           hasExistingPrompt={prompt.trim() !== ''}
           appendOnly={workspace === 'ecommerce'}
@@ -3108,11 +3152,12 @@ export function ImageGenPanel(props: {
       ) : null}
 
       {comparisonFullscreen && comparison !== null ? createPortal(
-        <div className={css.comparisonFullscreen} role="dialog" aria-modal="true" aria-label={tt('compare.title')} onClick={() => { setComparisonFullscreen(false) }}>
+        <div className={css.comparisonFullscreen} data-imagegen-private={privacyMode ? 'true' : undefined} role="dialog" aria-modal="true" aria-label={tt('compare.title')} onClick={() => { setComparisonFullscreen(false) }}>
           <button type="button" className={css.lightboxClose} aria-label={tt('preview.close')} onClick={() => { setComparisonFullscreen(false) }}>×</button>
+          <button type="button" className={css.fullscreenPrivacy} aria-pressed={privacyMode} title={tt('image.privacyHint')} onClick={event => { event.stopPropagation(); setPrivacyMode(value => !value) }}>{tt(privacyMode ? 'image.show' : 'image.hide')}</button>
           <div className={css.comparisonFullscreenGrid} onClick={event => { event.stopPropagation() }}>
             {comparisonResults.map(task => (
-              <figure key={task.id}><figcaption>{task.request.model}</figcaption>{task.result!.images.map((image, index) => <img key={index} src={srcOf(image)} alt={task.request.model} />)}</figure>
+              <figure key={task.id}><figcaption>{task.request.model}</figcaption>{task.result!.images.map((image, index) => <img key={index} src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />)}</figure>
             ))}
           </div>
         </div>, document.body) : null}
@@ -3122,6 +3167,7 @@ export function ImageGenPanel(props: {
         ? createPortal(
           <div
             className={css.lightbox}
+            data-imagegen-private={privacyMode ? 'true' : undefined}
             role="dialog"
             aria-modal="true"
             aria-label={tt('preview.title')}
@@ -3158,6 +3204,7 @@ export function ImageGenPanel(props: {
                     style={{ width: `${previewImageScale * 100}%`, height: `${previewImageScale * 100}%` }}
                     src={srcOf(previewImage)}
                     alt={previewImage.revisedPrompt ?? tt('preview.title')}
+                    onContextMenu={event => openCopyMenu(event, previewImage)}
                   />
                 </div>
               </div>
@@ -3190,6 +3237,8 @@ export function ImageGenPanel(props: {
               <div className={css.lightboxMeta}>
                 <span className={css.lightboxIndex}>{tt('preview.index', { index: preview.index + 1, total: preview.images.length })}</span>
                 <span className={css.lightboxActions}>
+                  <button type="button" className={css.lightboxEdit} aria-pressed={privacyMode} title={tt('image.privacyHint')} onClick={() => setPrivacyMode(value => !value)}>{tt(privacyMode ? 'image.show' : 'image.hide')}</button>
+                  <button type="button" className={css.lightboxEdit} data-copy-image="" onClick={() => { void copyImage(previewImage) }}>{tt('image.copy')}</button>
                   <button type="button" className={css.lightboxEdit} disabled={conversationBusy} title={tt('conversation.addHint')} onClick={() => { addImageToConversation(previewImage, preview.index) }}>
                     {conversationAttachment.busyKey === preview.index ? tt('conversation.adding') : tt('conversation.add')}
                   </button>
@@ -3214,6 +3263,15 @@ export function ImageGenPanel(props: {
           document.body,
         )
         : null}
+
+      {copyMenu !== null ? createPortal(
+        <div className={css.imageCopyOverlay} onClick={() => setCopyMenu(null)} onContextMenu={event => { event.preventDefault(); setCopyMenu(null) }}>
+          <div className={css.imageCopyMenu} role="menu" data-image-copy-menu="" style={{ left: copyMenu.x, top: copyMenu.y }} onClick={event => event.stopPropagation()}>
+            <button type="button" role="menuitem" autoFocus onClick={() => { void copyImage(copyMenu.image) }}>{tt('image.copy')}</button>
+          </div>
+        </div>, document.body) : null}
+
+      {copyNotice !== null ? createPortal(<div className={css.imageCopyToast} role={copyNotice === 'failed' ? 'alert' : 'status'}>{tt(copyNotice === 'copied' ? 'image.copied' : 'image.copyFailed')}</div>, document.body) : null}
 
       {/* ------------------------------------------------- gallery toast */}
       {conversationAttachment.pending !== null ? createPortal(

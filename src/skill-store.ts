@@ -514,10 +514,13 @@ async function findSkillRoot(root: string): Promise<string | undefined> {
   let children: Dirent[]
   try { children = await readdir(root, { withFileTypes: true }) } catch { return undefined }
   const dirs = children.filter(child => child.isDirectory())
-  for (const dir of dirs) {
-    const candidate = path.join(root, dir.name)
-    if (existsSync(path.join(candidate, 'SKILL.md'))) return candidate
-  }
+  const bundles = dirs.map(dir => path.join(root, dir.name)).filter(candidate => existsSync(path.join(candidate, 'SKILL.md')))
+  if (bundles.length === 1) return bundles[0]
+  if (bundles.length > 1) throw new SkillStoreError('该来源包含多个技能，请使用指向单个技能目录的 GitHub 链接')
+  // Many upstream repositories keep bundles under `skills/` alongside docs,
+  // assets and tests. Do not require the repository to have only one folder.
+  const skills = dirs.find(dir => dir.name === 'skills')
+  if (skills !== undefined) return await findSkillRoot(path.join(root, skills.name))
   // One wrapper folder (GitHub archives) with the bundle a level deeper.
   if (dirs.length === 1) return await findSkillRoot(path.join(root, dirs[0]!.name))
   return undefined
@@ -634,9 +637,21 @@ export async function installFromUrl(
     const staging = await mkdtemp(path.join(tmpdir(), 'dsh-imagegen-skill-'))
     try {
       await extractArchive(data, staging)
-      const wanted = kind.subpath === '' ? staging : path.resolve(staging, kind.subpath)
-      const scoped = existsSync(wanted) ? wanted : staging
-      return await promote(scoped, root, options.force)
+      if (kind.subpath === '') return await promote(staging, root, options.force)
+      // GitHub ZIPs wrap the repository in one generated directory; tree and
+      // blob links are relative to the repository, not the extraction root.
+      const children = await readdir(staging, { withFileTypes: true })
+      const dirs = children.filter(child => child.isDirectory())
+      const repository = dirs.length === 1 ? path.join(staging, dirs[0]!.name) : staging
+      const pieces = kind.subpath.split('/')
+      if (pieces.some(part => part === '.' || part === '..')) throw new SkillStoreError('指定的技能路径不合法')
+      const wanted = path.resolve(repository, kind.subpath)
+      const relative = path.relative(repository, wanted)
+      if (relative.startsWith('..') || path.isAbsolute(relative)) throw new SkillStoreError('指定的技能路径不合法')
+      const info = await stat(wanted).catch(() => undefined)
+      if (info === undefined) throw new SkillStoreError(`指定的技能路径不存在：${kind.subpath}`)
+      if (info.isFile() && path.basename(wanted).toLowerCase() !== 'skill.md') throw new SkillStoreError('指定的技能路径不是 SKILL.md 或技能目录')
+      return await promote(info.isFile() ? path.dirname(wanted) : wanted, root, options.force)
     } finally {
       await rm(staging, { recursive: true, force: true }).catch(() => { /* best effort */ })
     }

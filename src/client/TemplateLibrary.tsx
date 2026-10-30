@@ -97,6 +97,7 @@ export function TemplateLibrary(props: {
   anchor?: HTMLElement | null
   hasExistingPrompt?: boolean
   appendOnly?: boolean
+  privacyMode?: boolean
   onClose: () => void
 }) {
   const { api, onUse, onClose } = props
@@ -364,7 +365,7 @@ export function TemplateLibrary(props: {
   const activeMeta = TEMPLATE_SOURCES.find(source => source.id === activeSource)!
 
   return createPortal(
-    <div ref={overlayRef} className={css.overlay} style={bounds} data-template-drawer="" role="dialog" aria-modal="true" aria-label={tt('templates.title')} onClick={onClose} onKeyDown={event => event.stopPropagation()} onKeyUp={event => event.stopPropagation()} onPaste={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}>
+    <div ref={overlayRef} className={css.overlay} style={bounds} data-template-drawer="" data-imagegen-private={props.privacyMode ? 'true' : undefined} role="dialog" aria-modal="true" aria-label={tt('templates.title')} onClick={onClose} onKeyDown={event => event.stopPropagation()} onKeyUp={event => event.stopPropagation()} onPaste={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}>
       <section ref={shellRef} className={css.shell} data-fullscreen={fullscreen ? '' : undefined} data-resizing={resizing ? '' : undefined} style={{ width: fullscreen ? '100%' : `${widthRatio * 100}%` }} onClick={(event) => { event.stopPropagation() }}>
         {!fullscreen ? <div className={css.resizeHandle} role="separator" aria-label={tt('templates.resize')} aria-orientation="vertical" aria-valuemin={55} aria-valuemax={100} aria-valuenow={Math.round(widthRatio * 100)} tabIndex={0}
           onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); setResizing(true) }}
