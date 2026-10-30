@@ -1023,8 +1023,9 @@ export class SkillRunner {
       if (cancelled()) { handle.cancel(); throw new Error(t('canvas.skills.stageCancelled')) }
       this.cancellers.set(task.id, {
         dispose: async () => {
+          // Aborting is what reaches the agent: the listener above calls
+          // `cancel()` exactly once, for both the user's cancel and the watchdog.
           controller.abort()
-          handle?.cancel()
           await handle?.dispose().catch(() => { /* best effort */ })
         },
       })
