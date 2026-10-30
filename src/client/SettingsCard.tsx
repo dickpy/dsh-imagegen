@@ -52,6 +52,12 @@ export interface ImageGenSettings {
   skillOutputDir?: string
   skillHeavyTimeoutMinutes?: number
   skillAgentPreset?: string
+  /** How the deck conversion runs: local host pipeline or headless agent. */
+  pptExecutionMode?: 'local' | 'agent'
+  /** Pages the local deck pipeline rebuilds at once (1-3). */
+  pptConcurrency?: number
+  /** Per-page budget in minutes for the local deck pipeline. */
+  pptPageBudgetMinutes?: number
 }
 
 /** What the card renders. */
@@ -81,6 +87,9 @@ export interface ImageGenSettingsCardState extends CardShell {
   skillOutputDir: CardFieldState
   skillHeavyTimeoutMinutes: CardFieldState
   skillAgentPreset: CardFieldState
+  pptExecutionMode: CardFieldState
+  pptConcurrency: CardFieldState
+  pptPageBudgetMinutes: CardFieldState
 }
 
 /** Result of probing the configured object storage from the card. */
@@ -135,6 +144,9 @@ export class ImageGenSettingsCardController {
       textField('skillOutputDir'),
       textField('skillHeavyTimeoutMinutes'),
       textField('skillAgentPreset'),
+      textField('pptExecutionMode'),
+      textField('pptConcurrency'),
+      textField('pptPageBudgetMinutes'),
     ], {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
@@ -168,6 +180,9 @@ export class ImageGenSettingsCardController {
       skillOutputDir: this.form.field('skillOutputDir'),
       skillHeavyTimeoutMinutes: this.form.field('skillHeavyTimeoutMinutes'),
       skillAgentPreset: this.form.field('skillAgentPreset'),
+      pptExecutionMode: this.form.field('pptExecutionMode'),
+      pptConcurrency: this.form.field('pptConcurrency'),
+      pptPageBudgetMinutes: this.form.field('pptPageBudgetMinutes'),
     }
   }
 
@@ -987,6 +1002,36 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               {...state.skillAgentPreset}
               onEdit={(text) => { props.edit('skillAgentPreset', text) }}
               onReset={() => { props.resetField('skillAgentPreset') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-ppt-execution-mode"
+              label={t('settings.pptExecutionMode')}
+              hint={t('settings.pptExecutionModeHint')}
+              placeholder="local"
+              {...fieldProps}
+              {...state.pptExecutionMode}
+              onEdit={(text) => { props.edit('pptExecutionMode', text) }}
+              onReset={() => { props.resetField('pptExecutionMode') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-ppt-concurrency"
+              label={t('settings.pptConcurrency')}
+              hint={t('settings.pptConcurrencyHint')}
+              placeholder="2"
+              {...fieldProps}
+              {...state.pptConcurrency}
+              onEdit={(text) => { props.edit('pptConcurrency', text) }}
+              onReset={() => { props.resetField('pptConcurrency') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-ppt-page-budget"
+              label={t('settings.pptPageBudget')}
+              hint={t('settings.pptPageBudgetHint')}
+              placeholder="6"
+              {...fieldProps}
+              {...state.pptPageBudgetMinutes}
+              onEdit={(text) => { props.edit('pptPageBudgetMinutes', text) }}
+              onReset={() => { props.resetField('pptPageBudgetMinutes') }}
             />
             <div className={css.modelSummary}>
               <button

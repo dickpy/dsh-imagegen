@@ -52,6 +52,9 @@ import {
 import { fileKindOf } from './canvas-store.ts'
 import { PptTaskStore } from './ppt-task-store.ts'
 import { pptActivity, PptProgressMonitor } from './ppt-progress.ts'
+import { runCommand } from './skill-config.ts'
+import { runDeckPipeline, type DeckPipelineResult } from './ppt-deck-pipeline.ts'
+import { acceptDeck, inspectDeck, type DeckRejection } from './ppt-deck-check.ts'
 
 // ---------------------------------------------------------------- contracts
 
@@ -159,6 +162,19 @@ export interface SkillRunnerOptions {
   /** Upstream home of the deck pipeline, surfaced as a one-click install. */
   pptInstallUrl?: string
   pptCommand?: () => Promise<string>
+  /**
+   * Deck driver selection. `local` runs the host-driven `editppt` pipeline
+   * (no headless agent, no shell permission, no approval round-trip); `agent`
+   * keeps the legacy agent driver. Unset means `agent` so an un-upgraded host
+   * keeps the behaviour it always had.
+   */
+  deckMode?: () => 'local' | 'agent'
+  /** Local-pipeline limits (page concurrency and per-page budget). */
+  deckLimits?: () => { concurrency: number; pageBudgetMs: number }
+  /** Whether a chat model is configured that can look at a slide image. */
+  deckChatReady?: () => boolean
+  /** Read one document out of the installed upstream skill bundle. */
+  pptSkillDoc?: (relative: string) => Promise<string | undefined>
   /** Durable task storage seam; defaults to immutable filesystem checkpoints. */
   pptTasks?: Pick<PptTaskStore, 'write' | 'list'>
 }
@@ -234,6 +250,29 @@ function baseMime(mime: string): string {
 
 function isImageAsset(asset: CanvasAssetRef): boolean {
   return asset.kind !== 'file' && baseMime(asset.mime).startsWith('image/')
+}
+
+/** Filesystem-safe single-component name for a materialized deck input. */
+function safeFileName(original: string): string {
+  return original.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'input'
+}
+
+/** Read a small JSON artifact (a validation report), never a huge binary. */
+async function readBoundedJson(file: string): Promise<Record<string, unknown> | undefined> {
+  const stat = await fs.stat(file).catch(() => undefined)
+  if (stat === undefined || !stat.isFile() || stat.size > 2 * 1024 * 1024) return undefined
+  const value = await fs.readFile(file, 'utf8').then(raw => JSON.parse(raw)).catch(() => undefined)
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+/** Localized rejection reason for a deck that failed the acceptance gate. */
+function deckRejectText(t: CatalogTranslate, reason: DeckRejection): string {
+  switch (reason) {
+    case 'invalid-package': return t('ppt.rejectInvalidPackage')
+    case 'slide-count': return t('ppt.rejectSlideCount')
+    case 'report-not-passed': return t('ppt.rejectReport')
+    case 'raster-only': return t('ppt.rejectRaster')
+  }
 }
 
 /** One input node plus its loaded asset, resolved once per run. */
@@ -459,9 +498,35 @@ export class SkillRunner {
       agentAvailable,
       registryAvailable,
       installed: external.map(skill => skill.name),
+      deckExecution: this.deckAvailability(t, external, agentAvailable),
       ...reason === undefined ? {} : { reason },
       ...agentAvailable ? {} : { reason: reason ?? t('canvas.skills.needAgent') },
     }
+  }
+
+  /**
+   * Can the deck conversion run right now, and through which driver?
+   *
+   * The local pipeline only needs the upstream skill bundle (for its field
+   * contracts) plus a chat model that can look at an image; it never touches
+   * the agent runtime. The legacy agent driver keeps demanding both the skill
+   * and an available agent. Reporting the missing piece here is what lets the
+   * PPT workspace disable its button with a reason instead of letting a paid
+   * run stall at twenty minutes.
+   */
+  private deckAvailability(
+    t: CatalogTranslate,
+    external: readonly ExternalSkillSummary[],
+    agentAvailable: boolean,
+  ): CanvasSkillCatalog['deckExecution'] {
+    const mode = this.options.deckMode?.() ?? 'agent'
+    const installed = external.some(skill => isEditablePptSkill(skill.name))
+    const reason = !installed
+      ? t('canvas.skills.skillMissing', { name: EDITABLE_PPT_SKILL })
+      : mode === 'local'
+        ? this.options.deckChatReady?.() === false ? t('ppt.noVisionModel') : undefined
+        : !agentAvailable ? t('canvas.skills.needAgent') : undefined
+    return { mode, ready: reason === undefined, ...reason === undefined ? {} : { reason } }
   }
 
   /** Queue one run and return its task immediately (the client polls it). */
@@ -494,8 +559,11 @@ export class SkillRunner {
     const t = this.translate(request.language)
     const catalog = await this.list(request.language)
     const skill = catalog.skills.find(item => item.id === BUILTIN_PPT)
-    if (skill === undefined || !catalog.agentAvailable) throw new Error(t('canvas.skills.needAgent'))
-    if (!catalog.installed.includes(EDITABLE_PPT_SKILL)) throw new Error(t('canvas.skills.skillMissing', { name: EDITABLE_PPT_SKILL }))
+    if (skill === undefined) throw new Error(t('canvas.skills.unknown'))
+    // One gate for both drivers: the catalog already knows which prerequisite
+    // is missing (skill bundle, chat model, or agent runtime).
+    const deck = catalog.deckExecution ?? { mode: 'agent' as const, ready: catalog.agentAvailable && catalog.installed.includes(EDITABLE_PPT_SKILL) }
+    if (!deck.ready) throw new Error(deck.reason ?? t('canvas.skills.needAgent'))
     if (request.images.length === 0 || request.images.length > MAX_SKILL_INPUT_NODES) throw new Error(t('ppt.inputLimit'))
     const inputs: RunInput[] = []
     for (const [index, asset] of request.images.entries()) {
@@ -504,7 +572,7 @@ export class SkillRunner {
       const safeAsset: CanvasAssetRef = { ...asset, mime: found.mime, kind: 'image', name: `slide-${index + 1}.${found.mime === 'image/jpeg' ? 'jpg' : found.mime.split('/')[1]}` }
       inputs.push({ asset: safeAsset, node: { id: newId('ppt-input'), type: 'image', title: safeAsset.name!, x: 0, y: 0, width: 320, height: 240, metadata: { asset: safeAsset } } })
     }
-    return this.startTask({ canvasId: 'ppt', skillId: BUILTIN_PPT, nodeIds: inputs.map(input => input.node.id), language: request.language,
+    return this.startTask({ canvasId: 'ppt', skillId: BUILTIN_PPT, nodeIds: inputs.map(input => input.node.id), language: request.language, offlineOcr: request.offlineOcr,
       instruction: request.offlineOcr ? 'The user explicitly chose offline text detection for this run. Use upstream editppt prepare --no-text-hints, then editppt page hints for each page to generate offline hints before reconstruction. Do not call PaddleOCR for this run or ask about a token again. All other upstream steps remain required.' : 'Use the configured PaddleOCR token. Follow the upstream skill if OCR fails; do not silently downgrade quality.' }, skill, inputs, true)
   }
 
@@ -613,9 +681,15 @@ export class SkillRunner {
       task.status = 'running'
       task.phase = 'running'
       try {
-        task.output = skill.tier === 'heavy'
-          ? await this.runHeavy(task, skill, inputs, request)
-          : await this.runLight(task, skill, inputs, request)
+        // The deck conversion has two drivers: the host-driven pipeline (no
+        // agent, no shell permission) and the legacy headless-agent driver.
+        if (skill.id === BUILTIN_PPT && (this.options.deckMode?.() ?? 'agent') === 'local') {
+          task.output = await this.runPptLocal(task, skill, inputs, request)
+        } else {
+          task.output = skill.tier === 'heavy'
+            ? await this.runHeavy(task, skill, inputs, request)
+            : await this.runLight(task, skill, inputs, request)
+        }
         if (!cancelled()) {
           task.status = 'completed'
           task.stage = this.translate(task.language)('canvas.skills.stageDone')
@@ -927,7 +1001,9 @@ export class SkillRunner {
     task.phase = 'running'
     const controller = new AbortController()
     const timeout = this.options.heavyTimeoutMs()
-    const timer = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : undefined
+    /** Whether the abort came from the watchdog, so the copy can say so. */
+    let timedOut = false
+    const timer = timeout > 0 ? setTimeout(() => { timedOut = true; controller.abort() }, timeout) : undefined
     timer?.unref?.()
     let handle: SkillAgentHandle | undefined
     const cancelled = (): boolean => task.status === 'cancelled'
@@ -953,18 +1029,33 @@ export class SkillRunner {
         },
       })
       handle.followup(this.heavyUserPrompt(skill, skillName, inputDir, outputDir, body !== undefined, t))
+      // An abort must reach the adapter, not just the waiting promise.
+      controller.signal.addEventListener('abort', () => { handle?.cancel() }, { once: true })
       // The agent thinks for minutes on a deck pipeline; the only honest live
       // signal is what it has already written into the output directory.
       const progress = task.canvasId === 'ppt' ? new PptProgressMonitor(task, handle.session, runDir, t) : undefined
       progress?.start()
       const watch = task.canvasId === 'ppt' ? undefined : this.watchOutputDir(task, outputDir, t)
       try {
-        await handle.whenIdle()
+        // `whenIdle` settles only when the agent goes quiet on its own. Without
+        // racing the abort here, a wedged adapter (Windows sandbox failures did
+        // exactly this) holds the serial queue and the task reads "running"
+        // past its own timeout, blocking every later canvas skill.
+        await Promise.race([
+          handle.whenIdle(),
+          new Promise<never>((_resolve, reject) => {
+            const fail = (): void => reject(new Error(timedOut
+              ? t('ppt.timeout', { minutes: String(Math.max(1, Math.round(timeout / 60_000))) })
+              : t('canvas.skills.stageCancelled')))
+            if (controller.signal.aborted) fail()
+            else controller.signal.addEventListener('abort', fail, { once: true })
+          }),
+        ])
       } finally {
         watch?.stop()
         await progress?.stop()
       }
-      controller.signal.throwIfAborted()
+      if (timedOut) throw new Error(t('ppt.timeout', { minutes: String(Math.max(1, Math.round(timeout / 60_000))) }))
       if (cancelled()) throw new Error(t('canvas.skills.stageCancelled'))
       task.stage = t('canvas.skills.stageCollecting')
       task.phase = 'collecting'
@@ -978,6 +1069,223 @@ export class SkillRunner {
       if (timer !== undefined) clearTimeout(timer)
       await handle?.dispose().catch(() => { /* best effort */ })
     }
+  }
+
+  /**
+   * Host-driven deck conversion (see `docs/ppt-local-pipeline.md`).
+   *
+   * This is the path that must work on a desktop install where a headless agent
+   * cannot even start a shell: every deterministic step runs through the
+   * upstream `editppt` CLI inside this process, and the model is asked for
+   * exactly one thing per page - what the slide contains. Nothing reaches the
+   * canvas until the deck passes the single acceptance gate at the end, so a
+   * full-page screenshot can never be delivered as an "editable" result.
+   */
+  private async runPptLocal(
+    task: CanvasSkillTask,
+    skill: CanvasSkillDescriptor,
+    inputs: RunInput[],
+    request: CanvasSkillRunRequest,
+  ): Promise<CanvasSkillOutput> {
+    const t = this.translate(task.language)
+    const chat = this.backend.chat
+    if (chat === undefined) throw new Error(t('canvas.skills.noChat'))
+    if (this.options.deckChatReady?.() === false) throw new Error(t('ppt.noVisionModel'))
+    const canvas = this.backend.canvas
+    const runRoot = this.options.runRoot().trim() === '' ? path.join(this.options.dataRoot(), 'canvas', 'runs') : this.options.runRoot().trim()
+    const runDir = path.join(runRoot, request.canvasId, task.id)
+    task.runDirectory = runDir
+    const inputDir = path.join(runDir, 'input')
+    await fs.mkdir(inputDir, { recursive: true })
+    task.phase = 'preparing'
+    task.stage = t('canvas.skills.stagePreparing')
+    pptActivity(task, task.stage)
+    const files: Array<{ path: string; name: string }> = []
+    let index = 0
+    for (const input of inputs) {
+      index += 1
+      const asset = input.asset
+      if (asset === undefined || !isImageAsset(asset)) throw new Error(t('ppt.invalidImage'))
+      const name = `${String(index).padStart(2, '0')}_${safeFileName(asset.name ?? asset.assetId)}`
+      const target = path.join(inputDir, name)
+      await canvas.materialize(asset, target)
+      files.push({ path: target, name })
+    }
+    task.stage = t('canvas.skills.stagePrepared', { count: files.length })
+    pptActivity(task, task.stage)
+    await this.persistPpt(task)
+
+    const limits = this.options.deckLimits?.() ?? { concurrency: 2, pageBudgetMs: 360_000 }
+    const controller = new AbortController()
+    this.cancellers.set(task.id, { dispose: async () => { controller.abort() } })
+    if (task.status === 'cancelled') throw new Error(t('canvas.skills.stageCancelled'))
+    task.phase = 'running'
+    task.stage = t('canvas.skills.stageRunning')
+    const command = await this.options.pptCommand?.() ?? 'editppt'
+    const result = await runDeckPipeline(files, runDir, {
+      offlineOcr: request.offlineOcr ?? false,
+      language: task.language ?? '',
+    }, {
+      editppt: async () => command,
+      run: async (argv, options) => {
+        if (controller.signal.aborted) throw new Error(t('canvas.skills.stageCancelled'))
+        return await runCommand(argv, { cwd: options.cwd, timeoutMs: options.timeoutMs ?? limits.pageBudgetMs })
+      },
+      chat,
+      readSkillDoc: async relative => await this.options.pptSkillDoc?.(relative),
+      concurrency: () => limits.concurrency,
+      pageBudgetMs: () => limits.pageBudgetMs,
+      onEvent: event => {
+        // The pipeline reports copy keys (it stays presentation-free); resolve
+        // them in the run's language so a Chinese user never sees `ppt.*`, and
+        // pass any untranslated text through as-is.
+        const label = /^(?:ppt|canvas)\.[A-Za-z]/.test(event.label)
+          ? /\{page\}/.test(t(event.label)) ? t(event.label, { page: String(event.page ?? '') }) : t(event.label)
+          : event.label
+        pptActivity(task, label, event.state, event.time)
+        if (event.page === undefined) return
+        const progress = task.progress ??= { lastActivityAt: event.time, events: [] }
+        const pages = progress.pages ??= []
+        const found = pages.find(item => item.page === event.page)
+        if (found === undefined) pages.push({ page: event.page, state: event.state === 'done' ? 'validated' : 'running' })
+        else if (event.state === 'done') found.state = 'validated'
+      },
+      signal: controller.signal,
+    })
+    return await this.publishDeck(task, skill, inputs[0]!.node, inputs.map(input => input.node.id), result, files.length, t)
+  }
+
+  /**
+   * Accept the finished deck, then publish it. One gate for both drivers, so a
+   * file the agent chose to deliver is never trusted more than the upstream
+   * validation report that says the pages are actually editable.
+   */
+  private async publishDeck(
+    task: CanvasSkillTask,
+    skill: CanvasSkillDescriptor,
+    source: CanvasNode,
+    sourceIds: string[],
+    result: DeckPipelineResult,
+    expectedSlides: number,
+    t: CatalogTranslate,
+  ): Promise<CanvasSkillOutput> {
+    task.phase = 'collecting'
+    task.stage = t('canvas.skills.stageCollecting')
+    pptActivity(task, t('ppt.activityAccepting'))
+    const canvas = this.backend.canvas
+    const deckBuffer = await fs.readFile(result.deckPath)
+    const report = await readBoundedJson(result.reportPath)
+    const decision = acceptDeck({
+      inspection: inspectDeck(deckBuffer),
+      expectedSlides,
+      reportPassed: report?.passed === true,
+    })
+    if (!decision.ok) throw new Error(t('ppt.deckRejected', { reason: deckRejectText(t, decision.reason) }))
+    const nodes: CanvasNode[] = []
+    const connections: CanvasConnection[] = []
+    const deckName = path.basename(result.deckPath)
+    const deckAsset = await canvas.putFile({
+      data: deckBuffer,
+      mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      name: deckName,
+      origin: 'generated',
+      originId: task.id,
+    })
+    const deckNode = fileOutputNode(source, deckAsset, deckName, skill.id, skill.name, sourceIds)
+    nodes.push(deckNode)
+    connections.push({ id: newId('edge'), fromNodeId: source.id, toNodeId: deckNode.id })
+    for (const artifact of [...result.previews, ...(result.reportPath === undefined ? [] : [result.reportPath])]) {
+      const data = await fs.readFile(artifact).catch(() => undefined)
+      if (data === undefined || data.length === 0) continue
+      const name = path.basename(artifact)
+      const asset = await canvas.putFile({ data, mime: name.toLowerCase().endsWith('.json') ? 'application/json' : 'image/png', name, origin: 'generated', originId: task.id })
+      const node = fileOutputNode(deckNode, asset, name, skill.id, skill.name, [deckNode.id])
+      nodes.push(node)
+      connections.push({ id: newId('edge'), fromNodeId: deckNode.id, toNodeId: node.id })
+    }
+    pptActivity(task, t('ppt.activityAccepted'), 'done')
+    return outputOf(nodes, connections)
+  }
+
+  /**
+   * Accept the agent driver's deck through the same gate as the local pipeline.
+   *
+   * The agent is told to copy only the validated final deck, but "told" is not
+   * "verified": an earlier build published any `.pptx` whose slide count matched,
+   * which let a deck of full-page screenshots finish as `completed`. Every
+   * candidate must pass `acceptDeck` - valid package, page count, upstream
+   * report `passed: true`, and real editable objects per page - before a single
+   * byte is published, and the file named by `run_summary.json` wins when the
+   * agent left an intermediate page deck beside the final one.
+   */
+  private async collectPptOutput(
+    task: CanvasSkillTask,
+    skill: CanvasSkillDescriptor,
+    target: RunInput,
+    outputDir: string,
+    answer: string | undefined,
+    t: CatalogTranslate,
+  ): Promise<CanvasSkillOutput> {
+    const files: Array<{ file: string; size: number }> = []
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 4) return
+      let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>
+      try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) { await walk(full, depth + 1); continue }
+        if (!entry.isFile()) continue
+        const stat = await fs.stat(full).catch(() => undefined)
+        if (stat === undefined || stat.size === 0) continue
+        files.push({ file: full, size: stat.size })
+      }
+    }
+    await walk(outputDir, 0)
+    const decks = files.filter(entry => entry.file.toLowerCase().endsWith('.pptx')).sort((a, b) => b.size - a.size)
+    const expectedSlides = task.pptImages?.length ?? 0
+    if (decks.length === 0) {
+      throw new Error([t('ppt.noDeck'), answer?.trim() || t('ppt.noAgentReply')].filter(Boolean).join('\n'))
+    }
+    const reportFile = files.find(entry => path.basename(entry.file).toLowerCase() === 'validation.json')
+    const summaryFile = files.find(entry => path.basename(entry.file).toLowerCase() === 'run_summary.json')
+    const report = reportFile === undefined ? undefined : await readBoundedJson(reportFile.file)
+    const summary = summaryFile === undefined ? undefined : await readBoundedJson(summaryFile.file)
+    // Upstream `run finalize` always writes this report. A deck delivered
+    // without it (or with `passed: false`) is not an accepted conversion - the
+    // file the agent chose says nothing about the objects inside it.
+    if (reportFile === undefined || report?.passed !== true) {
+      throw new Error([
+        t('ppt.deckRejected', { reason: deckRejectText(t, 'report-not-passed') }),
+        answer?.trim() ?? '',
+      ].filter(Boolean).join('\n'))
+    }
+    const named = typeof summary?.output === 'string' ? path.basename(summary.output).toLowerCase() : undefined
+    const ordered = named === undefined
+      ? decks
+      : [...decks].sort((a, b) => Number(path.basename(b.file).toLowerCase() === named) - Number(path.basename(a.file).toLowerCase() === named))
+    let lastReason: string | undefined
+    for (const candidate of ordered) {
+      const buffer = await fs.readFile(candidate.file).catch(() => undefined)
+      if (buffer === undefined) continue
+      const decision = acceptDeck({ inspection: inspectDeck(buffer), expectedSlides, reportPassed: report?.passed === true })
+      if (!decision.ok) { lastReason = decision.reason; continue }
+      const previews = files
+        .filter(entry => /\.png$/i.test(entry.file) && path.basename(entry.file).toLowerCase().includes('preview'))
+        .map(entry => entry.file)
+      const result: DeckPipelineResult = {
+        deckPath: candidate.file,
+        reportPath: reportFile.file,
+        runSummaryPath: summaryFile?.file ?? candidate.file,
+        previews,
+        pages: [],
+        runDirectory: path.dirname(outputDir),
+      }
+      return await this.publishDeck(task, skill, target.node, [target.node.id], result, expectedSlides, t)
+    }
+    throw new Error([
+      t('ppt.deckRejected', { reason: deckRejectText(t, (lastReason ?? 'invalid-package') as DeckRejection) }),
+      answer?.trim() ?? '',
+    ].filter(Boolean).join('\n'))
   }
 
   /** Report newly produced output files on the task while the agent works, so
@@ -1102,6 +1410,9 @@ export class SkillRunner {
     warnings: string[],
     t: CatalogTranslate,
   ): Promise<CanvasSkillOutput> {
+    // Deck runs never take the "any .pptx in the folder counts as success"
+    // shortcut: they go through the same acceptance gate as the local pipeline.
+    if (task.canvasId === 'ppt') return await this.collectPptOutput(task, skill, target, outputDir, answer, t)
     const canvas = this.backend.canvas
     const files: Array<{ file: string; size: number }> = []
     const walk = async (dir: string, depth: number): Promise<void> => {
@@ -1110,7 +1421,7 @@ export class SkillRunner {
       try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return }
       for (const entry of entries) {
         const full = path.join(dir, entry.name)
-        if (entry.isDirectory()) { if (task.canvasId !== 'ppt') await walk(full, depth + 1); continue }
+        if (entry.isDirectory()) { await walk(full, depth + 1); continue }
         if (!entry.isFile()) continue
         const stat = await fs.stat(full).catch(() => undefined)
         if (stat === undefined || stat.size === 0) continue
@@ -1124,13 +1435,6 @@ export class SkillRunner {
       const data = await fs.readFile(found.file).catch(() => undefined)
       if (data === undefined) continue
       const name = path.basename(found.file)
-      if (task.canvasId === 'ppt' && name.toLowerCase().endsWith('.pptx')) {
-        const entries = readZipDirectory(data)
-        const presentation = entries.find(entry => entry.name === 'ppt/presentation.xml')
-        const slides = entries.filter(entry => /^ppt\/slides\/slide\d+\.xml$/.test(entry.name))
-        if (presentation === undefined || readZipEntry(data, presentation) === undefined || slides.length !== task.pptImages?.length
-          || slides.some(entry => readZipEntry(data, entry) === undefined)) throw new Error(t('ppt.invalidDeck'))
-      }
       const asset = await canvas.putFile({
         data,
         mime: mimeFromName(name),
@@ -1141,9 +1445,6 @@ export class SkillRunner {
       const node = fileOutputNode(target.node, asset, name, skill.id, skill.name, [target.node.id])
       nodes.push(node)
       connections.push({ id: newId('edge'), fromNodeId: target.node.id, toNodeId: node.id })
-    }
-    if (task.canvasId === 'ppt' && !nodes.some(node => node.metadata?.asset?.name?.toLowerCase().endsWith('.pptx'))) {
-      throw new Error([t('ppt.noDeck'), answer?.trim() || t('ppt.noAgentReply')].filter(Boolean).join('\n'))
     }
     if (nodes.length === 0) {
       // The skill finished without a file: keep the agent's answer so the run

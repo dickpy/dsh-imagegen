@@ -574,7 +574,7 @@ export interface CanvasSkillTask {
   /** Coarse progress stage for the UI (queued / preparing / running / collecting). */
   stage?: string
   /** Machine-readable phase that drives the run card's step indicator. */
-  phase?: 'queued' | 'preparing' | 'running' | 'collecting'
+  phase?: 'queued' | 'preparing' | 'running' | 'finalizing' | 'collecting'
   /** Input node ids the run was queued with (the client rebuilds its run cards). */
   nodeIds?: string[]
   startedAt: number
@@ -610,6 +610,8 @@ export interface CanvasSkillRunRequest {
   placement?: 'right' | 'below'
   /** UI language for host-rendered copy (pool copy, errors, stage labels). */
   language?: string
+  /** Standalone deck runs carry the user's OCR choice to the local pipeline. */
+  offlineOcr?: boolean
 }
 
 /** Polls and cancels carry the same language hint so stages stay translated.
@@ -636,6 +638,14 @@ export interface CanvasSkillCatalog {
   installed: string[]
   /** Why the catalog is partial, when it is. */
   reason?: string
+  /**
+   * How the deck conversion will actually execute. `local` means the host
+   * process drives the upstream `editppt` CLI itself (no headless agent, no
+   * shell permissions, no approval round-trip); `agent` keeps the legacy
+   * headless-agent driver. The PPT workspace gates its convert button on
+   * `ready`, so a broken agent runtime no longer blocks a working pipeline.
+   */
+  deckExecution?: { mode: 'local' | 'agent'; ready: boolean; reason?: string }
 }
 
 /** One configuration field a skill declares (see `docs/skill-config.md`). */

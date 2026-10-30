@@ -106,7 +106,14 @@ export function PptWorkspace({ api, active, importRequest, onImported }: { api: 
     const timer = window.setInterval(() => { void load() }, 2000)
     return () => { alive = false; window.clearInterval(timer) }
   }, [active, api])
-  const ready = catalog?.agentAvailable && catalog.installed.includes(PPT_SKILL_NAME)
+  // Prefer what the host reports about the deck driver: the local pipeline needs
+  // no headless agent at all. Only an absent deckExecution (older host) falls back
+  // to the agent gate, so a ready local run is never blocked by the agent runtime.
+  const deck = catalog?.deckExecution
+  const ready = deck === undefined
+    ? catalog?.agentAvailable === true && catalog.installed.includes(PPT_SKILL_NAME)
+    : deck.ready
+  const notReadyReason = deck === undefined ? catalog?.reason : deck.reason ?? catalog?.reason
   const focused = tasks.find(task => task.id === selected) ?? tasks[0]
   const submit = async (source = current.current): Promise<void> => {
     if (busy || uploading || source.length === 0) return
@@ -148,7 +155,7 @@ export function PptWorkspace({ api, active, importRequest, onImported }: { api: 
         <small>{tt('ppt.ocrHint')}</small>
       </fieldset>
 
-      {!ready ? <p className={css.note}>{catalog?.reason || tt('ppt.setupRequired')}</p> : null}
+      {!ready ? <p className={css.note}>{notReadyReason || tt('ppt.setupRequired')}</p> : null}
       <footer className={css.submitBar}>
         <button type="button" className={css.primary} data-ppt-convert="" disabled={!ready || busy || uploading || images.length === 0} onClick={() => { void submit() }}>{tt(busy ? 'ppt.submitting' : 'ppt.convert')}</button>
         <small>{tt('ppt.processingHint')}</small>

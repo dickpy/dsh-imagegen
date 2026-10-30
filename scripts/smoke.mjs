@@ -2847,6 +2847,56 @@ await check('C11ppt-progress exposes real host activity and validated page recor
   } finally { await monitor.stop(); rmSync(root, { recursive: true, force: true }) }
 })
 
+await check('C11ppt-deck gate picks the driver and names the missing prerequisite', async () => {
+  const canvas = {
+    async read() { return undefined },
+    async readAsset() { return undefined },
+    async readAssets() { return new Map() },
+    async materialize() {},
+    async putFile(input) { return { assetId: 'x', url: '/x', mime: input.mime, bytes: 1, width: 0, height: 0, origin: 'generated', kind: 'file', name: input.name } },
+  }
+  const registry = { async list() { return [{ name: 'image-to-editable-ppt', description: 'deck', path: '/up/SKILL.md' }] }, async get() { return { name: 'image-to-editable-ppt', content: '# body' } } }
+  const backend = { canvas, registry, chat: { async complete() { return '{}' } } }
+  const base = {
+    backend,
+    enabled: () => true,
+    heavyEnabled: () => true,
+    allowlist: () => [],
+    runRoot: () => tmpdir(),
+    dataRoot: () => tmpdir(),
+    heavyTimeoutMs: () => 0,
+    pptCommand: async () => 'editppt',
+    pptTasks: { async write(task) { return task }, async list() { return [] } },
+  }
+  const image = { assetId: 'a.png', url: '/a', mime: 'image/png', bytes: 1, width: 0, height: 0, origin: 'upload', kind: 'image', name: 'a.png' }
+
+  // Local mode is ready on its own prerequisites and never asks for an agent.
+  const local = new host.SkillRunner({ ...base, deckMode: () => 'local', deckChatReady: () => true, deckLimits: () => ({ concurrency: 1, pageBudgetMs: 60_000 }) })
+  assert.deepEqual((await local.list('en')).deckExecution, { mode: 'local', ready: true })
+  await assert.rejects(local.runPpt({ images: [image], offlineOcr: true, language: 'en' }), error => !/agent/i.test(error.message))
+
+  // A chat model that cannot look at images is the local pipeline's one hard
+  // dependency; refusing up front beats a paid run that stalls at a timeout.
+  const blind = new host.SkillRunner({ ...base, deckMode: () => 'local', deckChatReady: () => false })
+  const blindCatalog = await blind.list('en')
+  assert.equal(blindCatalog.deckExecution.ready, false)
+  assert.match(blindCatalog.deckExecution.reason, /read images|读图/)
+  await assert.rejects(blind.runPpt({ images: [image], offlineOcr: true, language: 'en' }), /read images|读图/)
+
+  // The legacy driver still demands the agent runtime, and a missing bundle
+  // blocks both modes with the install affordance.
+  const agentless = new host.SkillRunner({ ...base, deckMode: () => 'agent' })
+  const agentCatalog = await agentless.list('en')
+  assert.equal(agentCatalog.deckExecution.mode, 'agent')
+  assert.equal(agentCatalog.deckExecution.ready, false)
+  assert.match(agentCatalog.deckExecution.reason, /agent/i)
+  const blindRegistry = { async list() { return [] }, async get() { return undefined } }
+  const noBundle = new host.SkillRunner({ ...base, backend: { ...backend, registry: blindRegistry }, deckMode: () => 'local', deckChatReady: () => true })
+  const noBundleCatalog = await noBundle.list('en')
+  assert.equal(noBundleCatalog.deckExecution.ready, false)
+  assert.match(noBundleCatalog.deckExecution.reason, /image-to-editable-ppt/)
+})
+
 await check('C11ppt-store immutable checkpoints survive Windows replacement locks, overlapping writes and partial files', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-ppt-checkpoint-'))
   let activeWrites = 0, maximumWrites = 0, renames = 0
@@ -2909,9 +2959,18 @@ await check('C11ppt standalone PPT validates input, preserves order, persists re
           if (mode === 'hold') await new Promise(resolve => { release = resolve })
           if (mode === 'no-deck' || mode === 'agent-error') return
           const slides = mode === 'wrong-count' ? 1 : 2
+          // A deck of full-page screenshots is the exact shape that used to be
+          // published as `completed`: valid package, right page count, zero
+          // editable objects.
+          const raster = mode === 'raster-deck'
           const deck = mode === 'bad-zip' ? Buffer.from('not-a-pptx') : buildZip([
-            { name: 'ppt/presentation.xml', body: '<p:presentation/>' },
-            ...Array.from({ length: slides }, (_, index) => ({ name: `ppt/slides/slide${index + 1}.xml`, body: '<p:sld><p:sp>Editable text</p:sp></p:sld>' })),
+            // A real package needs the content map: the acceptance inspector
+            // rejects a zip without it, exactly like PowerPoint would.
+            { name: '[Content_Types].xml', body: '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>' },
+            { name: 'ppt/presentation.xml', body: '<p:presentation><p:sldSz cx="12192000" cy="6858000"/></p:presentation>' },
+            ...Array.from({ length: slides }, (_, index) => ({ name: `ppt/slides/slide${index + 1}.xml`, body: raster
+              ? '<p:sld><p:pic><p:blipFill><a:blip r:embed="rId1"/></p:blipFill><p:spPr><a:xfrm><a:ext cx="12192000" cy="6858000"/></a:xfrm></p:spPr></p:pic></p:sld>'
+              : '<p:sld><p:sp><a:t>Editable text</a:t></p:sp></p:sld>' })),
           ])
           if (mode === 'upstream-final' || mode === 'unvalidated-final') {
             const final = join(options.cwd, 'output', 'upstream-run', 'final')
@@ -2919,7 +2978,12 @@ await check('C11ppt standalone PPT validates input, preserves order, persists re
             writeFileSync(join(final, 'deck_edited.pptx'), deck)
             writeFileSync(join(final, 'validation.json'), JSON.stringify({ passed: mode === 'upstream-final' }))
             writeFileSync(join(final, 'run_summary.json'), JSON.stringify({ status: 'complete', page_count: 2, output: join(final, 'deck_edited.pptx'), validation: join(final, 'validation.json') }))
-          } else writeFileSync(join(options.cwd, 'output', 'final.pptx'), deck)
+          } else {
+            writeFileSync(join(options.cwd, 'output', 'final.pptx'), deck)
+            // Upstream `run finalize` always leaves the report beside the deck.
+            // A directly delivered deck without one is not an accepted run.
+            if (mode !== 'no-report') writeFileSync(join(options.cwd, 'output', 'validation.json'), JSON.stringify({ passed: true }))
+          }
         }, cancel() { stopped += 1; release?.() }, async dispose() {},
       }
     },
@@ -2948,11 +3012,15 @@ await check('C11ppt standalone PPT validates input, preserves order, persists re
     assert.ok(restored[0].agentSessionId?.startsWith('skillagent-'))
     assert.ok(restored[0].runDirectory?.includes(task.id))
     assert.equal(restored[0].output.nodes[0].metadata.asset.name, 'final.pptx')
-    for (const bad of ['bad-zip', 'wrong-count', 'no-deck']) {
+    for (const bad of ['bad-zip', 'wrong-count', 'no-deck', 'no-report', 'raster-deck']) {
       mode = bad
       const failed = await wait(await runner.runPpt({ images: assets, offlineOcr: false, language: 'en' }))
       assert.equal(failed.status, 'failed', bad)
       assert.ok(failed.error)
+      // The raster case is the regression this gate exists for: a valid package
+      // with the right page count and zero editable objects must not pass.
+      if (bad === 'raster-deck') assert.match(failed.error, /raster|位图/)
+      if (bad === 'no-report') assert.match(failed.error, /report|校验报告/)
     }
     mode = 'upstream-final'
     const recovered = await wait(await runner.runPpt({ images: assets, offlineOcr: true, language: 'zh' }))

@@ -315,6 +315,10 @@ export class ImageGenApi {
       agentAvailable: body.agentAvailable,
       registryAvailable: body.registryAvailable,
       installed: body.installed ?? [],
+      // The deck driver selection must survive this rebuild, or the PPT
+      // workspace falls back to the agent-only gate and disables its button for
+      // a pipeline that is actually ready to run.
+      ...body.deckExecution === undefined ? {} : { deckExecution: body.deckExecution },
       ...body.reason === undefined ? {} : { reason: body.reason },
     }
   }

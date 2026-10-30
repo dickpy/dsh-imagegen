@@ -9,7 +9,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { readFileSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { installSettingsSectionCompat, resolveSettingsNamespaceCompat, settingsNamespaceCompat } from './settings-compat.ts'
 import z from '@deepseek-ai/schemastery'
@@ -345,6 +345,8 @@ export { listTemplates, readTemplateImage, refreshTemplates, sampleTemplates, sy
 export { addTemplateFavorite, clearTemplateFavoritesMemo, listTemplateFavorites, removeTemplateFavorite } from './template-favorites.ts'
 export { putObject, setStorageSyncHandler, testStorage, type StorageSyncConfig } from './storage-sync.ts'
 export { PptProgressMonitor, pptActivity } from './ppt-progress.ts'
+export { runDeckPipeline, type DeckPipelineDeps, type DeckPipelineResult } from './ppt-deck-pipeline.ts'
+export { acceptDeck, inspectDeck, type DeckAcceptance, type DeckInspection, type DeckRejection } from './ppt-deck-check.ts'
 export { PptTaskStore } from './ppt-task-store.ts'
 export { PptRuntime } from './ppt-runtime.ts'
 export { agentSessionFailure, SkillRunner, setSkillTranslate, setSkillLanguage, canvasSkillCopy } from './skill-runner.ts'
@@ -423,6 +425,17 @@ export interface Config {
   skillHeavyTimeoutMinutes?: number
   /** Headless-agent preset used for heavy runs; empty uses the host default. */
   skillAgentPreset?: string
+  /* ------------------------- deck (image → PPTX) pipeline ------------------- */
+  /**
+   * How the image → editable PPT conversion executes. `local` drives the
+   * upstream `editppt` CLI from this host process and asks the chat model only
+   * for per-page judgement; `agent` keeps the headless-agent driver.
+   */
+  pptExecutionMode?: 'local' | 'agent'
+  /** Pages rebuilt at once by the local pipeline (1-3). */
+  pptConcurrency?: number
+  /** Per-page budget in minutes for the local pipeline. */
+  pptPageBudgetMinutes?: number
   /* --------------------------- skill configuration -------------------------- */
   /**
    * Per-skill configuration values declared by `skill.config.json`, keyed
@@ -482,6 +495,9 @@ const configSchema = z.object({
   skillOutputDir: z.string().default('').volatile(),
   skillHeavyTimeoutMinutes: z.number().default(20).volatile(),
   skillAgentPreset: z.string().default('').volatile(),
+  pptExecutionMode: z.union([z.const('local'), z.const('agent')]).default('local').volatile(),
+  pptConcurrency: z.number().default(2).volatile(),
+  pptPageBudgetMinutes: z.number().default(6).volatile(),
   skillConfig: z.dict(z.string()).default({}).volatile(),
   skillConfigSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
   apiUrl: z.string().default('').volatile(),
@@ -599,6 +615,12 @@ export interface EffectiveConfig {
     outputDir: string
     heavyTimeoutMs: number
     agentPreset: string
+    /** Deck driver selection; `local` never touches the agent runtime. */
+    deckMode: 'local' | 'agent'
+    /** Local-pipeline page concurrency, clamped to 1-3. */
+    deckConcurrency: number
+    /** Local-pipeline per-page budget in milliseconds. */
+    deckPageBudgetMs: number
   }
   /** Per-skill configuration values, secrets included (host side only). */
   skillConfig: SkillConfigStore
@@ -707,6 +729,9 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
         outputDir: typeof value.skillOutputDir === 'string' ? value.skillOutputDir.trim() : '',
         heavyTimeoutMs: Math.max(0, Math.round((value.skillHeavyTimeoutMinutes ?? 20) * 60_000)),
         agentPreset: typeof value.skillAgentPreset === 'string' ? value.skillAgentPreset.trim() : '',
+        deckMode: value.pptExecutionMode === 'agent' ? 'agent' : 'local',
+        deckConcurrency: Math.min(3, Math.max(1, Math.round(value.pptConcurrency ?? 2))),
+        deckPageBudgetMs: Math.max(60_000, Math.round((value.pptPageBudgetMinutes ?? 6) * 60_000)),
       },
       skillConfig: {
         values: asConfigDict(value.skillConfig),
@@ -773,6 +798,24 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     dataRoot: () => imageDataRoot(),
     pptInstallUrl: knownSkillUrl(EDITABLE_PPT_SKILL),
     pptCommand: () => pptRuntime.command(),
+    deckMode: () => resolveSkills().deckMode,
+    deckLimits: () => {
+      const value = resolveSkills()
+      return { concurrency: value.deckConcurrency, pageBudgetMs: value.deckPageBudgetMs }
+    },
+    /** The local pipeline needs a vision-capable chat model to read a page. */
+    deckChatReady: () => {
+      const model = resolvePromptModelConfig(resolve())
+      return model.model.trim() !== '' && model.apiUrl.trim() !== ''
+    },
+    /** Upstream field contracts, read from the installed skill bundle. */
+    pptSkillDoc: async (relative: string) => {
+      try {
+        const dir = bundleDirOf(await entryPathFor(EDITABLE_PPT_SKILL))
+        if (dir === undefined) return undefined
+        return await readFile(path.join(dir, relative), 'utf8')
+      } catch { return undefined }
+    },
   })
 
   // ---------------------------------------------------------- skill config
