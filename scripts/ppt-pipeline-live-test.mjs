@@ -180,7 +180,10 @@ console.log(`deck gate: ${JSON.stringify(catalog.deckExecution)}`)
 if (catalog.deckExecution?.ready !== true) throw new Error('the local pipeline reports itself not ready')
 
 const started = Date.now()
-const task = await runner.runPpt({ images: inputs.map(addAsset), offlineOcr: false, language: 'zh' })
+// The PPT workspace defaults to offline text detection, so that branch is the
+// one a first click actually takes: exercise it here unless told otherwise.
+const offlineOcr = process.env.PPT_OFFLINE_OCR !== '0'
+const task = await runner.runPpt({ images: inputs.map(addAsset), offlineOcr, language: 'zh' })
 const deadline = started + Number(process.env.PPT_LIVE_TIMEOUT_MS ?? 900_000)
 let current = task
 for (;;) {

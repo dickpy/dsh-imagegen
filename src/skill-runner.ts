@@ -52,7 +52,7 @@ import {
 import { fileKindOf } from './canvas-store.ts'
 import { PptTaskStore } from './ppt-task-store.ts'
 import { pptActivity, PptProgressMonitor } from './ppt-progress.ts'
-import { runCommand } from './skill-config.ts'
+import { PYTHON_UTF8_ENV, runCommand } from './skill-config.ts'
 import { runDeckPipeline, type DeckPipelineResult } from './ppt-deck-pipeline.ts'
 import { acceptDeck, inspectDeck, type DeckRejection } from './ppt-deck-check.ts'
 
@@ -994,6 +994,7 @@ export class SkillRunner {
         'This is an image-to-editable-PPT conversion explicitly requested by the user. Follow the installed upstream skill unchanged; do not design a replacement pipeline.',
         'The input order is the slide order. Use the original images as source slides. Copy ONLY the validated final deck, final previews and validation report to the output directory. Do not copy intermediate page decks as final decks. If finalize cannot pass, report failure; never substitute a full-slide raster.',
         `Runtime CLI: ${JSON.stringify(command ?? 'editppt')}. Use this executable for editppt commands; add its parent directory to your shell PATH for upstream helpers.`,
+        'Before every editppt call set PYTHONIOENCODING=utf-8 and PYTHONUTF8=1 in the shell (on Windows: $env:PYTHONIOENCODING="utf-8"; $env:PYTHONUTF8="1"). The CLI prints each page\'s text into its report, and a Chinese console code page makes print() raise UnicodeEncodeError after the work already succeeded, which fails recording for every page.',
         request.instruction ?? '',
       ],
     ].join('\n\n')
@@ -1130,7 +1131,9 @@ export class SkillRunner {
       editppt: async () => command,
       run: async (argv, options) => {
         if (controller.signal.aborted) throw new Error(t('canvas.skills.stageCancelled'))
-        return await runCommand(argv, { cwd: options.cwd, timeoutMs: options.timeoutMs ?? limits.pageBudgetMs })
+        // UTF-8 pipes: the upstream CLI prints slide text (hearts, emoji, CJK)
+        // and dies on a Chinese Windows console code page otherwise.
+        return await runCommand(argv, { cwd: options.cwd, timeoutMs: options.timeoutMs ?? limits.pageBudgetMs, env: PYTHON_UTF8_ENV })
       },
       chat,
       readSkillDoc: async relative => await this.options.pptSkillDoc?.(relative),

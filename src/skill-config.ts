@@ -356,15 +356,28 @@ function mask(text: string, secrets: readonly string[]): string {
   return out
 }
 
+/**
+ * Environment for the upstream Python CLI (`editppt`) and its image helper.
+ *
+ * Windows consoles default to the ANSI code page (cp936 on a Chinese machine),
+ * and the CLI prints its validation report — which echoes the slide's own text —
+ * to stdout. A character outside that code page (a `♡` on a real slide did it)
+ * made `print()` raise `UnicodeEncodeError` and the command exit non-zero
+ * *after* its work had succeeded, so every page failed to record. Forcing UTF-8
+ * I/O and UTF-8 as Python's locale default removes the whole class: this reader
+ * already decodes the pipes as UTF-8.
+ */
+export const PYTHON_UTF8_ENV: Record<string, string> = { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
+
 /** Run one command without a shell, bounded by a timer and an output cap. */
-export function runCommand(argv: string[], options: { cwd: string; timeoutMs: number }): Promise<{ code: number; output: string }> {
+export function runCommand(argv: string[], options: { cwd: string; timeoutMs: number; env?: Record<string, string> }): Promise<{ code: number; output: string }> {
   return new Promise(resolve => {
     let settled = false
     const child = spawn(argv[0]!, argv.slice(1), {
       cwd: options.cwd,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: { ...process.env, ...options.env },
     })
     let output = ''
     const collect = (chunk: Buffer): void => { if (output.length < MAX_COMMAND_OUTPUT_CHARS) output += chunk.toString('utf8') }
