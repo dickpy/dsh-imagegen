@@ -28,6 +28,14 @@ export interface DeckSlideInspection {
   textRuns: number
   /** `<p:sp>` blocks without a `<a:blipFill>` (editable vector/text shapes). */
   nativeShapes: number
+  /**
+   * Shapes that are real geometry: no `<a:blipFill>` and not a text box
+   * (`txBox="1"`). This is what {@link acceptDeck} measures visual recovery
+   * against, because a page of nothing but text boxes has `nativeShapes > 0`.
+   */
+  graphicShapes: number
+  /** Native tables (`a:tbl` inside a graphic frame); a table page has no `p:pic`. */
+  tables: number
   /** `<p:pic>` elements on this slide. */
   pictures: number
   /** Pictures whose `<a:xfrm><a:ext>` covers at least {@link FULL_BLEED_RATIO}. */
@@ -44,6 +52,10 @@ export interface DeckInspection {
   textRuns: number
   /** Total `<p:sp>` blocks with no `<a:blipFill>` across all slides. */
   nativeShapes: number
+  /** Total geometry shapes (no picture fill, not a text box) across all slides. */
+  graphicShapes: number
+  /** Total native tables across all slides. */
+  tables: number
   /** Total `<p:pic>` elements across all slides. */
   pictures: number
   /** Total pictures covering at least 85% of the slide area. */
@@ -54,8 +66,8 @@ export interface DeckInspection {
   pages: DeckSlideInspection[]
 }
 
-/** Why a deck was refused. The four reasons are the documented vocabulary. */
-export type DeckRejection = 'invalid-package' | 'slide-count' | 'report-not-passed' | 'raster-only'
+/** Why a deck was refused. The documented vocabulary plus the visual-loss case. */
+export type DeckRejection = 'invalid-package' | 'slide-count' | 'report-not-passed' | 'raster-only' | 'visual-loss'
 
 /** Acceptance result: no details on success keeps callers from branching on them. */
 export type DeckAcceptance = { ok: true } | { ok: false; reason: DeckRejection }
@@ -90,6 +102,9 @@ const PICTURE_BLOCK = /<p:pic\b[^>]*>([\s\S]*?)<\/p:pic>/g
 
 /** One `<p:sp>…</p:sp>` block; `\b` keeps `<p:spPr>` from matching. */
 const SHAPE_BLOCK = /<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/g
+
+/** One `<p:graphicFrame>` block - the carrier of native tables and charts. */
+const GRAPHIC_FRAME = /<p:graphicFrame\b[^>]*>([\s\S]*?)<\/p:graphicFrame>/g
 
 /** The placement transform of a picture. */
 const XFRM_BLOCK = /<a:xfrm\b[^>]*>([\s\S]*?)<\/a:xfrm>/
@@ -139,6 +154,46 @@ function countNativeShapes(xml: string): number {
   SHAPE_BLOCK.lastIndex = 0
   for (let match = SHAPE_BLOCK.exec(xml); match !== null; match = SHAPE_BLOCK.exec(xml)) {
     if (!/<a:blipFill\b/.test(match[1] ?? '')) count += 1
+  }
+  return count
+}
+
+/**
+ * Count shapes that carry *geometry*, not typography.
+ *
+ * This exists because `nativeShapes` counts text boxes too: a deck that only put
+ * the OCR'd words on a blank slide still shows six "editable shapes", which made
+ * the visual-loss gate below vacuous - and that is exactly the deck a real user
+ * rejected as "只有文字". python-pptx marks a text box with `txBox="1"` on its
+ * non-visual shape properties, so the honest measure of recovered artwork is
+ * the shape blocks that are neither a picture nor a text box.
+ */
+function countGraphicShapes(xml: string): number {
+  let count = 0
+  SHAPE_BLOCK.lastIndex = 0
+  for (let match = SHAPE_BLOCK.exec(xml); match !== null; match = SHAPE_BLOCK.exec(xml)) {
+    const body = match[1] ?? ''
+    if (/<a:blipFill\b/.test(body)) continue
+    if (/<p:cNvSpPr\b[^>]*\btxBox="1"/.test(body)) continue
+    count += 1
+  }
+  return count
+}
+
+/**
+ * Count native tables (`a:tbl` inside a `p:graphicFrame`).
+ *
+ * A page whose graphics *are* a table - very common in business decks - carries
+ * no `p:pic` and no `p:sp` geometry, so counting only those two would make the
+ * visual-loss gate reject a faithful reconstruction. Tables are editable objects
+ * in PowerPoint, so they count as a recovered visual layer; a screenshot of a
+ * table is a `p:pic` and is counted by `pictures` instead.
+ */
+function countTables(xml: string): number {
+  let count = 0
+  GRAPHIC_FRAME.lastIndex = 0
+  for (let match = GRAPHIC_FRAME.exec(xml); match !== null; match = GRAPHIC_FRAME.exec(xml)) {
+    count += (match[1] ?? '').match(/<a:tbl\b/g)?.length ?? 0
   }
   return count
 }
@@ -237,6 +292,8 @@ export function inspectDeck(buffer: Buffer): DeckInspection | undefined {
       page: number,
       textRuns: countTextRuns(text),
       nativeShapes: countNativeShapes(text),
+      graphicShapes: countGraphicShapes(text),
+      tables: countTables(text),
       pictures: measured.pictures,
       fullBleedPictures: measured.fullBleedPictures,
       notes: measured.notes,
@@ -249,6 +306,8 @@ export function inspectDeck(buffer: Buffer): DeckInspection | undefined {
     slides: pages.length,
     textRuns: sum(page => page.textRuns),
     nativeShapes: sum(page => page.nativeShapes),
+    graphicShapes: sum(page => page.graphicShapes),
+    tables: sum(page => page.tables),
     pictures: sum(page => page.pictures),
     fullBleedPictures: sum(page => page.fullBleedPictures),
     notes,
@@ -287,13 +346,15 @@ function hasEditableContent(page: DeckSlideInspection): boolean {
  *    on each page. That is still a raster deck: the 85% rule catches it even
  *    though the page technically owns one native shape.
  * @param input - inspection (or `undefined` when the package did not parse), the
- *   number of input images, and upstream's `validation.json.passed`.
+ *   number of input images, upstream's `validation.json.passed`, and the 1-based
+ *   page numbers whose *source* image carried real artwork (`visualPages`).
  * @returns `{ ok: true }` or the first failing reason.
  */
 export function acceptDeck(input: {
   inspection: DeckInspection | undefined
   expectedSlides: number
   reportPassed: boolean
+  visualPages?: number[]
 }): DeckAcceptance {
   if (input.inspection === undefined) return { ok: false, reason: 'invalid-package' }
   const inspection = input.inspection
@@ -313,6 +374,18 @@ export function acceptDeck(input: {
   }
   if (inspection.fullBleedPictures >= inspection.slides && inspection.textRuns === 0) {
     return { ok: false, reason: 'raster-only' }
+  }
+  // A page whose *source* carried artwork must come back with a visual layer.
+  // Text-only output on such a page is exactly what a real user reported: every
+  // word editable, the slide itself gone. Geometry counts, plain text boxes do
+  // not - otherwise a page of nothing but text boxes would pass its own gate.
+  // Native tables count as a visual layer: a page whose graphic *is* a table has
+  // no `p:pic` and no `p:sp`, and rejecting it would fail a faithful reconstruction.
+  const visualPages = input.visualPages ?? []
+  if (visualPages.length > 0 && inspection.pages.length > 0) {
+    const lost = inspection.pages.some(page => visualPages.includes(page.page)
+      && page.pictures === 0 && page.graphicShapes === 0 && (page.tables ?? 0) === 0)
+    if (lost) return { ok: false, reason: 'visual-loss' }
   }
   return { ok: true }
 }

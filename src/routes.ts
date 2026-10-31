@@ -1547,11 +1547,16 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           }
           images.push({ assetId: raw.assetId, url: `${CANVAS_API.asset}/${encodeURIComponent(raw.assetId)}`, mime: '', width: 0, height: 0, bytes: 0, origin: 'upload' })
         }
+        // The visual depth is optional; anything unrecognized falls back to the
+        // configured default inside the runner rather than failing the request.
+        const visualMode = body.visualMode === 'hybrid' || body.visualMode === 'regions' || body.visualMode === 'text'
+          ? body.visualMode as 'hybrid' | 'regions' | 'text'
+          : undefined
         if (deps.skills?.runPpt === undefined) { writeJson(res, 200, { ok: false, message: 'PPT runtime unavailable' }); return }
         try {
           const runtime = await deps.pptRuntime?.check()
           if (runtime !== undefined && !runtime.available) throw new Error(`editppt 尚未就绪，请在生图配置中检查或安装运行环境。${runtime.message}`)
-          writeJson(res, 200, { ok: true, task: await deps.skills.runPpt({ images, offlineOcr: body.offlineOcr, ...parseSkillLanguage(body) }) })
+          writeJson(res, 200, { ok: true, task: await deps.skills.runPpt({ images, offlineOcr: body.offlineOcr, ...parseSkillLanguage(body), ...visualMode === undefined ? {} : { visualMode } }) })
         } catch (error) { writeJson(res, 200, { ok: false, code: 'ppt-run-failed', message: messageOf(error) }) }
       },
     },

@@ -117,6 +117,29 @@ export function acceptDeck(input: {
 
 这样模型输出量小、坐标不可幻觉，`editppt page validate` 仍会兜底，错误回灌最多 2 次。
 
+## 视觉还原层（实测后补：像素测量兜底）
+
+真页面上模型经常一个图形都不给，只靠模型 = 白底加几行字（用户实测反馈）。现在视觉层由
+`src/ppt-visual-regions.ts` 从像素测出来，与模型判断并列、不被模型否决：
+
+1. 半分辨率 `MEDIANCUT` 量化成 12 色调色板；**背景 = 边框 3px 一圈里出现最多的 index 的中位 RGB**
+   （不再用四角平均：装饰页会把背景采成脏色，实测过 `#6A6371` 这种错值）。
+2. 每个非背景 index 做 8-邻域连通域；丢弃 <0.4% 面积或 bbox 边 <28px 的碎块；坐标 ×2 回到源图像素。
+3. 度量与分类：`color_spread`=该 index 像素 RGB std 均值，`text_share`=OCR 文本框在该 bbox 内占比，
+   短边 <30px → `line`；`spread < 8 或 text_share > 0.4` → `panel`（落原生形状，填充取中位色）；
+   其余 → `bitmap`（从 `source.png` 确定性裁剪）。
+4. **文本行中心落在 bitmap 区域内 → 不再生成文本框**（文字留在图里，避免重影）；panel 内文字仍保留可编辑。
+5. `visualMode`：`hybrid`（默认，允许整页级区域走 `editppt image edit` 的 clean base，
+   `source_type:"imagegen"`——上游唯一许可的整页背景做法）、`regions`（零图像额度；此时整页底图无法还原，
+   该页**明确失败**并说明原因）、`text`（只重建文字）。整页级 bbox（≥85% 页面积）在 `user-provided`
+   下会被上游判违规，所以不能当普通贴图塞进去。
+6. 用了 clean base 的页**不再叠加位图裁剪**（clean base 保留插画，重复裁剪就是重影）；表格/图表/照片属于
+   「会被 clean base 擦掉的贴片」，仍然裁剪保留。
+7. 逐页上报 `panels / bitmaps / lines / fidelity / sourceInk`，宿主写进任务卡片
+   （「图形 9 · 贴图 2 · 视觉还原 79%」，<60% 追减低还原提示）。`fidelity` 管线内是 0-1 比率，宿主 ×100 上报。
+8. 验收新增 `visual-loss`：`sourceInk ≥ 8%` 的页如果成片里既没有贴图也没有几何形状
+   （**文本框不算几何形状**，`txBox="1"` 被排除），整次转换判失败——就是为了堵死「只有文字」被当成成功。
+
 ## 执行方式开关
 
 `pptExecutionMode`: `'local' | 'agent'`，默认 `local`（本管线）。`agent` 保留现有无头 Agent 路径，

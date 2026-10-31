@@ -436,6 +436,14 @@ export interface Config {
   pptConcurrency?: number
   /** Per-page budget in minutes for the local pipeline. */
   pptPageBudgetMinutes?: number
+  /**
+   * How much of the source page's visual layer the pipeline rebuilds.
+   * `hybrid` restores measured panels/lines and photo crops, and asks the image
+   * backend for a clean base when a page is artwork-dominated; `regions` never
+   * spends image quota (such a page then fails with a reason instead of
+   * silently shipping a text-only slide); `text` is typography only.
+   */
+  pptVisualMode?: 'hybrid' | 'regions' | 'text'
   /* --------------------------- skill configuration -------------------------- */
   /**
    * Per-skill configuration values declared by `skill.config.json`, keyed
@@ -498,6 +506,7 @@ const configSchema = z.object({
   pptExecutionMode: z.union([z.const('local'), z.const('agent')]).default('local').volatile(),
   pptConcurrency: z.number().default(2).volatile(),
   pptPageBudgetMinutes: z.number().default(6).volatile(),
+  pptVisualMode: z.union([z.const('hybrid'), z.const('regions'), z.const('text')]).default('hybrid').volatile(),
   skillConfig: z.dict(z.string()).default({}).volatile(),
   skillConfigSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
   apiUrl: z.string().default('').volatile(),
@@ -621,6 +630,12 @@ export interface EffectiveConfig {
     deckConcurrency: number
     /** Local-pipeline per-page budget in milliseconds. */
     deckPageBudgetMs: number
+    /**
+     * Visual depth for the local pipeline: `imagegen` (hybrid: measured shapes +
+     * crops, clean base for artwork pages), `regions` (never spends image quota),
+     * `off` (typography only).
+     */
+    deckVisualMode: 'imagegen' | 'regions' | 'off'
   }
   /** Per-skill configuration values, secrets included (host side only). */
   skillConfig: SkillConfigStore
@@ -732,6 +747,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
         deckMode: value.pptExecutionMode === 'agent' ? 'agent' : 'local',
         deckConcurrency: Math.min(3, Math.max(1, Math.round(value.pptConcurrency ?? 2))),
         deckPageBudgetMs: Math.max(60_000, Math.round((value.pptPageBudgetMinutes ?? 6) * 60_000)),
+        deckVisualMode: value.pptVisualMode === 'text' ? 'off' : value.pptVisualMode === 'regions' ? 'regions' : 'imagegen',
       },
       skillConfig: {
         values: asConfigDict(value.skillConfig),
@@ -799,6 +815,8 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     pptInstallUrl: knownSkillUrl(EDITABLE_PPT_SKILL),
     pptCommand: () => pptRuntime.command(),
     deckMode: () => resolveSkills().deckMode,
+    /** Hybrid by default: measured visuals, image backend only for artwork pages. */
+    deckVisualMode: () => resolveSkills().deckVisualMode,
     deckLimits: () => {
       const value = resolveSkills()
       return { concurrency: value.deckConcurrency, pageBudgetMs: value.deckPageBudgetMs }

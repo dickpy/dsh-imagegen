@@ -85,6 +85,16 @@ slide = prs.slides.add_slide(prs.slide_layouts[6])
 slide.shapes.add_picture(str(out / "page.png"), 0, 0, prs.slide_width, prs.slide_height)
 prs.save(out / "raster.pptx")
 
+# c) the page whose graphic IS a table: native a:tbl inside a graphic frame,
+#    no p:pic and no p:sp geometry - the visual-loss gate must not call this empty.
+prs = deck()
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+table = slide.shapes.add_table(3, 3, Emu(914400), Emu(1828800), Emu(7315200), Emu(1371600)).table
+for r in range(3):
+    for c in range(3):
+        table.cell(r, c).text = f"单元格 {r}{c}"
+prs.save(out / "table.pptx")
+
 print("fixtures written to", out)
 `
 
@@ -99,6 +109,7 @@ if (made.status !== 0) throw new Error(`夹具生成失败：${made.stdout}${mad
 
 const editableDeck = () => readFileSync(path.join(fixtureDir, 'editable.pptx'))
 const rasterDeck = () => readFileSync(path.join(fixtureDir, 'raster.pptx'))
+const tableDeck = () => readFileSync(path.join(fixtureDir, 'table.pptx'))
 
 /** Fixture provenance, printed once so a failure is reproducible. */
 console.log(`# fixtures: ${fixtureDir}`)
@@ -164,6 +175,7 @@ test('d) 整册只有图片（无逐页细节）也按 raster-only 拒绝', () =
     slides: 2,
     textRuns: 0,
     nativeShapes: 0,
+    graphicShapes: 0,
     pictures: 2,
     fullBleedPictures: 2,
     notes: [],
@@ -173,4 +185,61 @@ test('d) 整册只有图片（无逐页细节）也按 raster-only 拒绝', () =
     ok: false,
     reason: 'raster-only',
   })
+})
+
+/**
+ * A page that only carries text boxes: `nativeShapes` is 2 (text boxes are
+ * `p:sp`), so the older rules call it editable - and it is, for words. But when
+ * the *source* page had artwork, that is precisely the "只有文字" failure.
+ */
+const textOnlyInspection = {
+  slides: 1,
+  textRuns: 6,
+  nativeShapes: 2,
+  graphicShapes: 0,
+  pictures: 0,
+  fullBleedPictures: 0,
+  notes: [],
+  pages: [{ page: 1, textRuns: 6, nativeShapes: 2, graphicShapes: 0, pictures: 0, fullBleedPictures: 0, notes: [] }],
+}
+
+test('e) 源图有图形、成片只剩文本框：visual-loss 拒绝', () => {
+  assert.deepEqual(acceptDeck({ inspection: textOnlyInspection, expectedSlides: 1, reportPassed: true, visualPages: [1] }), {
+    ok: false,
+    reason: 'visual-loss',
+  })
+})
+
+test('f) 不带 visualPages 时行为不变（老调用方不会被新规则误伤）', () => {
+  assert.deepEqual(acceptDeck({ inspection: textOnlyInspection, expectedSlides: 1, reportPassed: true }), { ok: true })
+})
+
+test('g) 文本框不算图形：有 panel 形状或贴图时 visualPages 放行', () => {
+  const withPanels = {
+    ...textOnlyInspection,
+    graphicShapes: 9,
+    pictures: 1,
+    pages: [{ ...textOnlyInspection.pages[0], graphicShapes: 9, pictures: 1 }],
+  }
+  assert.deepEqual(acceptDeck({ inspection: withPanels, expectedSlides: 1, reportPassed: true, visualPages: [1] }), { ok: true })
+})
+
+test('h) 真跑产物：文本框页在 visualPages 下必须被拦，含形状页必须放行', () => {
+  const editable = inspectDeck(editableDeck())
+  assert.ok(editable !== undefined)
+  // The editable fixture carries a rounded rectangle, so it is real geometry.
+  assert.ok(editable.graphicShapes > 0, 'fixture should expose at least one non-text-box shape')
+  assert.deepEqual(acceptDeck({ inspection: editable, expectedSlides: 1, reportPassed: true, visualPages: [1] }), { ok: true })
+})
+
+test('i) 原生表格单页：tables>0 且 graphicShapes=0，visualPages 下不得判 visual-loss', () => {
+  const inspection = inspectDeck(tableDeck())
+  assert.ok(inspection !== undefined, 'table.pptx 必须是合法包')
+  console.log('inspection(table) =', JSON.stringify(inspection.pages[0]))
+  assert.equal(inspection.pages[0].tables, 1, 'slide 1 的 graphicFrame 里有一张 a:tbl')
+  assert.equal(inspection.pages[0].graphicShapes, 0, 'python-pptx 的表格是 graphicFrame，不是 p:sp')
+  assert.equal(inspection.pages[0].pictures, 0)
+  assert.ok(inspection.pages[0].textRuns > 0, '单元格文字必须是可编辑 a:t')
+  // 业务页的「图形」常常就是这张表：不能因为没 p:sp/p:pic 就被当成没还原。
+  assert.deepEqual(acceptDeck({ inspection, expectedSlides: 1, reportPassed: true, visualPages: [1] }), { ok: true })
 })

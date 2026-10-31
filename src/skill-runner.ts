@@ -169,6 +169,12 @@ export interface SkillRunnerOptions {
    * keeps the behaviour it always had.
    */
   deckMode?: () => 'local' | 'agent'
+  /**
+   * How deep the local pipeline rebuilds the visual layer. `imagegen` (hybrid)
+   * may call the upstream image backend for an artwork page's clean base;
+   * `regions` never does; `off` is typography only.
+   */
+  deckVisualMode?: () => 'imagegen' | 'regions' | 'off'
   /** Local-pipeline limits (page concurrency and per-page budget). */
   deckLimits?: () => { concurrency: number; pageBudgetMs: number }
   /** Whether a chat model is configured that can look at a slide image. */
@@ -272,7 +278,18 @@ function deckRejectText(t: CatalogTranslate, reason: DeckRejection): string {
     case 'slide-count': return t('ppt.rejectSlideCount')
     case 'report-not-passed': return t('ppt.rejectReport')
     case 'raster-only': return t('ppt.rejectRaster')
+    case 'visual-loss': return t('ppt.rejectVisualLoss')
   }
+}
+
+/** Setting name the client shows, from the pipeline's internal mode. */
+function deckVisualSetting(mode: 'imagegen' | 'regions' | 'off'): 'hybrid' | 'regions' | 'text' {
+  return mode === 'off' ? 'text' : mode === 'regions' ? 'regions' : 'hybrid'
+}
+
+/** Pipeline mode from the client-facing setting/override value. */
+function deckVisualPipelineMode(value: 'hybrid' | 'regions' | 'text'): 'imagegen' | 'regions' | 'off' {
+  return value === 'text' ? 'off' : value === 'regions' ? 'regions' : 'imagegen'
 }
 
 /** One input node plus its loaded asset, resolved once per run. */
@@ -520,13 +537,14 @@ export class SkillRunner {
     agentAvailable: boolean,
   ): CanvasSkillCatalog['deckExecution'] {
     const mode = this.options.deckMode?.() ?? 'agent'
+    const visualMode = deckVisualSetting(this.options.deckVisualMode?.() ?? 'imagegen')
     const installed = external.some(skill => isEditablePptSkill(skill.name))
     const reason = !installed
       ? t('canvas.skills.skillMissing', { name: EDITABLE_PPT_SKILL })
       : mode === 'local'
         ? this.options.deckChatReady?.() === false ? t('ppt.noVisionModel') : undefined
         : !agentAvailable ? t('canvas.skills.needAgent') : undefined
-    return { mode, ready: reason === undefined, ...reason === undefined ? {} : { reason } }
+    return { mode, visualMode, ready: reason === undefined, ...reason === undefined ? {} : { reason } }
   }
 
   /** Queue one run and return its task immediately (the client polls it). */
@@ -572,7 +590,7 @@ export class SkillRunner {
       const safeAsset: CanvasAssetRef = { ...asset, mime: found.mime, kind: 'image', name: `slide-${index + 1}.${found.mime === 'image/jpeg' ? 'jpg' : found.mime.split('/')[1]}` }
       inputs.push({ asset: safeAsset, node: { id: newId('ppt-input'), type: 'image', title: safeAsset.name!, x: 0, y: 0, width: 320, height: 240, metadata: { asset: safeAsset } } })
     }
-    return this.startTask({ canvasId: 'ppt', skillId: BUILTIN_PPT, nodeIds: inputs.map(input => input.node.id), language: request.language, offlineOcr: request.offlineOcr,
+    return this.startTask({ canvasId: 'ppt', skillId: BUILTIN_PPT, nodeIds: inputs.map(input => input.node.id), language: request.language, offlineOcr: request.offlineOcr, ...request.visualMode === undefined ? {} : { visualMode: request.visualMode },
       instruction: request.offlineOcr ? 'The user explicitly chose offline text detection for this run. Use upstream editppt prepare --no-text-hints, then editppt page hints for each page to generate offline hints before reconstruction. Do not call PaddleOCR for this run or ask about a token again. All other upstream steps remain required.' : 'Use the configured PaddleOCR token. Follow the upstream skill if OCR fails; do not silently downgrade quality.' }, skill, inputs, true)
   }
 
@@ -1124,6 +1142,11 @@ export class SkillRunner {
     task.phase = 'running'
     task.stage = t('canvas.skills.stageRunning')
     const command = await this.options.pptCommand?.() ?? 'editppt'
+    // A per-run choice from the PPT workspace beats the configured default, so a
+    // user can drop to the zero-image-quota mode for one deck without editing settings.
+    const visualMode = request.visualMode === undefined
+      ? this.options.deckVisualMode?.() ?? 'imagegen'
+      : deckVisualPipelineMode(request.visualMode)
     const result = await runDeckPipeline(files, runDir, {
       offlineOcr: request.offlineOcr ?? false,
       language: task.language ?? '',
@@ -1139,6 +1162,7 @@ export class SkillRunner {
       readSkillDoc: async relative => await this.options.pptSkillDoc?.(relative),
       concurrency: () => limits.concurrency,
       pageBudgetMs: () => limits.pageBudgetMs,
+      visualMode: () => visualMode,
       onEvent: event => {
         // The pipeline reports copy keys (it stays presentation-free); resolve
         // them in the run's language so a Chinese user never sees `ppt.*`, and
@@ -1156,6 +1180,19 @@ export class SkillRunner {
       },
       signal: controller.signal,
     })
+    // Per-page visual measurements, once, from the authoritative result: the card
+    // shows 「图形 9 · 贴图 2 · 视觉还原 61%」 instead of an unexplained "完成".
+    // Fidelity is a 0-1 ink share inside the pipeline; the protocol speaks percent.
+    const metrics = task.progress ??= { lastActivityAt: Date.now(), events: [] }
+    metrics.pages = result.pages.map(page => ({
+      page: page.page,
+      state: page.state === 'recorded' ? 'validated' as const : 'pending' as const,
+      panels: page.regions.panels,
+      bitmaps: page.regions.bitmaps,
+      lines: page.regions.lines,
+      ...(page.fidelity === undefined ? {} : { fidelity: Math.round(page.fidelity * 100) }),
+      ...(page.warnings.length === 0 ? {} : { warnings: page.warnings.slice(0, 4) }),
+    }))
     return await this.publishDeck(task, skill, inputs[0]!.node, inputs.map(input => input.node.id), result, files.length, t)
   }
 
@@ -1179,10 +1216,15 @@ export class SkillRunner {
     const canvas = this.backend.canvas
     const deckBuffer = await fs.readFile(result.deckPath)
     const report = await readBoundedJson(result.reportPath)
+    // A page whose source image carried ≥8% non-text ink must come back with a
+    // real visual layer. Without this, "put the OCR words on a blank slide" was
+    // accepted as a successful conversion - what the user saw on a graphic-heavy deck.
+    const visualPages = result.pages.filter(page => (page.sourceInk ?? 0) >= 0.08).map(page => page.page)
     const decision = acceptDeck({
       inspection: inspectDeck(deckBuffer),
       expectedSlides,
       reportPassed: report?.passed === true,
+      visualPages,
     })
     if (!decision.ok) throw new Error(t('ppt.deckRejected', { reason: deckRejectText(t, decision.reason) }))
     const nodes: CanvasNode[] = []

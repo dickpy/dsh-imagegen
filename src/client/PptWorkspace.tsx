@@ -114,6 +114,9 @@ export function PptWorkspace({ api, active, importRequest, onImported, privacyMo
     ? catalog?.agentAvailable === true && catalog.installed.includes(PPT_SKILL_NAME)
     : deck.ready
   const notReadyReason = deck === undefined ? catalog?.reason : deck.reason ?? catalog?.reason
+  // `visualMode` comes from the host's effective deck configuration; an older host
+  // leaves it undefined, and then we show no mode-dependent copy rather than guessing.
+  const visualMode = deck?.visualMode
   const focused = tasks.find(task => task.id === selected) ?? tasks[0]
   const submit = async (source = current.current): Promise<void> => {
     if (busy || uploading || source.length === 0) return
@@ -154,6 +157,8 @@ export function PptWorkspace({ api, active, importRequest, onImported, privacyMo
         <label><input type="radio" name="ppt-ocr" checked={offline} onChange={() => { ocrChosen.current = true; setOffline(true) }} />{tt('ppt.ocrOffline')}</label>
         <small>{tt('ppt.ocrHint')}</small>
       </fieldset>
+      {/* 只有 host 明确报告了 hybrid 才提额度代价；读不到 visualMode（旧 host）就不显示，别猜。 */}
+      {visualMode === 'hybrid' ? <small className={css.sourceHint} data-ppt-visual-note="">{tt('ppt.imageBackendNote')}</small> : null}
 
       {!ready ? <p className={css.note}>{notReadyReason || tt('ppt.setupRequired')}</p> : null}
       <footer className={css.submitBar}>
@@ -172,7 +177,7 @@ export function PptWorkspace({ api, active, importRequest, onImported, privacyMo
             {running(focused) ? <button type="button" onClick={() => { void api.canvasSkillCancel(focused.id).then(async () => setTasks(await api.pptTasks())).catch(error => setError(errorMessage(error))) }}>{tt('ppt.cancel')}</button> : null}
           </div>
           <p hidden={focused.status === 'completed'} className={focused.status === 'failed' ? css.failure : css.progress} role="status">{running(focused) ? `${focused.stage || tt('ppt.working')} · ${tt('canvas.elapsed', { seconds: Math.max(0, Math.floor((clock - focused.startedAt) / 1000)) })}` : focused.error || focused.stage}</p>
-          <PptProgressCard key={focused.id} task={focused} clock={clock} onDiagnostic={() => setDiagnostic(focused)} />
+          <PptProgressCard key={focused.id} task={focused} clock={clock} visualMode={visualMode} onDiagnostic={() => setDiagnostic(focused)} />
           <div className={css.resultActions} data-completed={focused.status === 'completed' || undefined}>
             <button type="button" disabled={busy || uploading} onClick={() => { commit(focused.pptImages ?? []); setError('') }}>{tt('ppt.reuseImages')}</button>
             {focused.status === 'failed' || focused.status === 'cancelled' ? <button type="button" disabled={!ready || busy || uploading || !focused.pptImages?.length} onClick={() => { commit(focused.pptImages ?? []); void submit(focused.pptImages) }}>{tt('ppt.retry')}</button> : null}

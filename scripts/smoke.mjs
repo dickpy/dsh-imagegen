@@ -3005,7 +3005,7 @@ await check('C11ppt-deck gate picks the driver and names the missing prerequisit
 
   // Local mode is ready on its own prerequisites and never asks for an agent.
   const local = new host.SkillRunner({ ...base, deckMode: () => 'local', deckChatReady: () => true, deckLimits: () => ({ concurrency: 1, pageBudgetMs: 60_000 }) })
-  assert.deepEqual((await local.list('en')).deckExecution, { mode: 'local', ready: true })
+  assert.deepEqual((await local.list('en')).deckExecution, { mode: 'local', visualMode: 'hybrid', ready: true })
   await assert.rejects(local.runPpt({ images: [image], offlineOcr: true, language: 'en' }), error => !/agent/i.test(error.message))
 
   // A chat model that cannot look at images is the local pipeline's one hard

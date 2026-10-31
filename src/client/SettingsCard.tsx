@@ -56,6 +56,8 @@ export interface ImageGenSettings {
   pptExecutionMode?: 'local' | 'agent'
   /** Pages the local deck pipeline rebuilds at once (1-3). */
   pptConcurrency?: number
+  /** How much visual recovery the deck pipeline attempts (hybrid | regions | text). */
+  pptVisualMode?: 'hybrid' | 'regions' | 'text'
   /** Per-page budget in minutes for the local deck pipeline. */
   pptPageBudgetMinutes?: number
 }
@@ -89,6 +91,7 @@ export interface ImageGenSettingsCardState extends CardShell {
   skillAgentPreset: CardFieldState
   pptExecutionMode: CardFieldState
   pptConcurrency: CardFieldState
+  pptVisualMode: CardFieldState
   pptPageBudgetMinutes: CardFieldState
 }
 
@@ -146,6 +149,7 @@ export class ImageGenSettingsCardController {
       textField('skillAgentPreset'),
       textField('pptExecutionMode'),
       textField('pptConcurrency'),
+      textField('pptVisualMode'),
       textField('pptPageBudgetMinutes'),
     ], {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
@@ -182,6 +186,7 @@ export class ImageGenSettingsCardController {
       skillAgentPreset: this.form.field('skillAgentPreset'),
       pptExecutionMode: this.form.field('pptExecutionMode'),
       pptConcurrency: this.form.field('pptConcurrency'),
+      pptVisualMode: this.form.field('pptVisualMode'),
       pptPageBudgetMinutes: this.form.field('pptPageBudgetMinutes'),
     }
   }
@@ -1022,6 +1027,16 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               {...state.pptConcurrency}
               onEdit={(text) => { props.edit('pptConcurrency', text) }}
               onReset={() => { props.resetField('pptConcurrency') }}
+            />
+            <ValueField
+              id="dsh-imagegen-settings-ppt-visual-mode"
+              label={t('settings.pptVisualMode')}
+              hint={t('settings.pptVisualModeHint')}
+              placeholder="hybrid"
+              {...fieldProps}
+              {...state.pptVisualMode}
+              onEdit={(text) => { props.edit('pptVisualMode', text) }}
+              onReset={() => { props.resetField('pptVisualMode') }}
             />
             <ValueField
               id="dsh-imagegen-settings-ppt-page-budget"

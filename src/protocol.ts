@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.12.0'
+export const PLUGIN_VERSION = '1.13.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -552,7 +552,17 @@ export interface PptTaskProgress {
   lastActivityAt: number
   currentOperation?: string
   upstreamStage?: string
-  pages?: Array<{ page: number; state: 'pending' | 'running' | 'validated' }>
+  pages?: Array<{
+    page: number
+    state: 'pending' | 'running' | 'validated'
+    /** Visual objects the reconstruction placed on this page, when it measured them. */
+    panels?: number
+    bitmaps?: number
+    lines?: number
+    /** Share of the source page's non-text ink the objects account for (0-100). */
+    fidelity?: number
+    warnings?: string[]
+  }>
   events: Array<{ time: number; label: string; state: 'running' | 'done' | 'warning' }>
 }
 
@@ -590,6 +600,8 @@ export interface PptRunRequest {
   /** The user chose offline OCR in the conversion form. */
   offlineOcr: boolean
   language?: string
+  /** How much of the visual layer to rebuild; empty uses the configured default. */
+  visualMode?: 'hybrid' | 'regions' | 'text'
 }
 
 export interface PptRuntimeStatus {
@@ -612,6 +624,8 @@ export interface CanvasSkillRunRequest {
   language?: string
   /** Standalone deck runs carry the user's OCR choice to the local pipeline. */
   offlineOcr?: boolean
+  /** Per-run override of the visual reconstruction depth. */
+  visualMode?: 'hybrid' | 'regions' | 'text'
 }
 
 /** Polls and cancels carry the same language hint so stages stay translated.
@@ -645,7 +659,13 @@ export interface CanvasSkillCatalog {
    * headless-agent driver. The PPT workspace gates its convert button on
    * `ready`, so a broken agent runtime no longer blocks a working pipeline.
    */
-  deckExecution?: { mode: 'local' | 'agent'; ready: boolean; reason?: string }
+  deckExecution?: {
+    mode: 'local' | 'agent'
+    ready: boolean
+    reason?: string
+    /** How much of the visual layer the local pipeline will try to rebuild. */
+    visualMode?: 'hybrid' | 'regions' | 'text'
+  }
 }
 
 /** One configuration field a skill declares (see `docs/skill-config.md`). */

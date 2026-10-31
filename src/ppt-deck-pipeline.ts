@@ -18,6 +18,21 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { SkillChatBackend, SkillChatPart } from './skill-runner.ts'
 import { redactDiagnosticText } from './diagnostics-store.ts'
+import {
+  analyzeArgs,
+  fidelityArgs,
+  firstJsonObject,
+  isFullBleed,
+  lineShape,
+  panelShape,
+  parseFidelityReport,
+  parseVisualAnalysis,
+  pointInside,
+  regionAreaRatio,
+  type FidelityReport,
+  type VisualAnalysis,
+  type VisualRegion,
+} from './ppt-visual-regions.ts'
 
 // ---------------------------------------------------------------- interface
 
@@ -37,6 +52,15 @@ export interface DeckPipelineDeps {
   pageBudgetMs: () => number
   /** `label` 是 locales.ts 里的文案 key（宿主按当前语言解析），不是成品文案。 */
   onEvent: (event: { time: number; label: string; state: 'running' | 'done' | 'warning'; page?: number }) => void
+  /**
+   * 视觉还原层开关（默认 `imagegen`）：
+   *  - `imagegen`：测量面板/线条/位图区域，整页级底图允许走 `editppt image edit` 的
+   *    clean base（上游唯一许可的整页背景做法，后端由 CLI 自己选）；
+   *  - `regions`：只做确定性还原，不调任何图像后端；此时整页级底图无法还原，
+   *    该页明确判失败（宁可不给假成功）；
+   *  - `off`：退回旧行为（只信模型给的 shapes/pictures）。
+   */
+  visualMode?: () => 'regions' | 'imagegen' | 'off'
   signal: AbortSignal
 }
 
@@ -45,7 +69,22 @@ export interface DeckPipelineResult {
   reportPath: string
   runSummaryPath: string
   previews: string[]
-  pages: Array<{ page: number; state: 'recorded' | 'failed'; objects: number; warnings: string[] }>
+  pages: Array<{
+    page: number
+    state: 'recorded' | 'failed'
+    objects: number
+    warnings: string[]
+    /** Counts of the recovered visual layer, so the host can gate on it. */
+    regions: { panels: number; bitmaps: number; lines: number }
+    /** Recovered non-text ink ÷ source non-text ink; undefined when not measurable. */
+    fidelity?: number
+    /**
+     * Share (0-1) of the page area that is non-text ink in the source. The host
+     * counts pages above its threshold as `expectVisualSlides`, so a deck that
+     * lost all graphics but kept its typography can no longer pass as success.
+     */
+    sourceInk: number
+  }>
   runDirectory: string
 }
 
@@ -60,8 +99,14 @@ const OUTPUT_TAIL = 2000
 /** Upper bound on the skill-doc excerpt appended to the built-in contract. */
 const SKILL_DOC_EXCERPT = 7000
 
-/** A picture covering this share of the page is a full-bleed bitmap: refuse it. */
-const FULL_BLEED_RATIO = 0.9
+/** A picture covering this share of the page is a full-bleed base, not a crop. */
+const FULL_BLEED_RATIO = 0.85
+
+/** Below this share of the source's non-text ink covered, the page is not rebuilt. */
+const FIDELITY_MIN = 0.6
+
+/** One extra build round is allowed to try a clean base when fidelity is low. */
+const MAX_FIDELITY_ROUNDS = 1
 
 /**
  * Built-in slim manifest contract. The upstream reference is long and written
@@ -80,7 +125,7 @@ export const PAGE_JUDGEMENT_CONTRACT = `你只做「看图 + 结构化判断」�
 - 所有坐标都是 source.png 的像素值，[x1,y1,x2,y2] 为左上/右下两点。
 - shapes 只描述明显的几何结构（色带、卡片框、分隔线、箭头），宁少勿多；不要为文字建框。
 - pictures 是「无法用原生形状/文本还原的位图区域」（照片、插画、截图块）；box 为放置位置，source_box 为来源区域。程序会从 source.png 确定性裁剪该区域，绝不会生成新图像。
-- text[] 只为需要改写/补全/识别的行给 content；行号见 hints 列表里的 index。不要新增行，不要删除行，不要改动位置或字号。
+- text[] 为每一行给出 content：行里有 ocr_text 时，content 是你在图上读到的正确文字（纠正错字、补全被截断的部分）；行里**没有 ocr_text** 时（离线墨迹测量模式），content 必须由你读出该行文字后给出，否则该行会整行丢失。不要新增行，不要删除行，不要改动位置或字号。
 - background 若整页有纯色底就给该色；不接受 type:"image"。`
 
 /**
@@ -207,11 +252,35 @@ export interface PageDraft {
   sourceHeight: number
 }
 
+/**
+ * The measured visual layer of one page.
+ *
+ * `cleanBase` is the only entry that came from an image backend (the upstream
+ * clean-base contract), and it is always full-canvas; `bitmaps` are honest
+ * source-pixel crops.
+ */
+export interface MeasuredVisual {
+  panels: VisualRegion[]
+  lines: VisualRegion[]
+  bitmaps: VisualRegion[]
+  cleanBase?: { path: string }
+  /**
+   * Panels whose colour is within 40 (sum of channel differences) of the measured
+   * page background. They are drawn when the page has no clean base (a flat white
+   * card is otherwise invisible), and dropped when it does: the base already paints
+   * that paper, so an opaque rectangle on top only hides the artwork underneath.
+   */
+  paperPanels?: VisualRegion[]
+}
+
 interface PageOutcome {
   page: number
   state: 'recorded' | 'failed'
   objects: number
   warnings: string[]
+  regions: { panels: number; bitmaps: number; lines: number }
+  fidelity?: number
+  sourceInk: number
 }
 
 /** Thrown when the caller's AbortSignal stops the run; partial output stays on disk. */
@@ -506,6 +575,8 @@ export function mergeJudgement(input: {
   warnings: string[]
   /** Absolute path of a font that exists on this machine; see `detectPreviewFont`. */
   previewFont?: string
+  /** Measured visual layer; when present it replaces the model's shape guesses. */
+  visual?: MeasuredVisual
 }): Record<string, unknown> {
   const { draft, judgement, request, pageId, warnings } = input
   const width = draft.sourceWidth
@@ -560,53 +631,18 @@ export function mergeJudgement(input: {
   })
 
   const shapes: Array<Record<string, unknown>> = []
-  ;(Array.isArray(judgement.shapes) ? judgement.shapes : []).forEach((item, index) => {
-    const kind = typeof item?.kind === 'string' ? item.kind.trim().toLowerCase() : ''
-    const id = `shape_${index + 1}`
-    const fill = bareHex(item?.fill)
-    const stroke = bareHex(item?.stroke)
-    const strokeWidth = finiteNumber(item?.stroke_pt)
-    if (kind === 'line' || kind === 'arrow') {
-      const points = toPoints(item?.box, width, height)
-      if (points === undefined) return
-      shapes.push({
-        id,
-        type: 'line',
-        points_px: points satisfies BoxPoints,
-        fill: 'none',
-        stroke: stroke ?? '102A43',
-        stroke_width: strokeWidth === undefined ? 1.5 : clamp(strokeWidth, 0.25, 24),
-        start_arrow: 'none',
-        end_arrow: kind === 'arrow' ? 'triangle' : 'none',
-        semantic_line_id: `pipeline-line-${index + 1}`,
-        z_index: 100,
-      })
-      return
-    }
-    const box = toWidthHeight(item?.box, width, height)
-    if (box === undefined) return
-    const type = kind === 'roundRect' || kind === 'ellipse' || kind === 'rect' ? kind : 'rect'
-    if (kind !== '' && type !== kind) warnings.push(`形状 ${id} 的类型 ${kind} 不受支持，已按矩形处理`)
-    const shape: Record<string, unknown> = {
-      id,
-      type,
-      box_px: box satisfies BoxWH,
-      fill: fill ?? 'none',
-      stroke: stroke ?? 'none',
-      ...(strokeWidth === undefined ? {} : { stroke_width: clamp(strokeWidth, 0.25, 24) }),
-      z_index: 100,
-    }
-    if (type === 'roundRect') {
-      // A rounded rectangle without a recorded source radius is a contract
-      // violation upstream, so the radius is derived from the measured box.
-      const radius = clamp(Math.round(Math.min(box[2], box[3]) / 6), 2, 48)
-      shape.source_corner_radius_px = radius
-      shape.corner_category = 'small-radius'
-    } else {
-      shape.corner_category = 'straight'
-    }
-    shapes.push(shape)
-  })
+  if (input.visual !== undefined) {
+    // Measured geometry wins: panels and thin bars become native shapes straight
+    // from the pixel analysis, so a page stays rebuilt even when the model
+    // abstains (the real failure case behind the postmortem deck).
+    input.visual.panels.forEach((panel, index) => shapes.push(panelShape(panel, `panel_${index + 1}`)))
+    input.visual.lines.forEach((line, index) => {
+      const shape = lineShape(line, `line_${index + 1}`, `pipeline-line-${index + 1}`)
+      if (shape !== undefined) shapes.push(shape)
+    })
+  } else {
+    collectModelShapes(judgement, width, height, warnings).forEach(shape => shapes.push(shape))
+  }
 
   const images: Array<Record<string, unknown>> = []
   const provenance: Array<Record<string, unknown>> = []
@@ -651,6 +687,35 @@ export function mergeJudgement(input: {
   if (backgroundType === 'image') warnings.push('模型请求整页位图背景，已按规则回退为纯色底')
   const background = backgroundType === 'color' ? normalizeHex(judgement.background?.value, draft.background) : draft.background
 
+  if (input.visual?.cleanBase !== undefined) {
+    // Full-canvas artwork is the one case upstream permits a page-wide raster,
+    // and only as an image-backend-produced *clean base*: text and icons are
+    // removed from it, editable text is then placed on top. Provenance must say
+    // `imagegen` (a source crop at this size is a contract violation), which is
+    // why this path exists at all instead of silently dropping the region.
+    images.unshift({
+      id: 'clean_base',
+      path: input.visual.cleanBase.path,
+      box_px: [0, 0, width, height] satisfies BoxWH,
+      alt: 'clean base derived from source.png (text and icons removed)',
+      z_index: 10,
+    })
+    provenance.unshift({
+      path: input.visual.cleanBase.path,
+      source: 'source.png',
+      source_type: 'imagegen',
+      provenance_note: 'Produced by `editppt image edit --image source.png` with the pipeline clean-base prompt: page artwork kept, overlaid text and icons erased. Every editable object on this page is rebuilt natively on top of it.',
+    })
+    visual.unshift({
+      id: 'clean_base',
+      role: 'background',
+      object_type: 'clean base',
+      description: '整页底图（去字去图标版），由上游图像后端在 source.png 上生成，文字全部另建为原生文本框。',
+      path: input.visual.cleanBase.path,
+      source_type: 'imagegen',
+    })
+  }
+
   const slide: Record<string, unknown> = request?.slide
     // `background` always carries its leading `#` here (both `normalizeHex` and
     // the measured corner colour produce `#RRGGBB`): a bare hex makes the
@@ -666,16 +731,23 @@ export function mergeJudgement(input: {
     source: { path: 'source.png', width_px: width, height_px: height },
     strategy: {
       mode: 'native-reconstruction',
-      summary: `本地确定性管线：文本框位置与字号全部取自 text_hints 的墨迹测量；${shapes.length} 个原生形状；${images.length} 个从 source.png 确定性裁剪的位图区域；未调用任何图像生成接口。`,
+      summary: input.visual?.cleanBase !== undefined
+        ? `本地确定性管线：文本框位置与字号全部取自 text_hints 的墨迹测量；${input.visual.panels.length} 个测量面板 + ${input.visual.lines.length} 条测量线条为原生形状，${input.visual.bitmaps.length} 个位图区域从 source.png 确定性裁剪；整页底图由 editppt image edit 生成 clean base（唯一的图像后端调用，去字去图标）。`
+        : `本地确定性管线：文本框位置与字号全部取自 text_hints 的墨迹测量；${shapes.length} 个原生形状（面板 ${input.visual?.panels.length ?? 0}／线条 ${input.visual?.lines.length ?? 0}）；${images.length} 个从 source.png 确定性裁剪的位图区域；未调用任何图像生成接口。`,
     },
     page_strategy: 'Deterministic local pipeline: measured text geometry, model judgement for text content and graphic kinds, source-derived bitmap regions only.',
     text_inventory: inventory.map((text, index) => ({ id: `text_${index + 1}`, text, decision: 'native-text' })),
     visual_inventory: visual,
     background_strategy: {
       // The raster-preserving mode is only honest when the page really keeps
-      // source pixels as a bitmap; a pure native page stays native-or-script.
-      mode: images.length > 0 ? 'source-preserving-local-cleanup' : 'native-or-script',
-      source_consistency_contract: `背景为四角采样得到的纯色 ${background}；位图区域按 source.png 原像素矩形呈现，构图、透视与位置由裁剪坐标保证，未做任何重绘。`,
+      // source pixels as a bitmap; a pure native page stays native-or-script, and
+      // an image-backend clean base declares the upstream mode for it.
+      mode: input.visual?.cleanBase !== undefined
+        ? 'imagegen-full-clean-base'
+        : images.length > 0 ? 'source-preserving-local-cleanup' : 'native-or-script',
+      source_consistency_contract: input.visual?.cleanBase !== undefined
+        ? `整页底图来自 assets 里的 clean base（由 editppt image edit 在 source.png 上生成，仅去字/去图标），位置为全画布 [0, 0, ${width}, ${height}]，未做任何缩放或拉伸；面板与分隔线按测量色 ${shapes.length} 个原生形状重建，文本框坐标与字号仍只来自 text_hints。`
+        : `背景为边框众数得到的纯色 ${background}；位图区域按 source.png 原像素矩形呈现，构图、透视与位置由裁剪坐标保证，未做任何重绘。`,
       removed_foreground: images.length > 0
         ? `位图区域 ${images.map(item => String(item.id)).join('、')} 保持原样，未从中移除或重绘任何元素；其余文本与形状都是独立原生对象。`
         : '没有把任何前景元素烧进背景：文本与形状都是独立原生对象，本页没有位图层。',
@@ -699,6 +771,237 @@ export function mergeJudgement(input: {
 }
 
 // ---------------------------------------------------------------- prompt
+
+/** Model-supplied shapes, used only when the region layer is disabled. */
+function collectModelShapes(judgement: PageJudgement, width: number, height: number, warnings: string[]): Array<Record<string, unknown>> {
+  const shapes: Array<Record<string, unknown>> = []
+  ;(Array.isArray(judgement.shapes) ? judgement.shapes : []).forEach((item, index) => {
+    const kind = typeof item?.kind === 'string' ? item.kind.trim().toLowerCase() : ''
+    const id = `shape_${index + 1}`
+    const fill = bareHex(item?.fill)
+    const stroke = bareHex(item?.stroke)
+    const strokeWidth = finiteNumber(item?.stroke_pt)
+    if (kind === 'line' || kind === 'arrow') {
+      const points = toPoints(item?.box, width, height)
+      if (points === undefined) return
+      shapes.push({
+        id,
+        type: 'line',
+        points_px: points satisfies BoxPoints,
+        fill: 'none',
+        stroke: stroke ?? '102A43',
+        stroke_width: strokeWidth === undefined ? 1.5 : clamp(strokeWidth, 0.25, 24),
+        start_arrow: 'none',
+        end_arrow: kind === 'arrow' ? 'triangle' : 'none',
+        semantic_line_id: `pipeline-line-${index + 1}`,
+        z_index: 100,
+      })
+      return
+    }
+    const box = toWidthHeight(item?.box, width, height)
+    if (box === undefined) return
+    const type = kind === 'roundRect' || kind === 'ellipse' || kind === 'rect' ? kind : 'rect'
+    if (kind !== '' && type !== kind) warnings.push(`形状 ${id} 的类型 ${kind} 不受支持，已按矩形处理`)
+    const shape: Record<string, unknown> = {
+      id,
+      type,
+      box_px: box satisfies BoxWH,
+      fill: fill ?? 'none',
+      stroke: stroke ?? 'none',
+      ...(strokeWidth === undefined ? {} : { stroke_width: clamp(strokeWidth, 0.25, 24) }),
+      z_index: 100,
+    }
+    if (type === 'roundRect') {
+      const radius = clamp(Math.round(Math.min(box[2], box[3]) / 6), 2, 48)
+      shape.source_corner_radius_px = radius
+      shape.corner_category = 'small-radius'
+    } else {
+      shape.corner_category = 'straight'
+    }
+    shapes.push(shape)
+  })
+  return shapes
+}
+
+/** Split measured regions into native shapes versus crops versus full-bleed base. */
+export function classifyVisual(analysis: VisualAnalysis, width: number, height: number): {
+  panels: VisualRegion[]
+  lines: VisualRegion[]
+  bitmaps: VisualRegion[]
+  fullBleed?: VisualRegion
+  /** Panels whose colour is indistinguishable from the page background. */
+  nearBackgroundPanels: VisualRegion[]
+} {
+  const panels: VisualRegion[] = []
+  const lines: VisualRegion[] = []
+  const bitmaps: VisualRegion[] = []
+  let fullBleed: VisualRegion | undefined
+  for (const region of analysis.regions) {
+    if (isFullBleed(region, width, height, FULL_BLEED_RATIO)) {
+      // Keep the largest one; several full-canvas regions would stack.
+      if (fullBleed === undefined || regionAreaRatio(region, width, height) > regionAreaRatio(fullBleed, width, height)) fullBleed = region
+      continue
+    }
+    if (region.kind === 'line') lines.push(region)
+    else if (region.kind === 'panel') panels.push(region)
+    else bitmaps.push(region)
+  }
+  // Bound the object count: a page measured into dozens of fragments is one
+  // artwork region, and hundreds of shapes make `page build` useless.
+  const cap = (list: VisualRegion[]): VisualRegion[] => list.length <= 24 ? list : list.slice(0, 24)
+  // A panel whose median colour is indistinguishable from the page is not a card:
+  // it is paper. Placed on top of a clean base it hides the real graphics (the
+  // "white blocks over the illustration" the user saw), so the caller keeps these
+  // only when there is no base to show that paper anyway.
+  const backgroundRgb = analysis.backgroundRgb
+  const isPaper = (region: VisualRegion): boolean => {
+    const rgb = hexToRgb(region.color)
+    if (rgb === undefined) return false
+    return Math.abs(rgb[0] - backgroundRgb[0]) + Math.abs(rgb[1] - backgroundRgb[1]) + Math.abs(rgb[2] - backgroundRgb[2]) < 40
+  }
+  const coloured = panels.filter(region => !isPaper(region))
+  const paper = panels.filter(isPaper)
+  return {
+    panels: cap(coloured),
+    lines: cap(lines),
+    bitmaps: cap(bitmaps),
+    nearBackgroundPanels: paper,
+    ...(fullBleed === undefined ? {} : { fullBleed }),
+  }
+}
+
+/** `#RRGGBB` to an RGB triple, or undefined when malformed. */
+function hexToRgb(hex: string): [number, number, number] | undefined {
+  const match = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex.trim())
+  if (match === null) return undefined
+  return [Number.parseInt(match[1]!, 16), Number.parseInt(match[2]!, 16), Number.parseInt(match[3]!, 16)]
+}
+
+/**
+ * Drop text lines that sit inside a cropped bitmap.
+ *
+ * The crop already contains those pixels, so keeping the text box would draw the
+ * same words twice (the overlap the user sees as a smear). Text inside a *panel*
+ * stays: panels are flat native shapes, and that text must remain editable.
+ */
+export function maskTextInsideBitmaps(draft: PageDraft, bitmaps: VisualRegion[], warnings: string[]): PageDraft {
+  if (bitmaps.length === 0) return draft
+  const kept: HintLine[] = []
+  let dropped = 0
+  for (const line of draft.hints) {
+    const box = Array.isArray(line.box_px) && line.box_px.length >= 4 ? line.box_px : undefined
+    if (box === undefined) {
+      kept.push(line)
+      continue
+    }
+    const centreX = box[0] + box[2] / 2
+    const centreY = box[1] + box[3] / 2
+    const covered = bitmaps.some(region => pointInside(region.box, centreX, centreY))
+    if (covered) dropped += 1
+    else kept.push(line)
+  }
+  if (dropped > 0) warnings.push(`${dropped} 行文字落在位图区域内，已只保留位图（避免图文重叠双画）`)
+  return { ...draft, hints: kept }
+}
+
+/**
+ * Attach the generated clean base to a page's visual layer.
+ *
+ * Paper-coloured panels are dropped with it: the base already paints that paper,
+ * so an opaque near-background rectangle on top of it only hides the artwork
+ * underneath — the white blocks over the illustration in the user's screenshot.
+ */
+function attachCleanBase(visual: MeasuredVisual, base: { path: string }, warnings: string[]): MeasuredVisual {
+  const paper = visual.paperPanels ?? []
+  if (paper.length > 0) {
+    warnings.push(`${paper.length} 个与页面底色同色的纸面面板在整页底图下不再落形状（否则会用不透明矩形盖住底图里的图形）`)
+  }
+  // Match by geometry, not identity: the same list is rebuilt every repair round.
+  const keys = new Set(paper.map(entry => entry.box.join(',')))
+  return { ...visual, panels: visual.panels.filter(region => !keys.has(region.box.join(','))), cleanBase: base }
+}
+
+/** One analyzer run over a page's source, or undefined when measurement fails. */
+async function analyzeVisual(deps: DeckPipelineDeps, pageDir: string, runDir: string, timeoutMs: number): Promise<VisualAnalysis | undefined> {
+  const hints = path.join(pageDir, 'text_hints.json')
+  const source = path.join(pageDir, 'source.png')
+  if (!(await exists(source))) return undefined
+  const python = await pythonOf(deps)
+  const output = await runCliSoft(deps, 'visual analyze', [python, ...analyzeArgs(python, source, hints).slice(1)], runDir, timeoutMs)
+  if (!output.ok) return undefined
+  return parseVisualAnalysis(firstJsonObject(output.output))
+}
+
+/**
+ * Share of the source's non-text ink that our rebuilt boxes cover, measured on
+ * the source itself at quarter resolution (the metric the acceptance gate needs —
+ * a text-only page scores near zero instead of passing).
+ */
+async function measureFidelity(deps: DeckPipelineDeps, pageDir: string, runDir: string, boxes: number[][], timeoutMs: number): Promise<FidelityReport | undefined> {
+  const source = path.join(pageDir, 'source.png')
+  const hints = path.join(pageDir, 'text_hints.json')
+  if (!(await exists(source)) || !(await exists(hints)) || boxes.length === 0) return undefined
+  const python = await pythonOf(deps)
+  const output = await runCliSoft(deps, 'visual fidelity', [python, ...fidelityArgs(python, source, hints, JSON.stringify(boxes)).slice(1)], runDir, timeoutMs)
+  if (!output.ok) return undefined
+  return parseFidelityReport(firstJsonObject(output.output))
+}
+
+/** Every placed object's `box_px`, for the fidelity measurement. */
+function boxesOf(manifest: Record<string, unknown>): number[][] {
+  const boxes: number[][] = []
+  for (const key of ['shapes', 'images', 'tables', 'text_boxes']) {
+    const list = Array.isArray(manifest[key]) ? (manifest[key] as Array<Record<string, unknown>>) : []
+    for (const item of list) {
+      const box = item.box_px
+      if (Array.isArray(box) && box.length >= 4) boxes.push(box.slice(0, 4).map(part => Number(part)))
+    }
+  }
+  return boxes
+}
+
+/**
+ * Ask the upstream CLI for a clean base of a page whose artwork is full-canvas.
+ *
+ * Only `editppt image edit` is used — the plugin never talks to an image API
+ * directly, so the backend choice (Codex OAuth first, OpenAI-compatible
+ * fallback) stays exactly where upstream defines it.
+ */
+async function produceCleanBase(deps: DeckPipelineDeps, input: {
+  pageDir: string
+  runDir: string
+  timeoutMs: number
+}): Promise<{ path: string } | undefined> {
+  const promptFile = path.join(input.pageDir, 'clean-base.prompt.txt')
+  await fs.writeFile(promptFile, CLEAN_BASE_PROMPT, 'utf8')
+  const target = path.join(input.pageDir, 'assets', 'clean-base.png')
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  const result = await editpptSoft(deps, 'image edit', [
+    'image', 'edit',
+    '--image', path.join(input.pageDir, 'source.png'),
+    '--prompt-file', promptFile,
+    '--out', target,
+  ], input.runDir, Math.max(input.timeoutMs, 180_000))
+  if (!result.ok || !(await exists(target))) return undefined
+  return { path: 'assets/clean-base.png' }
+}
+
+/**
+ * Prompt for the clean base.
+ *
+ * Scope is deliberate: erase only what the pipeline rebuilds natively (type,
+ * icons, flat UI patches). Real graphics — illustrations, photos, charts,
+ * diagrams and tables with their grids — must survive, because the page keeps no
+ * crops once a clean base exists: anything the base erases and we do not rebuild
+ * is simply gone (that is how a whole table vanished in one live run).
+ */
+const CLEAN_BASE_PROMPT = `Erase ONLY these elements from this slide image and repaint the freed area with the surrounding background so it looks like empty canvas:
+- all text: titles, labels, body copy, numbers, captions, watermarks;
+- all icons, logos and pictograms;
+- flat solid-colour UI patches: cards, panels, pills, buttons, badges, callout boxes, solid header bands, thin divider bars.
+
+Keep every real graphic EXACTLY as it is: illustrations, characters, portraits, photographs, scenes, charts, diagrams, schematics, maps, and tables including their grid lines, cell fills and header shading. Do not simplify, restyle, move, resize, crop or recolour anything you are keeping. Do not add anything. Do not draw any text. Output the same canvas size as the input.`
+
 
 function mimeOf(file: string): string {
   const ext = path.extname(file).toLowerCase()
@@ -851,14 +1154,60 @@ export async function reconstructPage(step: {
     const hints = await readJsonFile<HintsFile>(path.join(pageDir, 'text_hints.json'))
     if (hints === undefined) warnings.push('缺少 text_hints.json，文本框位置无法测量')
     const request = await readJsonFile<PageRequest>(path.join(pageDir, 'page_request.json'))
-    const sample = await pythonImage(deps, ['sample', path.join(pageDir, 'source.png')], runDir)
-    const draft = buildPageDraft({ hints, sample, request })
+    const mode = deps.visualMode?.() ?? 'imagegen'
+    const sample = mode === 'off' ? await pythonImage(deps, ['sample', path.join(pageDir, 'source.png')], runDir) : undefined
+    let draft = buildPageDraft({ hints, sample, request })
     const previewFont = await detectPreviewFont(deps, runDir)
     if (previewFont === undefined) {
       // Without a local font the preview is decoration, not evidence: say so on
       // the event stream instead of shipping a silently blank page image.
       warnings.push('未找到本机中文字体，preview.png 可能无法显示中文（page.pptx 本身不受影响）')
       emit('ppt.activityValidating', 'warning')
+    }
+
+    // -------------------------------------------------- measured visual layer
+    let visual: MeasuredVisual | undefined
+    let sourceInk = 0
+    let cleanBaseFailed = false
+    if (mode !== 'off') {
+      const analysis = await analyzeVisual(deps, pageDir, runDir, step.timeoutMs)
+      if (analysis === undefined) {
+        warnings.push('视觉区域测量不可用，本页只按模型判断重建')
+      } else {
+        // The border mode, never the corners: artwork in the corners produced a
+        // muddy `#6A6371` page fill on a `#F0F0F0` slide in the postmortem.
+        draft = { ...draft, background: analysis.background }
+        sourceInk = Math.max(0, analysis.nonTextInkPct) / 100
+        const classified = classifyVisual(analysis, draft.sourceWidth, draft.sourceHeight)
+        // Paper-coloured panels stay in the drawn set for now; `attachCleanBase`
+        // removes them if this page ends up with a clean base.
+        visual = {
+          panels: [...classified.panels, ...classified.nearBackgroundPanels],
+          lines: classified.lines,
+          bitmaps: classified.bitmaps,
+          paperPanels: classified.nearBackgroundPanels,
+        }
+        if (classified.fullBleed !== undefined) {
+          if (mode === 'imagegen') {
+            emit('ppt.activityAssets', 'running')
+            const base = await produceCleanBase(deps, { pageDir, runDir, timeoutMs: step.timeoutMs })
+            if (base === undefined) {
+              cleanBaseFailed = true
+              warnings.push('整页底图生成失败（editppt image edit 未产出 assets/clean-base.png），本页只有文字与测量形状，背景未还原')
+              emit('ppt.activityValidating', 'warning')
+            } else {
+              visual = attachCleanBase(visual, base, warnings)
+            }
+          } else {
+            // A page whose artwork covers the canvas cannot be finished without an
+            // image backend, and shipping the text-only shell is exactly the false
+            // success the postmortem is about. Fail the page, loudly.
+            throw new Error(`${pageId} 是图为主页面（整页底图占 ${Math.round(regionAreaRatio(classified.fullBleed, draft.sourceWidth, draft.sourceHeight) * 100)}% 面积），当前未启用图像后端（visualMode=${mode}），背景无法还原；本页判为失败而不是交白卷`)
+          }
+        }
+        // Text masking is decided per build round (it depends on whether crops
+        // survive), so the draft keeps every measured line for now.
+      }
     }
 
     const parts = await judgementParts({ pageDir, draft, contract: step.contract })
@@ -886,11 +1235,42 @@ export async function reconstructPage(step: {
     emit('ppt.activityJudgement', 'done')
 
     const reportPath = path.join(pageDir, 'validation.json')
+    const counts = {
+      panels: visual?.panels.length ?? 0,
+      bitmaps: (visual?.bitmaps.length ?? 0) + (visual?.cleanBase !== undefined ? 1 : 0),
+      lines: visual?.lines.length ?? 0,
+    }
     let round = 0
+    let fidelityRound = 0
+    let cropNoticeLogged = false
+    let maskedDraft: PageDraft | undefined
+    let fidelity: FidelityReport | undefined
     for (;;) {
-      const assets = await cropPictures(deps, { pageDir, draft, judgement, runDir, timeoutMs: step.timeoutMs, warnings })
+      // Crops come from measured regions whenever the region layer is on; the
+      // model's own picture guesses are only used in `off` mode.
+      // With a clean base the artwork already lives in that base, so crops are
+      // dropped: pasting them again is the double-image ghosting seen live, and
+      // the base prompt now keeps every real graphic anyway. Panels and lines are
+      // still rebuilt as native shapes in both paths.
+      const skipCrops = visual !== undefined && visual.cleanBase !== undefined
+      // Text is only hidden behind a crop that actually gets pasted. A clean base
+      // erases typography by contract, so dropping those lines there would lose
+      // the words twice: not in the base, not in a text box.
+      const workingDraft = skipCrops || visual === undefined
+        ? draft
+        : (maskedDraft ??= maskTextInsideBitmaps(draft, visual.bitmaps, warnings))
+      const assets = visual === undefined
+        ? await cropPictures(deps, { pageDir, draft: workingDraft, judgement, runDir, timeoutMs: step.timeoutMs, warnings })
+        : skipCrops
+          ? []
+          : await cropRegions(deps, { pageDir, regions: visual.bitmaps, draft: workingDraft, runDir, timeoutMs: step.timeoutMs, warnings })
+      const droppedCrops = visual?.bitmaps.length ?? 0
+      if (skipCrops && droppedCrops > 0 && !cropNoticeLogged) {
+        cropNoticeLogged = true
+        warnings.push(`整页底图已保留真实图形，${droppedCrops} 个位图区域不再单独贴图（避免同一插画出现两份造成鬼影）`)
+      }
       if (assets.length > 0) emit('ppt.activityBuilding', 'running')
-      const manifest = mergeJudgement({ draft, judgement, request, pageId, assetPaths: assets, warnings, previewFont })
+      const manifest = mergeJudgement({ draft: workingDraft, judgement, request, pageId, assetPaths: assets, warnings, previewFont, ...(visual === undefined ? {} : { visual }) })
       await writeJsonNoBom(path.join(pageDir, 'manifest.json'), manifest)
       emit('ppt.activityBuildingPage', 'running')
       await editppt(deps, 'page build', ['page', 'build', pageDir], runDir, step.timeoutMs)
@@ -899,14 +1279,39 @@ export async function reconstructPage(step: {
       const written = await readJsonFile<Record<string, unknown>>(reportPath)
       const problems = validationProblems(written)
       if (written?.passed === true && problems.length === 0) {
+        // Fidelity is measured on what we actually rebuilt: the share of the
+        // source's non-text ink that our object boxes cover. A page that is only
+        // text scores ~0 here, which is what the acceptance gate must see.
+        if (visual !== undefined) {
+          fidelity = await measureFidelity(deps, pageDir, runDir, boxesOf(manifest), step.timeoutMs)
+          if (fidelity !== undefined) sourceInk = Math.max(0, fidelity.sourceInkPct) / 100
+          if (fidelity !== undefined && fidelity.fidelity < FIDELITY_MIN && mode === 'imagegen' && visual.cleanBase === undefined && !cleanBaseFailed && fidelityRound < MAX_FIDELITY_ROUNDS) {
+            fidelityRound += 1
+            emit('ppt.activityAssets', 'running')
+            const base = await produceCleanBase(deps, { pageDir, runDir, timeoutMs: step.timeoutMs })
+            if (base !== undefined) {
+              visual = attachCleanBase(visual, base, warnings)
+              continue
+            }
+            cleanBaseFailed = true
+            warnings.push(`视觉还原度 ${fidelity.fidelity} 低于 ${FIDELITY_MIN}，但整页底图生成失败（editppt image edit 未产出 assets/clean-base.png）`)
+          } else if (fidelity !== undefined && fidelity.fidelity < FIDELITY_MIN) {
+            warnings.push(`视觉还原度 ${fidelity.fidelity}（源图非文字墨迹被本页对象覆盖的比例）低于 ${FIDELITY_MIN}：这页以图为主，未启用的图像后端无法补齐底图`)
+            emit('ppt.activityValidating', 'warning')
+          }
+        }
         // The contact sheet is one of the six recorded outputs, so it has to be
         // produced from the final build rather than an earlier attempt.
         await editppt(deps, 'page contact-sheet', ['page', 'contact-sheet', pageDir], runDir, step.timeoutMs)
-        await writePageResult({ pageDir, pageId, agentId, manifest, warnings, round })
+        // Counts describe what the deck actually contains: with a clean base the
+        // crops are gone by design, and `panels/bitmaps/lines` feed the host's
+        // per-page progress line.
+        const placed = placedCounts(manifest)
+        await writePageResult({ pageDir, pageId, agentId, manifest, warnings, round, counts: placed, fidelity, sourceInk })
         emit('ppt.activityRecording', 'running')
         await withRunState(runDir, () => editppt(deps, 'run record', ['run', 'record', runDir, '--page', pageId, '--agent-id', agentId], runDir, step.timeoutMs))
         emit('ppt.activityRecording', 'done')
-        return { page: index, state: 'recorded', objects: countObjects(manifest), warnings }
+        return { page: index, state: 'recorded', objects: countObjects(manifest), warnings, regions: placed, sourceInk, ...(fidelity === undefined ? {} : { fidelity: fidelity.fidelity }) }
       }
       if (round >= MAX_REPAIR_ROUNDS) {
         const detail = problems.length > 0 ? problems.join('；') : tailOf(validate.output)
@@ -932,6 +1337,23 @@ export async function reconstructPage(step: {
     }
   } finally {
     budget.dispose()
+  }
+}
+
+/**
+ * Region counts as actually placed on the page.
+ *
+ * Measured counts are the input to the decision; the host's progress line and the
+ * visual-loss gate must describe the deck, so crops that the clean-base path
+ * deliberately drops are reported as not placed.
+ */
+function placedCounts(manifest: Record<string, unknown>): { panels: number; bitmaps: number; lines: number } {
+  const images = Array.isArray(manifest.images) ? (manifest.images as Array<Record<string, unknown>>) : []
+  const shapes = Array.isArray(manifest.shapes) ? (manifest.shapes as Array<Record<string, unknown>>) : []
+  return {
+    panels: shapes.filter(shape => shape.type !== 'line').length,
+    bitmaps: images.filter(image => String(image.path ?? '').startsWith('assets/photo_')).length,
+    lines: shapes.filter(shape => shape.type === 'line').length,
   }
 }
 
@@ -976,6 +1398,64 @@ function countObjects(manifest: Record<string, unknown>): number {
  * be cropped is dropped with a warning: a missing picture is recoverable, while
  * a fabricated file would break `run record` hashes.
  */
+interface CropRequest {
+  box: BoxWH
+  sourceBox: BoxWH
+  label: string
+}
+
+/** Crop a list of source-pixel rectangles into `assets/`, dropping failures loudly. */
+async function cropList(deps: DeckPipelineDeps, input: {
+  pageDir: string
+  runDir: string
+  timeoutMs: number
+  warnings: string[]
+  requests: CropRequest[]
+}): Promise<Array<{ path: string; box: BoxWH; label: string; sourceBox: BoxWH }>> {
+  if (input.requests.length === 0) return []
+  const assetsDir = path.join(input.pageDir, 'assets')
+  await fs.mkdir(assetsDir, { recursive: true })
+  const source = path.join(input.pageDir, 'source.png')
+  const python = await pythonOf(deps)
+  const out: Array<{ path: string; box: BoxWH; label: string; sourceBox: BoxWH }> = []
+  for (const [offset, request] of input.requests.entries()) {
+    assertActive(deps.signal)
+    const name = `photo_${String(offset + 1).padStart(3, '0')}.png`
+    const target = path.join(assetsDir, name)
+    const cropped = await runCliSoft(deps, 'image crop', [
+      python, '-c', PYTHON_IMAGE_SCRIPT, 'crop', source, target,
+      String(request.sourceBox[0]), String(request.sourceBox[1]), String(request.sourceBox[2]), String(request.sourceBox[3]),
+    ], input.runDir, input.timeoutMs)
+    if (!cropped.ok || !(await exists(target))) {
+      input.warnings.push(`位图区域 ${offset + 1} 裁剪失败，已丢弃：${tailOf(cropped.output)}`)
+      continue
+    }
+    out.push({ path: `assets/${name}`, box: request.box, label: request.label, sourceBox: request.sourceBox })
+  }
+  return out
+}
+
+/** Crops for the measured bitmap regions (one per palette-colour blob). */
+async function cropRegions(deps: DeckPipelineDeps, input: {
+  pageDir: string
+  regions: VisualRegion[]
+  draft: PageDraft
+  runDir: string
+  timeoutMs: number
+  warnings: string[]
+}): Promise<Array<{ path: string; box: BoxWH; label: string; sourceBox: BoxWH }>> {
+  const requests: CropRequest[] = []
+  for (const region of input.regions) {
+    const box = toWidthHeight(region.box, input.draft.sourceWidth, input.draft.sourceHeight)
+    if (box === undefined) {
+      input.warnings.push(`位图区域（palette ${region.paletteIndex ?? '?'}）坐标越界，已丢弃`)
+      continue
+    }
+    requests.push({ box, sourceBox: box, label: `源图位图区域 ${requests.length + 1}（调色板色 ${region.color}${region.areaPct > 0 ? `，占页 ${region.areaPct}%` : ''}）` })
+  }
+  return cropList(deps, { pageDir: input.pageDir, runDir: input.runDir, timeoutMs: input.timeoutMs, warnings: input.warnings, requests })
+}
+
 async function cropPictures(deps: DeckPipelineDeps, input: {
   pageDir: string
   draft: PageDraft
@@ -985,38 +1465,21 @@ async function cropPictures(deps: DeckPipelineDeps, input: {
   warnings: string[]
 }): Promise<Array<{ path: string; box: BoxWH; label: string; sourceBox: BoxWH }>> {
   const regions = Array.isArray(input.judgement.pictures) ? input.judgement.pictures : []
-  if (regions.length === 0) return []
-  const assetsDir = path.join(input.pageDir, 'assets')
-  await fs.mkdir(assetsDir, { recursive: true })
-  const source = path.join(input.pageDir, 'source.png')
-  const python = await pythonOf(deps)
-  const out: Array<{ path: string; box: BoxWH; label: string; sourceBox: BoxWH }> = []
+  const requests: CropRequest[] = []
   for (const [offset, region] of regions.entries()) {
-    assertActive(deps.signal)
     const sourceBox = toWidthHeight(region?.source_box ?? region?.box, input.draft.sourceWidth, input.draft.sourceHeight)
     const box = toWidthHeight(region?.box, input.draft.sourceWidth, input.draft.sourceHeight)
     if (sourceBox === undefined || box === undefined) {
       input.warnings.push(`位图区域 ${offset + 1} 的坐标无效，已丢弃`)
       continue
     }
-    const name = `photo_${String(offset + 1).padStart(3, '0')}.png`
-    const target = path.join(assetsDir, name)
-    const cropped = await runCliSoft(deps, 'image crop', [
-      python, '-c', PYTHON_IMAGE_SCRIPT, 'crop', source, target,
-      String(sourceBox[0]), String(sourceBox[1]), String(sourceBox[2]), String(sourceBox[3]),
-    ], input.runDir, input.timeoutMs)
-    if (!cropped.ok || !(await exists(target))) {
-      input.warnings.push(`位图区域 ${offset + 1} 裁剪失败，已丢弃：${tailOf(cropped.output)}`)
-      continue
-    }
-    out.push({
-      path: `assets/${name}`,
+    requests.push({
       box,
-      label: typeof region?.label === 'string' && region.label.trim() !== '' ? region.label.trim() : `源图位图区域 ${offset + 1}`,
       sourceBox,
+      label: typeof region?.label === 'string' && region.label.trim() !== '' ? region.label.trim() : `源图位图区域 ${offset + 1}`,
     })
   }
-  return out
+  return cropList(deps, { pageDir: input.pageDir, runDir: input.runDir, timeoutMs: input.timeoutMs, warnings: input.warnings, requests })
 }
 
 async function writePageResult(input: {
@@ -1026,6 +1489,9 @@ async function writePageResult(input: {
   manifest: Record<string, unknown>
   warnings: string[]
   round: number
+  counts: { panels: number; bitmaps: number; lines: number }
+  sourceInk: number
+  fidelity?: FidelityReport
 }): Promise<void> {
   // The first seven keys are `run record`'s required outputs, named exactly as
   // references/manifest-schema.md specifies and resolved against the page dir.
@@ -1044,6 +1510,11 @@ async function writePageResult(input: {
     image_jobs_used: 0,
     repair_rounds: input.round,
     objects: countObjects(input.manifest),
+    visual_regions: input.counts,
+    visual_source_ink: input.sourceInk,
+    fidelity: input.fidelity?.fidelity,
+    fidelity_source_ink_pct: input.fidelity?.sourceInkPct,
+    fidelity_covered_ink_pct: input.fidelity?.previewInkPct,
     summary: String((input.manifest.strategy as { summary?: string } | undefined)?.summary ?? ''),
     notes: input.warnings.length > 0 ? input.warnings.join('；').slice(0, 500) : '无告警',
   })
@@ -1203,7 +1674,7 @@ export async function runDeckPipeline(
         if (isAbort(error)) throw error
         const message = error instanceof Error ? error.message : String(error)
         failures.push(message)
-        return { page: indexOfPageId(id, index), state: 'failed', objects: 0, warnings: [message.slice(0, 500)] }
+        return { page: indexOfPageId(id, index), state: 'failed', objects: 0, warnings: [message.slice(0, 500)], regions: { panels: 0, bitmaps: 0, lines: 0 }, sourceInk: 0 }
       }
     }))
     outcomes.push(...results)
@@ -1235,7 +1706,15 @@ export async function runDeckPipeline(
     reportPath: path.join(finalDir, 'validation.json'),
     runSummaryPath: path.join(finalDir, 'run_summary.json'),
     previews,
-    pages: outcomes.map(outcome => ({ page: outcome.page, state: outcome.state, objects: outcome.objects, warnings: outcome.warnings })),
+    pages: outcomes.map(outcome => ({
+      page: outcome.page,
+      state: outcome.state,
+      objects: outcome.objects,
+      warnings: outcome.warnings,
+      regions: outcome.regions,
+      sourceInk: outcome.sourceInk,
+      ...(outcome.fidelity === undefined ? {} : { fidelity: outcome.fidelity }),
+    })),
     runDirectory: absoluteRunDir,
   }
 }
