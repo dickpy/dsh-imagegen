@@ -169,44 +169,40 @@ export function apply(ctx: ClientContext): void {
     }, ImageGenSettingsSection)
   })
 
-  // The same configuration also ships as a tab on the Plugins page, so users who
-  // live in the plugin inventory find it without leaving that page. Both entries
-  // share one controller, hence one set of staged drafts.
+  // The same configuration also ships inside the plugin's *detail* page (插件 →
+  // 已安装 → @dickpy/dsh-imagegen), where a user who clicks the plugin expects it.
+  // DSH renders a bundle's own config through the keyed slot
+  // `plugins.bundle.config`, keyed by the bundle's npm package name, between the
+  // description and the component rows - that is the seat dsh-claude-style uses
+  // for its tabs. Both entries share one controller, hence one set of drafts.
   //
-  // DSH renamed this seat: the 0.1.x types this plugin compiles against declare
-  // `settings.plugins.tab`, while the 0.2.x desktop builds declare `plugins.tab`.
-  // The slot name IS the registration key, and registering into a name the host
-  // does not declare is a silent no-op - which is exactly how the tab stayed
-  // invisible. Register into both; the one the host declares wins, the other is
-  // a no-op, and a host with neither degrades (no tab) instead of failing boot.
-  for (const slot of ['plugins.tab', 'settings.plugins.tab'] as const) {
-    ctx.effect(() => {
-      try {
-        return ctx.slots.inject(slot as 'plugins.tab', () => {
-          try {
-            const dispose = ctx.slots.register({
-              name: slot as 'plugins.tab',
-              id: 'imagegen',
-              order: 20,
-              label: () => tt('entry.settings'),
-              locale: NS,
-              inject: () => settingsCard.inject(),
-            }, ImageGenPluginsTab)
-            bootReport.registered.push(slot)
-            return dispose
-          } catch (error) {
-            bootReport.errors.push(`${slot}: ${error instanceof Error ? error.message : String(error)}`)
-            console.warn(`[dsh-imagegen] plugins tab not registered on ${slot}:`, error)
-            return () => {}
-          }
-        })
-      } catch (error) {
-        bootReport.errors.push(`${slot} inject: ${error instanceof Error ? error.message : String(error)}`)
-        console.warn(`[dsh-imagegen] ${slot} slot unavailable:`, error)
-        return () => {}
-      }
-    }, `dsh-imagegen: plugins tab (${slot})`)
-  }
+  // The older `plugins.tab` / `settings.plugins.tab` list seats are gone on
+  // purpose: they put the same form in the page header, which is not where a
+  // per-plugin configuration belongs.
+  ctx.effect(() => {
+    try {
+      return ctx.slots.inject('plugins.bundle.config', () => {
+        try {
+          const dispose = ctx.slots.register({
+            name: 'plugins.bundle.config',
+            key: '@dickpy/dsh-imagegen',
+            locale: NS,
+            inject: () => settingsCard.inject(),
+          }, ImageGenPluginsTab)
+          bootReport.registered.push('plugins.bundle.config')
+          return dispose
+        } catch (error) {
+          bootReport.errors.push(`plugins.bundle.config: ${error instanceof Error ? error.message : String(error)}`)
+          console.warn('[dsh-imagegen] plugin detail config not registered:', error)
+          return () => {}
+        }
+      })
+    } catch (error) {
+      bootReport.errors.push(`plugins.bundle.config inject: ${error instanceof Error ? error.message : String(error)}`)
+      console.warn('[dsh-imagegen] plugins.bundle.config slot unavailable:', error)
+      return () => {}
+    }
+  }, 'dsh-imagegen: plugin detail config')
 
   // In-app "configure" prompts open the Settings dialog and select this page.
   // The host exposes no public openSection API, so use the rendered dialog's
