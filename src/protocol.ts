@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.15.1'
+export const PLUGIN_VERSION = '1.15.2'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -127,6 +127,19 @@ export const DATA_FOLDER_API = '/api/dsh-imagegen/data-folder/open' as const
 export const DIAGNOSTICS_API = {
   list: '/api/dsh-imagegen/diagnostics/list',
   clear: '/api/dsh-imagegen/diagnostics/clear',
+} as const
+
+/**
+ * Client-plugin boot report.
+ *
+ * The client bundle is served by the host and may be cached by the renderer, so
+ * "the UI did not change" has two very different causes: a stale bundle, or a
+ * registration that never seated. The client posts which build booted and which
+ * slots it registered; this route keeps the last report in memory so a support
+ * session can tell those apart without a screenshot.
+ */
+export const CLIENT_BOOT_API = {
+  report: '/api/dsh-imagegen/client-boot',
 } as const
 
 /** Probe the configured S3-compatible object storage. */

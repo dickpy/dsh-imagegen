@@ -30,10 +30,20 @@ import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate, updateInstallTarget, type UpdateHostContext } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
 import { clearDiagnostics, listDiagnostics } from './diagnostics-store.ts'
-import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, REVERSE_PROMPT_API, SETTINGS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isChannelProtocolPreference, isTemplateSourceId, type PptRunRequest, type PptRuntimeStatus, type ReversePromptRequest, type ReversePromptResult, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CLIENT_BOOT_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, REVERSE_PROMPT_API, SETTINGS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isChannelProtocolPreference, isTemplateSourceId, type PptRunRequest, type PptRuntimeStatus, type ReversePromptRequest, type ReversePromptResult, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
+
+/** Last client-plugin boot report, kept in memory for support diagnostics. */
+let lastClientBoot: {
+  version: string
+  slots: unknown[]
+  registered: unknown[]
+  errors: unknown[]
+  userAgent: string
+  receivedAt: number
+} | undefined
 
 /** Cap on history append bodies (base64 result images can be much larger). */
 const MAX_HISTORY_BODY_BYTES = 64 * 1024 * 1024
@@ -879,6 +889,27 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         if (!guard(req, res, 'POST')) return
         clearDiagnostics()
         writeJson(res, 200, { ok: true })
+      },
+    },
+    // Client boot report: which build loaded and which slots it seated. The
+    // renderer can cache the client bundle, so this is the one honest answer to
+    // "did my change reach the page?" - read it back with an empty POST.
+    {
+      kind: 'exact', path: CLIENT_BOOT_API.report,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (body !== undefined && typeof body.version === 'string') {
+          lastClientBoot = {
+            version: body.version,
+            slots: Array.isArray(body.slots) ? body.slots : [],
+            registered: Array.isArray(body.registered) ? body.registered : [],
+            errors: Array.isArray(body.errors) ? body.errors : [],
+            userAgent: typeof body.userAgent === 'string' ? body.userAgent.slice(0, 200) : '',
+            receivedAt: Date.now(),
+          }
+        }
+        writeJson(res, 200, { ok: true, last: lastClientBoot ?? null })
       },
     },
     {

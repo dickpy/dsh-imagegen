@@ -32,6 +32,37 @@ import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entr
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
 import { registerImageToolviews, type ImageToolViewOwnerProps } from './image-toolview.tsx'
 import type { ConversationService } from './conversation-sync.ts'
+import { CLIENT_BOOT_API, PLUGIN_VERSION } from '../protocol.ts'
+
+/**
+ * What this client build managed to register, posted to the host once per boot.
+ *
+ * A renderer can keep serving a cached client bundle, so "the change did not
+ * show" is ambiguous: stale bundle, or a slot that never seated. This report is
+ * the difference - the host keeps the last one and support can read it back.
+ */
+const bootReport = {
+  slots: ['settings.section', 'plugins.tab', 'settings.plugins.tab'],
+  registered: [] as string[],
+  errors: [] as string[],
+}
+
+/** Send the boot report; a missing host route is not an error worth surfacing. */
+function reportClientBoot(): void {
+  try {
+    void fetch(CLIENT_BOOT_API.report, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        version: PLUGIN_VERSION,
+        slots: bootReport.slots,
+        registered: bootReport.registered,
+        errors: bootReport.errors,
+        userAgent: typeof navigator === 'undefined' ? '' : navigator.userAgent,
+      }),
+    }).catch(() => { /* diagnostics only */ })
+  } catch { /* diagnostics only */ }
+}
 
 /** Locale namespace this plugin owns. */
 const NS = 'dsh-imagegen'
@@ -126,14 +157,17 @@ export function apply(ctx: ClientContext): void {
   // Plugin configuration: one staged form over the `dsh-imagegen` scope,
   // registered as its own page in the Settings dialog's left navigation.
   const settingsCard = new ImageGenSettingsCardController(scope)
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: IMAGE_GEN_SECTION_ID,
-    order: 16,
-    label: () => tt('entry.settings'),
-    locale: NS,
-    inject: () => settingsCard.inject(),
-  }, ImageGenSettingsSection))
+  ctx.slots.inject('settings.section', () => {
+    bootReport.registered.push('settings.section')
+    return ctx.slots.register({
+      name: 'settings.section',
+      id: IMAGE_GEN_SECTION_ID,
+      order: 16,
+      label: () => tt('entry.settings'),
+      locale: NS,
+      inject: () => settingsCard.inject(),
+    }, ImageGenSettingsSection)
+  })
 
   // The same configuration also ships as a tab on the Plugins page, so users who
   // live in the plugin inventory find it without leaving that page. Both entries
@@ -150,7 +184,7 @@ export function apply(ctx: ClientContext): void {
       try {
         return ctx.slots.inject(slot as 'plugins.tab', () => {
           try {
-            return ctx.slots.register({
+            const dispose = ctx.slots.register({
               name: slot as 'plugins.tab',
               id: 'imagegen',
               order: 20,
@@ -158,12 +192,16 @@ export function apply(ctx: ClientContext): void {
               locale: NS,
               inject: () => settingsCard.inject(),
             }, ImageGenPluginsTab)
+            bootReport.registered.push(slot)
+            return dispose
           } catch (error) {
+            bootReport.errors.push(`${slot}: ${error instanceof Error ? error.message : String(error)}`)
             console.warn(`[dsh-imagegen] plugins tab not registered on ${slot}:`, error)
             return () => {}
           }
         })
       } catch (error) {
+        bootReport.errors.push(`${slot} inject: ${error instanceof Error ? error.message : String(error)}`)
         console.warn(`[dsh-imagegen] ${slot} slot unavailable:`, error)
         return () => {}
       }
@@ -307,4 +345,9 @@ export function apply(ctx: ClientContext): void {
   scopeDisposer = scope.subscribe(syncEnabled)
   syncEnabled()
   ctx.effect(() => () => { uiLease.release() }, 'dsh-imagegen: client UI mount')
+  // Report the boot twice: the settings page seats synchronously, while a Plugins
+  // tab only seats once the host declares its slot - which may happen later. A
+  // host without timers (the jsdom test sandbox) still gets the first report.
+  reportClientBoot()
+  if (typeof setTimeout === 'function') setTimeout(reportClientBoot, 2_000)
 }
