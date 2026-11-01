@@ -27,6 +27,7 @@ import { en, ru, zh, type ImageGenKey } from './locales.ts'
 import { mountPanel } from './mount.tsx'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { ImageGenSettingsSection, ImageGenSettingsCardController } from './SettingsCard.tsx'
+import { ImageGenPluginsTab } from './PluginsTab.tsx'
 import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entry.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
 import { registerImageToolviews, type ImageToolViewOwnerProps } from './image-toolview.tsx'
@@ -133,6 +134,34 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     inject: () => settingsCard.inject(),
   }, ImageGenSettingsSection))
+
+  // The same configuration also ships as a tab inside Settings → Plugins, so
+  // users who live in the plugin inventory find it without leaving that page.
+  // Both entries share one controller, hence one set of staged drafts. The
+  // Plugins section owns the slot declaration; a host build without it must
+  // degrade (no tab) instead of failing the GUI boot.
+  ctx.effect(() => {
+    try {
+      return ctx.slots.inject('settings.plugins.tab', () => {
+        try {
+          return ctx.slots.register({
+            name: 'settings.plugins.tab',
+            id: 'imagegen',
+            order: 20,
+            label: () => tt('entry.settings'),
+            locale: NS,
+            inject: () => settingsCard.inject(),
+          }, ImageGenPluginsTab)
+        } catch (error) {
+          console.warn('[dsh-imagegen] plugins tab not registered:', error)
+          return () => {}
+        }
+      })
+    } catch (error) {
+      console.warn('[dsh-imagegen] settings.plugins.tab slot unavailable:', error)
+      return () => {}
+    }
+  }, 'dsh-imagegen: plugins tab')
 
   // In-app "configure" prompts open the Settings dialog and select this page.
   // The host exposes no public openSection API, so use the rendered dialog's

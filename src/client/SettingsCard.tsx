@@ -234,34 +234,64 @@ interface UsageCounters {
 
 type SettingsSectionId = 'channels' | 'prompt' | 'storage' | 'skills' | 'general' | null
 
-/** One mutually-exclusive settings group. */
-function SettingsSection(props: {
+/**
+ * One settings group card: a title row, one line of explanation, then content.
+ *
+ * The settings page collapses groups (one open at a time, left accent bar on
+ * the open one); the Plugins tab keeps every visible group open and uses a
+ * static header, because its sub-tab bar already owns the selection. Both
+ * surfaces render the same group definitions through this component, so a
+ * field is never declared twice.
+ */
+function SettingsGroup(props: {
   id: Exclude<SettingsSectionId, null>
   title: string
   hint: string
-  summary: string
+  summary?: string
   tone?: 'neutral' | 'ready' | 'attention'
+  /** Open (and accent-highlighted). */
   expanded: boolean
+  /** The settings page toggles; the tab page renders a static header. */
+  collapsible: boolean
+  /** The tab page hides groups that belong to another sub-tab. */
+  hidden?: boolean
   onToggle: () => void
   children: ReactNode
 }) {
+  if (props.hidden === true) return null
   const contentId = `dsh-imagegen-settings-${props.id}`
+  const head = (
+    <>
+      <span className={css.sectionToggleText}>
+        <span className={css.sectionToggleTitle}>{props.title}</span>
+        <span className={css.sectionToggleHint}>{props.hint}</span>
+      </span>
+      {props.summary === undefined
+        ? null
+        : <span className={css.sectionSummary} data-tone={props.tone ?? 'neutral'}>{props.summary}</span>}
+      {props.collapsible ? <span className={css.sectionChevron} aria-hidden="true">{props.expanded ? '⌃' : '⌄'}</span> : null}
+    </>
+  )
   return (
-    <section className={css.settingsSection} data-open={props.expanded ? '' : undefined}>
-      <button
-        type="button"
-        className={css.sectionToggle}
-        aria-expanded={props.expanded}
-        aria-controls={contentId}
-        onClick={props.onToggle}
-      >
-        <span className={css.sectionToggleText}>
-          <span className={css.sectionToggleTitle}>{props.title}</span>
-          <span className={css.sectionToggleHint}>{props.hint}</span>
-        </span>
-        <span className={css.sectionSummary} data-tone={props.tone ?? 'neutral'}>{props.summary}</span>
-        <span className={css.sectionChevron} aria-hidden="true">{props.expanded ? '⌃' : '⌄'}</span>
-      </button>
+    <section
+      className={css.settingsSection}
+      data-open={props.expanded ? '' : undefined}
+      data-active={props.expanded ? '' : undefined}
+      data-group={props.id}
+    >
+      {props.collapsible
+        ? (
+          <button
+            type="button"
+            className={css.sectionToggle}
+            aria-expanded={props.expanded}
+            aria-controls={contentId}
+            onClick={props.onToggle}
+          >
+            {head}
+          </button>
+        )
+        : <div className={css.sectionToggle} data-static="">{head}</div>}
       {props.expanded ? <div id={contentId} className={css.sectionContent}>{props.children}</div> : null}
     </section>
   )
@@ -272,7 +302,44 @@ function SettingsSection(props: {
  * @param props - locale copy, the card snapshot, and the form actions.
  * @returns the card, or nothing while the namespace is still loading.
  */
-export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
+/** Which surface renders the groups: the Settings page, or the Plugins tab. */
+export type SettingsSurfaceMode = 'section' | 'tabs'
+
+/** Sub-tabs of the Plugins surface, in display order. */
+const PLUGINS_TABS = ['channels', 'storage', 'skills', 'general'] as const
+type PluginsTabId = typeof PLUGINS_TABS[number]
+
+/** Copy key of each sub-tab's label (the overview strip reuses the same keys). */
+const PLUGINS_TAB_LABELS: Record<PluginsTabId, ImageGenKey> = {
+  channels: 'settings.summaryChannelsLabel',
+  storage: 'settings.summaryStorageLabel',
+  skills: 'settings.summarySkillsLabel',
+  general: 'settings.summaryGeneralLabel',
+}
+
+/** Groups each sub-tab shows: channels and prompt enhancement belong together. */
+const PLUGINS_TAB_GROUPS: Record<PluginsTabId, ReadonlyArray<Exclude<SettingsSectionId, null>>> = {
+  channels: ['channels', 'prompt'],
+  storage: ['storage'],
+  skills: ['skills'],
+  general: ['general'],
+}
+
+/** Props the shared surface needs: the slot's inject face plus the locale seat. */
+export type ImageGenSettingsSurfaceProps =
+  PropsLocale<'dsh-imagegen'>
+  & InjectFace<ImageGenSettingsCardFace>
+
+/**
+ * Render the configuration groups, for either surface.
+ *
+ * One implementation backs both entries: `ImageGenSettingsSection` mounts it
+ * as a collapsible card in the Settings navigation, `ImageGenPluginsTab`
+ * mounts it as a four-tab page inside Settings → Plugins. Both share the same
+ * `ImageGenSettingsCardController`, so staged drafts are one set of edits.
+ */
+export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { mode: SettingsSurfaceMode }) {
+  const isTabs = props.mode === 'tabs'
   // The card renders through the plugin's own dictionary so the uiLanguage
   // override applies here too — the host-locale props.t would only follow the
   // DSH interface language.
@@ -485,6 +552,15 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   }
 
   if (!state.exposed) {
+    // Inside the Plugins tab the section shell owns the page chrome, so the
+    // unavailable state is just the explanation, not a nested collapsible card.
+    if (isTabs) {
+      return (
+        <section className={css.tabPanel} data-dsh-imagegen-settings-panel data-imagegen-plugins-tab="">
+          <p className={css.notExposed} role="status">{t('settings.notExposed')}</p>
+        </section>
+      )
+    }
     return (
       <section className={css.card} data-dsh-imagegen-settings-panel>
         <button
@@ -531,12 +607,636 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
     ? t('settings.headerNeedsChannel')
     : t('settings.headerSummary', { channels: channels.length, models: totalModels })
   const summaryItems: Array<{ id: Exclude<SettingsSectionId, null>; label: string; value: string; tone?: 'neutral' | 'ready' | 'attention' }> = [
-    { id: 'channels', label: t('settings.summaryChannelsLabel'), value: channelSummary, tone: readyChannels > 0 ? 'ready' : 'attention' },
+    { id: 'channels', label: t('settings.summaryChannelsLabel'), value: totalModels === 0 ? channelSummary : `${channelSummary} · ${t('channels.modelCount', { n: totalModels })}`, tone: readyChannels > 0 ? 'ready' : 'attention' },
     { id: 'prompt', label: t('settings.summaryPromptLabel'), value: promptSummary },
     { id: 'storage', label: t('settings.summaryStorageLabel'), value: storageSummary, tone: state.storageEnabled.text === 'true' ? 'ready' : 'neutral' },
     { id: 'skills', label: t('settings.summarySkillsLabel'), value: skillsSummary, tone: state.skillsEnabled.text === 'false' ? 'neutral' : 'ready' },
     { id: 'general', label: t('settings.summaryGeneralLabel'), value: generalSummary, tone: state.enabled.text === 'false' ? 'attention' : 'ready' },
   ]
+  /** The sub-tab the Plugins surface shows; prompt enhancement lives under channels. */
+  const pluginsTab: PluginsTabId = activeSection !== null && (PLUGINS_TABS as readonly string[]).includes(activeSection)
+    ? activeSection as PluginsTabId
+    : 'channels'
+  /** Groups the Plugins surface shows right now. */
+  const tabGroups = PLUGINS_TAB_GROUPS[pluginsTab]
+  const groupVisible = (id: Exclude<SettingsSectionId, null>): boolean => !isTabs || tabGroups.includes(id)
+  const groupExpanded = (id: Exclude<SettingsSectionId, null>): boolean => isTabs ? tabGroups.includes(id) : activeSection === id
+  /** Jump to a group: the settings page toggles it, the Plugins tab selects its tab. */
+  const openGroup = (id: Exclude<SettingsSectionId, null>): void => {
+    if (isTabs) { setActiveSection(id === 'prompt' ? 'channels' : id); return }
+    setActiveSection(activeSection === id ? null : id)
+  }
+  const notWritable = !state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null
+
+  /** Page content, shared by both surfaces (the section adds collapse chrome). */
+  const body = (
+    <div className={css.body}>
+      {notWritable}
+
+      {isTabs ? (
+        <div className={css.tabBar} role="tablist" aria-label={title}>
+          {PLUGINS_TABS.map(id => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              className={css.tab}
+              data-plugins-tab={id}
+              aria-selected={pluginsTab === id}
+              data-active={pluginsTab === id ? '' : undefined}
+              onClick={() => { setActiveSection(id) }}
+            >
+              {t(PLUGINS_TAB_LABELS[id])}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <section className={css.overview} data-overview="">
+        <div className={css.overviewHead}>
+          <div>
+            <h3 className={css.overviewTitle}>{t('settings.summaryTitle')}</h3>
+            <p className={css.overviewHint}>{t('settings.summaryHint')}</p>
+          </div>
+          <span className={css.healthBadge} data-state={overallReady ? 'ready' : 'attention'}>
+            {overallReady ? t('settings.summaryReady') : t('settings.summaryNeedsSetup')}
+          </span>
+        </div>
+        <div className={css.summaryGrid}>
+          {summaryItems.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              className={css.summaryCard}
+              data-active={groupExpanded(item.id) ? '' : undefined}
+              data-tone={item.tone ?? 'neutral'}
+              onClick={() => { openGroup(item.id) }}
+            >
+              <span className={css.summaryLabel}>{item.label}</span>
+              <strong className={css.summaryValue}>{item.value}</strong>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <SettingsGroup
+        id="channels"
+        title={t('channels.title')}
+        hint={t('channels.hint')}
+        summary={channelSummary}
+        tone={readyChannels > 0 ? 'ready' : 'attention'}
+        hidden={!groupVisible('channels')}
+        expanded={groupExpanded('channels')}
+        collapsible={!isTabs}
+        onToggle={() => { openGroup('channels') }}
+      >
+        {channels.length === 0
+          ? <p className={css.channelEmpty}>{t('channels.empty')}</p>
+          : (
+            <ul className={css.channelList}>
+              {channels.map(channel => {
+                const keyHeld = state.channels.keySet[channel.id] === true
+                const subscriptionProvider = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
+                const subscriptionState = subscriptionProvider === undefined ? undefined : subscriptionStatus[subscriptionProvider]
+                const ready = subscriptionProvider === undefined ? keyHeld && channel.models.length > 0 : subscriptionState?.state === 'logged-in'
+                const isDefault = channel.id === state.channels.defaultChannelId
+                if (confirmDeleteId === channel.id) {
+                  return (
+                    <li key={channel.id} className={css.channelRow} data-action>
+                      <span className={css.deleteConfirmText}>{t('channels.deleteConfirmTitle', { name: channel.name || t('channels.untitled') })}</span>
+                      <button type="button" className={css.channelDanger} disabled={disabled} onClick={() => { props.channels.setChannels(channels.filter(candidate => candidate.id !== channel.id)); if (isDefault && channels.length > 1) { const next = channels.find(candidate => candidate.id !== channel.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setConfirmDeleteId(null); if (editingId === channel.id) setEditingId(null) }}>{t('channels.confirm')}</button>
+                      <button type="button" className={css.channelAction} disabled={disabled} onClick={() => { setConfirmDeleteId(null) }}>{t('channels.cancel')}</button>
+                    </li>
+                  )
+                }
+                return (
+                  <li key={channel.id} className={css.channelRow}>
+                    <span className={ready ? css.channelDotReady : css.channelDotWarn} aria-hidden="true" title={t(ready ? 'channels.statusReady' : 'channels.statusIncomplete')} />
+                    <button type="button" className={css.channelMain} disabled={disabled} onClick={() => { setEditingId(channel.id) }}>
+                      <span className={css.channelName}>{isDefault ? `★ ${channel.name || t('channels.untitled')}` : (channel.name || t('channels.untitled'))}</span>
+                      <span className={css.channelMeta}>
+                        <span className={css.channelBadge} data-warn={!ready ? '' : undefined}>
+                          {subscriptionProvider === undefined
+                            ? <>{keyHeld ? t('channels.keySet') : t('channels.keyMissing')}{' · '}{channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}</>
+                            : <>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[subscriptionProvider]}{' · '}{subscriptionState?.state === 'logged-in' ? t('settings.subscriptionLoggedIn') : t('settings.subscriptionLoggedOut')}</>}
+                        </span>
+                      </span>
+                    </button>
+                    <button type="button" className={css.channelAction} onClick={() => { setEditingId(channel.id) }}>{t('channels.edit')}</button>
+                    <button type="button" className={css.channelAction} data-danger onClick={() => { setConfirmDeleteId(channel.id) }}>{t('channels.delete')}</button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        <div className={css.channelControls}>
+        {open && presetPickerOpen ? (
+          <PresetPicker
+            t={t}
+            presets={presets}
+            error={presetError}
+            disabled={state.writable === false}
+            onLoad={() => {
+              setPresetError(null)
+              void fetch(PRESETS_API, { method: 'POST' })
+                .then(async response => {
+                  const body = await response.json() as { ok?: boolean; presets?: PresetProviderView[]; message?: string }
+                  if (!response.ok || body.ok !== true || body.presets === undefined) throw new Error(body.message ?? `HTTP ${response.status}`)
+                  setPresets(body.presets)
+                })
+                .catch(error => { setPresetError(error instanceof Error ? error.message : String(error)) })
+            }}
+            onPick={(preset) => {
+              const existing = preset.subscription === undefined
+                ? undefined
+                : channels.find(channel => channel.subscription === preset.subscription)
+              const draft = existing ?? newChannelDraft(preset)
+              if (existing === undefined) props.channels.setChannels([...channels, draft])
+              setPresetPickerOpen(false)
+              setEditingId(draft.id)
+              if (preset.subscription !== undefined && subscriptionStatus[preset.subscription].state !== 'logged-in') {
+                void subscriptionLogin(preset.subscription)
+              }
+            }}
+            onCustom={() => {
+              const draft = newChannelDraft(undefined)
+              props.channels.setChannels([...channels, draft])
+              setPresetPickerOpen(false)
+              setEditingId(draft.id)
+            }}
+            onClose={() => { setPresetPickerOpen(false) }}
+          />
+        ) : null}
+
+        {modelAliases.length > 0 ? (
+          <div className={css.defaultModelRow}>
+            <label htmlFor="dsh-imagegen-default-model">
+              <strong>{t('channels.defaultModel')}</strong>
+              <small>{t('channels.defaultModelHint')}</small>
+            </label>
+            <Select
+              id="dsh-imagegen-default-model"
+              className={css.modelChoices}
+              value={state.channels.defaultModel}
+              disabled={disabled}
+              onChange={value => { props.channels.setDefaultModel(value) }}
+            >
+              {modelGroups.map(group => <optgroup key={group.id} label={group.name}>
+                {group.models.map(model => <option key={`${group.id}:${model}`} value={model}>{model}</option>)}
+              </optgroup>)}
+            </Select>
+          </div>
+        ) : null}
+        <div className={css.channelAddRow}>
+          <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { setPresetError(null); setPresetPickerOpen(true) }}>+ {t('channels.addProvider')}</button>
+          <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</button>
+        </div>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup
+        id="prompt"
+        title={t('settings.promptEnhanceTitle')}
+        hint={t('settings.promptEnhanceHint')}
+        summary={promptSummary}
+        tone={state.promptModel.text.trim() === '' ? 'neutral' : 'ready'}
+        hidden={!groupVisible('prompt')}
+        expanded={groupExpanded('prompt')}
+        collapsible={!isTabs}
+        onToggle={() => { openGroup('prompt') }}
+      >
+      <div className={css.sectionHeader}>
+        <div>
+          <h3 className={css.sectionTitle}>{t('settings.promptModel')}</h3>
+          <p className={css.sectionHint}>{t('settings.promptModelDetectionHint')}</p>
+        </div>
+        <button
+          type="button"
+          className={css.modelFetch}
+          disabled={disabled || loadingPromptModels}
+          onClick={() => {
+            setLoadingPromptModels(true)
+            setPromptModelsError(null)
+            void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
+              .then(async response => {
+                const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
+                if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+                setPromptModels(body.models ?? [])
+              })
+              .catch(error => { setPromptModelsError(error instanceof Error ? error.message : String(error)) })
+              .finally(() => { setLoadingPromptModels(false) })
+          }}
+        >
+          {loadingPromptModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
+        </button>
+      </div>
+      <div className={css.modelSummary}>
+        {state.promptModel.text.trim() !== '' ? (
+          <span className={css.modelChip}>
+            <span>{state.promptModel.text}</span>
+            <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${state.promptModel.text}`} onClick={() => { props.edit('promptModel', '') }}>×</button>
+          </span>
+        ) : null}
+        <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setActiveSection('prompt') }}>
+          {manualPromptModelOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
+        </button>
+      </div>
+      {manualPromptModelOpen ? (
+        <div className={css.manualModelRow}>
+          <input className={css.input} value={manualPromptModel} placeholder={t('settings.addPromptModelPlaceholder')} disabled={disabled} onChange={event => { setManualPromptModel(event.target.value) }} />
+          <button type="button" className={css.addModel} disabled={disabled || manualPromptModel.trim() === ''} onClick={() => { props.edit('promptModel', manualPromptModel); setManualPromptModel('') }}>{t('settings.addModelConfirm')}</button>
+        </div>
+      ) : null}
+      {promptModels.length > 0 ? (
+        <div className={css.modelCandidateList} role="radiogroup" aria-label={t('settings.promptModelsCandidates')}>
+          <span className={css.modelCandidateLabel}>{t('settings.promptModelsCandidates')}</span>
+          {promptModels.map(candidate => (
+            <button
+              key={candidate}
+              type="button"
+              role="radio"
+              className={css.modelCandidate}
+              aria-checked={state.promptModel.text === candidate}
+              data-selected={state.promptModel.text === candidate ? '' : undefined}
+              disabled={disabled}
+              onClick={() => { props.edit('promptModel', candidate) }}
+            >
+              {candidate}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {promptModelsError !== null ? <p className={css.failed} role="status">{promptModelsError}</p> : null}
+      <button type="button" className={css.inlineDisclosure} aria-expanded={promptApiOpen} onClick={() => { setPromptApiOpen(open => !open) }}>
+        <span>{t('settings.promptApiAdvanced')}</span>
+        <span aria-hidden="true">{promptApiOpen ? '⌃' : '⌄'}</span>
+      </button>
+      {promptApiOpen ? <div className={css.optionalContent}>
+      <ValueField
+        id="dsh-imagegen-settings-prompt-apiurl"
+        label={t('settings.promptApiUrl')}
+        hint={t('settings.promptApiUrlHint')}
+        placeholder="https://api.openai.com/v1"
+        {...fieldProps}
+        {...state.promptApiUrl}
+        onEdit={(text) => { props.edit('promptApiUrl', text) }}
+        onReset={() => { props.resetField('promptApiUrl') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-prompt-apikey"
+        label={t('settings.promptApiKey')}
+        hint={t('settings.promptApiKeyHint')}
+        placeholder="sk-…"
+        secret
+        {...fieldProps}
+        {...state.promptApiKey}
+        overridden={false}
+        onEdit={(text) => { props.edit('promptApiKey', text) }}
+        onReset={() => { props.resetField('promptApiKey') }}
+      />
+      </div> : null}
+      </SettingsGroup>
+
+      <SettingsGroup
+        id="storage"
+        title={t('settings.storageTitle')}
+        hint={t('settings.storageHint')}
+        summary={storageSummary}
+        tone={state.storageEnabled.text === 'true' ? 'ready' : 'neutral'}
+        hidden={!groupVisible('storage')}
+        expanded={groupExpanded('storage')}
+        collapsible={!isTabs}
+        onToggle={() => { openGroup('storage') }}
+      >
+      <ValueField
+        id="dsh-imagegen-settings-local-storage-path"
+        label={t('settings.localStoragePath')}
+        hint={t('settings.localStoragePathHint')}
+        placeholder="E:\\dsh-imagegen-data"
+        {...fieldProps}
+        {...state.localStoragePath}
+        onEdit={(text) => { props.edit('localStoragePath', text) }}
+        onReset={() => { props.resetField('localStoragePath') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-storage-enabled"
+        label={t('settings.storageEnabled')}
+        hint={t('settings.storageHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.storageEnabled}
+        onEdit={(text) => { props.edit('storageEnabled', text) }}
+        onReset={() => { props.resetField('storageEnabled') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-storage-endpoint"
+        label={t('settings.storageEndpoint')}
+        hint={t('settings.storageEndpointHint')}
+        placeholder="https://bucket-appid.cos.ap-guangzhou.myqcloud.com"
+        {...fieldProps}
+        {...state.storageEndpoint}
+        onEdit={(text) => { props.edit('storageEndpoint', text) }}
+        onReset={() => { props.resetField('storageEndpoint') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-storage-region"
+        label={t('settings.storageRegion')}
+        hint={t('settings.storageRegionHint')}
+        placeholder="ap-guangzhou"
+        {...fieldProps}
+        {...state.storageRegion}
+        onEdit={(text) => { props.edit('storageRegion', text) }}
+        onReset={() => { props.resetField('storageRegion') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-storage-prefix"
+        label={t('settings.storagePrefix')}
+        hint={t('settings.storagePrefixHint')}
+        placeholder="dsh-imagegen"
+        {...fieldProps}
+        {...state.storagePrefix}
+        onEdit={(text) => { props.edit('storagePrefix', text) }}
+        onReset={() => { props.resetField('storagePrefix') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-storage-accesskey"
+        label={t('settings.storageAccessKey')}
+        hint={t('settings.storageAccessKeyHint')}
+        placeholder="AKID…"
+        {...fieldProps}
+        {...state.storageAccessKey}
+        onEdit={(text) => { props.edit('storageAccessKey', text) }}
+        onReset={() => { props.resetField('storageAccessKey') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-storage-secretkey"
+        label={t('settings.storageSecretKey')}
+        hint={t('settings.storageSecretKeyHint')}
+        placeholder="…"
+        secret
+        {...fieldProps}
+        {...state.storageSecretKey}
+        overridden={false}
+        onEdit={(text) => { props.edit('storageSecretKey', text) }}
+        onReset={() => { props.resetField('storageSecretKey') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-storage-gallery"
+        label={t('settings.storageSyncGallery')}
+        hint={t('settings.storageSyncGalleryHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.storageSyncGallery}
+        onEdit={(text) => { props.edit('storageSyncGallery', text) }}
+        onReset={() => { props.resetField('storageSyncGallery') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-storage-history"
+        label={t('settings.storageSyncHistory')}
+        hint={t('settings.storageSyncHistoryHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.storageSyncHistory}
+        onEdit={(text) => { props.edit('storageSyncHistory', text) }}
+        onReset={() => { props.resetField('storageSyncHistory') }}
+      />
+      <div className={css.modelSummary}>
+        <button
+          type="button"
+          className={css.addModel}
+          disabled={disabled || storageTesting}
+          onClick={() => {
+            setStorageTesting(true)
+            setStorageTestResult(null)
+            void props.storageTest().then(outcome => {
+              setStorageTestResult(outcome.ok
+                ? t('settings.storageTestOk', { ms: outcome.ms ?? 0 })
+                : t('settings.storageTestFailed', { error: outcome.message ?? 'error' }))
+            }).finally(() => { setStorageTesting(false) })
+          }}
+        >
+          {storageTesting ? t('settings.storageTesting') : t('settings.storageTest')}
+        </button>
+        {storageTestResult !== null ? <p className={css.failed} role="status">{storageTestResult}</p> : null}
+      </div>
+      <p className={css.hint}>{t('settings.storageKeyHint')}</p>
+      </SettingsGroup>
+
+      <SettingsGroup
+        id="skills"
+        title={t('settings.skillsTitle')}
+        hint={t('settings.skillsHint')}
+        summary={skillsSummary}
+        tone={state.skillsEnabled.text === 'false' ? 'neutral' : 'ready'}
+        hidden={!groupVisible('skills')}
+        expanded={groupExpanded('skills')}
+        collapsible={!isTabs}
+        onToggle={() => { openGroup('skills') }}
+      >
+      <BooleanField
+        id="dsh-imagegen-settings-skills-enabled"
+        label={t('settings.skillsEnabled')}
+        hint={t('settings.skillsEnabledHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.skillsEnabled}
+        onEdit={(text) => { props.edit('skillsEnabled', text) }}
+        onReset={() => { props.resetField('skillsEnabled') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-skills-heavy"
+        label={t('settings.allowHeavySkills')}
+        hint={t('settings.allowHeavySkillsHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.allowHeavySkills}
+        onEdit={(text) => { props.edit('allowHeavySkills', text) }}
+        onReset={() => { props.resetField('allowHeavySkills') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-skills-allowlist"
+        label={t('settings.skillAllowlist')}
+        hint={t('settings.skillAllowlistHint')}
+        placeholder="extract-content, image-to-editable-ppt"
+        {...fieldProps}
+        {...state.skillAllowlist}
+        onEdit={(text) => { props.edit('skillAllowlist', text) }}
+        onReset={() => { props.resetField('skillAllowlist') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-skills-output"
+        label={t('settings.skillOutputDir')}
+        hint={t('settings.skillOutputDirHint')}
+        placeholder=""
+        {...fieldProps}
+        {...state.skillOutputDir}
+        onEdit={(text) => { props.edit('skillOutputDir', text) }}
+        onReset={() => { props.resetField('skillOutputDir') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-skills-timeout"
+        label={t('settings.skillHeavyTimeout')}
+        hint={t('settings.skillHeavyTimeoutHint')}
+        placeholder="20"
+        {...fieldProps}
+        {...state.skillHeavyTimeoutMinutes}
+        onEdit={(text) => { props.edit('skillHeavyTimeoutMinutes', text) }}
+        onReset={() => { props.resetField('skillHeavyTimeoutMinutes') }}
+      />
+      <ValueField
+        id="dsh-imagegen-settings-skills-preset"
+        label={t('settings.skillAgentPreset')}
+        hint={t('settings.skillAgentPresetHint')}
+        placeholder=""
+        {...fieldProps}
+        {...state.skillAgentPreset}
+        onEdit={(text) => { props.edit('skillAgentPreset', text) }}
+        onReset={() => { props.resetField('skillAgentPreset') }}
+      />
+      <div className={css.modelSummary}>
+        <button
+          type="button"
+          className={css.addModel}
+          disabled={disabled || skillProbing}
+          onClick={() => {
+            setSkillProbing(true)
+            setSkillProbeResult(null)
+            void fetch(CANVAS_SKILL_API.list, { method: 'POST' })
+              .then(async response => await response.json() as { ok?: boolean; skills?: unknown[]; agentAvailable?: boolean; registryAvailable?: boolean })
+              .then(body => {
+                const total = Array.isArray(body.skills) ? body.skills.length : 0
+                setSkillProbeResult(t('settings.skillProbeOk', {
+                  count: total,
+                  agent: body.agentAvailable === true ? t('settings.skillProbeAgentOn') : t('settings.skillProbeAgentOff'),
+                }))
+              })
+              .catch(caught => { setSkillProbeResult(t('settings.storageTestFailed', { error: caught instanceof Error ? caught.message : String(caught) })) })
+              .finally(() => { setSkillProbing(false) })
+          }}
+        >
+          {skillProbing ? t('settings.skillProbing') : t('settings.skillProbe')}
+        </button>
+        {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
+      </div>
+      </SettingsGroup>
+
+      <SettingsGroup
+        id="general"
+        title={t('settings.generalTitle')}
+        hint={t('settings.generalHint')}
+        summary={generalSummary}
+        tone={state.enabled.text === 'false' ? 'attention' : 'ready'}
+        hidden={!groupVisible('general')}
+        expanded={groupExpanded('general')}
+        collapsible={!isTabs}
+        onToggle={() => { openGroup('general') }}
+      >
+      <BooleanField
+        id="dsh-imagegen-settings-enabled"
+        label={t('settings.enabled')}
+        hint={t('settings.enabledHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.enabled}
+        onEdit={(text) => { props.edit('enabled', text) }}
+        onReset={() => { props.resetField('enabled') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-announce"
+        label={t('settings.announceToAgent')}
+        hint={t('settings.announceToAgentHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.announceToAgent}
+        onEdit={(text) => { props.edit('announceToAgent', text) }}
+        onReset={() => { props.resetField('announceToAgent') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-agent-generation"
+        label={t('settings.allowAgentImageGeneration')}
+        hint={t('settings.allowAgentImageGenerationHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.allowAgentImageGeneration}
+        onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
+        onReset={() => { props.resetField('allowAgentImageGeneration') }}
+      />
+      </SettingsGroup>
+      <div className={css.footer}>
+        <span className={css.footerStatus} data-state={state.dirty ? 'dirty' : 'saved'} role="status">
+          {state.dirty ? t('settings.unsaved') : t('settings.saved')}
+        </span>
+        {(state.failed || state.channels.failed) ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
+        <button
+          type="button"
+          className={css.discard}
+          disabled={!state.dirty || state.saving || state.channels.saving}
+          onClick={() => { props.discard(); props.channels.discard() }}
+        >
+          {t('settings.discard')}
+        </button>
+        <button
+          type="button"
+          className={css.save}
+          disabled={blocked}
+          onClick={() => { void props.channels.commit(); void props.save() }}
+        >
+          {t(!state.saving && !state.channels.saving ? 'settings.save' : 'settings.saving')}
+        </button>
+      </div>
+    </div>
+  )
+
+  /** The channel editor is a fixed overlay, so both surfaces can host it. */
+  const editor = editing !== undefined ? (
+    <ChannelEditor
+      key={editing.id}
+      t={t}
+      channel={editing}
+      keyHeld={state.channels.keySet[editing.id] === true}
+      usage={usage}
+      otherChannels={channels.filter(channel => channel.id !== editing.id)}
+      isDefault={editing.id === state.channels.defaultChannelId}
+      writable={state.writable}
+      onPatch={(patch) => { replaceChannel(channels, editing.id, patch, props.channels) }}
+      onSetModels={(models) => { props.channels.setChannels(channels.map(channel => channel.id === editing.id ? { ...channel, models } : channel)) }}
+      onSetKey={(value) => { props.channels.setChannelKey(editing.id, value) }}
+      subscriptionStatus={editing.subscription === undefined ? undefined : subscriptionStatus[editing.subscription]}
+      subscriptionBusy={editing.subscription === undefined ? undefined : subscriptionBusy[editing.subscription]}
+      subscriptionMessage={editing.subscription === undefined ? undefined : subscriptionMessage[editing.subscription]}
+      onSubscriptionLogin={(provider) => { void subscriptionLogin(provider) }}
+      onSubscriptionComplete={(provider, input) => { void subscriptionComplete(provider, input) }}
+      onSubscriptionLogout={(provider) => { void subscriptionLogout(provider) }}
+      onSetDefault={() => { props.channels.setDefaultChannel(editing.id) }}
+      onRemove={() => { props.channels.setChannels(channels.filter(channel => channel.id !== editing.id)); if (editing.id === state.channels.defaultChannelId && channels.length > 1) { const next = channels.find(channel => channel.id !== editing.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setEditingId(null) }}
+      onClose={() => { setEditingId(null) }}
+    />
+  ) : null
+
+  if (isTabs) {
+    return (
+      <section className={css.tabPanel} data-dsh-imagegen-settings-panel data-imagegen-plugins-tab="">
+        {body}
+        {editor}
+      </section>
+    )
+  }
 
   return (
     <section className={css.card} data-dsh-imagegen-settings-panel>
@@ -554,577 +1254,19 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
         {state.dirty ? <span className={css.pending}>{t('settings.unsaved')}</span> : null}
         <span className={open ? css.chevronOpen : css.chevron}>▾</span>
       </button>
-      {open
-        ? (
-          <div className={css.body}>
-            {!state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null}
-
-            <section className={css.overview}>
-              <div className={css.overviewHead}>
-                <div>
-                  <h3 className={css.overviewTitle}>{t('settings.summaryTitle')}</h3>
-                  <p className={css.overviewHint}>{t('settings.summaryHint')}</p>
-                </div>
-                <span className={css.healthBadge} data-state={overallReady ? 'ready' : 'attention'}>
-                  {overallReady ? t('settings.summaryReady') : t('settings.summaryNeedsSetup')}
-                </span>
-              </div>
-              <div className={css.summaryGrid}>
-                {summaryItems.map(item => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={css.summaryCard}
-                    data-active={activeSection === item.id ? '' : undefined}
-                    data-tone={item.tone ?? 'neutral'}
-                    onClick={() => { setActiveSection(activeSection === item.id ? null : item.id) }}
-                  >
-                    <span className={css.summaryLabel}>{item.label}</span>
-                    <strong className={css.summaryValue}>{item.value}</strong>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <SettingsSection
-              id="channels"
-              title={t('channels.title')}
-              hint={t('channels.hint')}
-              summary={channelSummary}
-              tone={readyChannels > 0 ? 'ready' : 'attention'}
-              expanded={activeSection === 'channels'}
-              onToggle={() => { setActiveSection(activeSection === 'channels' ? null : 'channels') }}
-            >
-              {channels.length === 0
-                ? <p className={css.channelEmpty}>{t('channels.empty')}</p>
-                : (
-                  <ul className={css.channelList}>
-                    {channels.map(channel => {
-                      const keyHeld = state.channels.keySet[channel.id] === true
-                      const subscriptionProvider = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
-                      const subscriptionState = subscriptionProvider === undefined ? undefined : subscriptionStatus[subscriptionProvider]
-                      const ready = subscriptionProvider === undefined ? keyHeld && channel.models.length > 0 : subscriptionState?.state === 'logged-in'
-                      const isDefault = channel.id === state.channels.defaultChannelId
-                      if (confirmDeleteId === channel.id) {
-                        return (
-                          <li key={channel.id} className={css.channelRow} data-action>
-                            <span className={css.deleteConfirmText}>{t('channels.deleteConfirmTitle', { name: channel.name || t('channels.untitled') })}</span>
-                            <button type="button" className={css.channelDanger} disabled={disabled} onClick={() => { props.channels.setChannels(channels.filter(candidate => candidate.id !== channel.id)); if (isDefault && channels.length > 1) { const next = channels.find(candidate => candidate.id !== channel.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setConfirmDeleteId(null); if (editingId === channel.id) setEditingId(null) }}>{t('channels.confirm')}</button>
-                            <button type="button" className={css.channelAction} disabled={disabled} onClick={() => { setConfirmDeleteId(null) }}>{t('channels.cancel')}</button>
-                          </li>
-                        )
-                      }
-                      return (
-                        <li key={channel.id} className={css.channelRow}>
-                          <span className={ready ? css.channelDotReady : css.channelDotWarn} aria-hidden="true" title={t(ready ? 'channels.statusReady' : 'channels.statusIncomplete')} />
-                          <button type="button" className={css.channelMain} disabled={disabled} onClick={() => { setEditingId(channel.id) }}>
-                            <span className={css.channelName}>{isDefault ? `★ ${channel.name || t('channels.untitled')}` : (channel.name || t('channels.untitled'))}</span>
-                            <span className={css.channelMeta}>
-                              <span className={css.channelBadge} data-warn={!ready ? '' : undefined}>
-                                {subscriptionProvider === undefined
-                                  ? <>{keyHeld ? t('channels.keySet') : t('channels.keyMissing')}{' · '}{channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}</>
-                                  : <>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[subscriptionProvider]}{' · '}{subscriptionState?.state === 'logged-in' ? t('settings.subscriptionLoggedIn') : t('settings.subscriptionLoggedOut')}</>}
-                              </span>
-                            </span>
-                          </button>
-                          <button type="button" className={css.channelAction} onClick={() => { setEditingId(channel.id) }}>{t('channels.edit')}</button>
-                          <button type="button" className={css.channelAction} data-danger onClick={() => { setConfirmDeleteId(channel.id) }}>{t('channels.delete')}</button>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                )}
-              <div className={css.channelControls}>
-              {open && presetPickerOpen ? (
-                <PresetPicker
-                  t={t}
-                  presets={presets}
-                  error={presetError}
-                  disabled={state.writable === false}
-                  onLoad={() => {
-                    setPresetError(null)
-                    void fetch(PRESETS_API, { method: 'POST' })
-                      .then(async response => {
-                        const body = await response.json() as { ok?: boolean; presets?: PresetProviderView[]; message?: string }
-                        if (!response.ok || body.ok !== true || body.presets === undefined) throw new Error(body.message ?? `HTTP ${response.status}`)
-                        setPresets(body.presets)
-                      })
-                      .catch(error => { setPresetError(error instanceof Error ? error.message : String(error)) })
-                  }}
-                  onPick={(preset) => {
-                    const existing = preset.subscription === undefined
-                      ? undefined
-                      : channels.find(channel => channel.subscription === preset.subscription)
-                    const draft = existing ?? newChannelDraft(preset)
-                    if (existing === undefined) props.channels.setChannels([...channels, draft])
-                    setPresetPickerOpen(false)
-                    setEditingId(draft.id)
-                    if (preset.subscription !== undefined && subscriptionStatus[preset.subscription].state !== 'logged-in') {
-                      void subscriptionLogin(preset.subscription)
-                    }
-                  }}
-                  onCustom={() => {
-                    const draft = newChannelDraft(undefined)
-                    props.channels.setChannels([...channels, draft])
-                    setPresetPickerOpen(false)
-                    setEditingId(draft.id)
-                  }}
-                  onClose={() => { setPresetPickerOpen(false) }}
-                />
-              ) : null}
-
-              {modelAliases.length > 0 ? (
-                <div className={css.defaultModelRow}>
-                  <label htmlFor="dsh-imagegen-default-model">
-                    <strong>{t('channels.defaultModel')}</strong>
-                    <small>{t('channels.defaultModelHint')}</small>
-                  </label>
-                  <Select
-                    id="dsh-imagegen-default-model"
-                    className={css.modelChoices}
-                    value={state.channels.defaultModel}
-                    disabled={disabled}
-                    onChange={value => { props.channels.setDefaultModel(value) }}
-                  >
-                    {modelGroups.map(group => <optgroup key={group.id} label={group.name}>
-                      {group.models.map(model => <option key={`${group.id}:${model}`} value={model}>{model}</option>)}
-                    </optgroup>)}
-                  </Select>
-                </div>
-              ) : null}
-              <div className={css.channelAddRow}>
-                <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { setPresetError(null); setPresetPickerOpen(true) }}>+ {t('channels.addProvider')}</button>
-                <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</button>
-              </div>
-              </div>
-            </SettingsSection>
-
-            <SettingsSection
-              id="prompt"
-              title={t('settings.promptEnhanceTitle')}
-              hint={t('settings.promptEnhanceHint')}
-              summary={promptSummary}
-              tone={state.promptModel.text.trim() === '' ? 'neutral' : 'ready'}
-              expanded={activeSection === 'prompt'}
-              onToggle={() => { setActiveSection(activeSection === 'prompt' ? null : 'prompt') }}
-            >
-            <div className={css.sectionHeader}>
-              <div>
-                <h3 className={css.sectionTitle}>{t('settings.promptModel')}</h3>
-                <p className={css.sectionHint}>{t('settings.promptModelDetectionHint')}</p>
-              </div>
-              <button
-                type="button"
-                className={css.modelFetch}
-                disabled={disabled || loadingPromptModels}
-                onClick={() => {
-                  setLoadingPromptModels(true)
-                  setPromptModelsError(null)
-                  void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
-                    .then(async response => {
-                      const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
-                      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-                      setPromptModels(body.models ?? [])
-                    })
-                    .catch(error => { setPromptModelsError(error instanceof Error ? error.message : String(error)) })
-                    .finally(() => { setLoadingPromptModels(false) })
-                }}
-              >
-                {loadingPromptModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
-              </button>
-            </div>
-            <div className={css.modelSummary}>
-              {state.promptModel.text.trim() !== '' ? (
-                <span className={css.modelChip}>
-                  <span>{state.promptModel.text}</span>
-                  <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${state.promptModel.text}`} onClick={() => { props.edit('promptModel', '') }}>×</button>
-                </span>
-              ) : null}
-              <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setActiveSection('prompt') }}>
-                {manualPromptModelOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
-              </button>
-            </div>
-            {manualPromptModelOpen ? (
-              <div className={css.manualModelRow}>
-                <input className={css.input} value={manualPromptModel} placeholder={t('settings.addPromptModelPlaceholder')} disabled={disabled} onChange={event => { setManualPromptModel(event.target.value) }} />
-                <button type="button" className={css.addModel} disabled={disabled || manualPromptModel.trim() === ''} onClick={() => { props.edit('promptModel', manualPromptModel); setManualPromptModel('') }}>{t('settings.addModelConfirm')}</button>
-              </div>
-            ) : null}
-            {promptModels.length > 0 ? (
-              <div className={css.modelCandidateList} role="radiogroup" aria-label={t('settings.promptModelsCandidates')}>
-                <span className={css.modelCandidateLabel}>{t('settings.promptModelsCandidates')}</span>
-                {promptModels.map(candidate => (
-                  <button
-                    key={candidate}
-                    type="button"
-                    role="radio"
-                    className={css.modelCandidate}
-                    aria-checked={state.promptModel.text === candidate}
-                    data-selected={state.promptModel.text === candidate ? '' : undefined}
-                    disabled={disabled}
-                    onClick={() => { props.edit('promptModel', candidate) }}
-                  >
-                    {candidate}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {promptModelsError !== null ? <p className={css.failed} role="status">{promptModelsError}</p> : null}
-            <button type="button" className={css.inlineDisclosure} aria-expanded={promptApiOpen} onClick={() => { setPromptApiOpen(open => !open) }}>
-              <span>{t('settings.promptApiAdvanced')}</span>
-              <span aria-hidden="true">{promptApiOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {promptApiOpen ? <div className={css.optionalContent}>
-            <ValueField
-              id="dsh-imagegen-settings-prompt-apiurl"
-              label={t('settings.promptApiUrl')}
-              hint={t('settings.promptApiUrlHint')}
-              placeholder="https://api.openai.com/v1"
-              {...fieldProps}
-              {...state.promptApiUrl}
-              onEdit={(text) => { props.edit('promptApiUrl', text) }}
-              onReset={() => { props.resetField('promptApiUrl') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-prompt-apikey"
-              label={t('settings.promptApiKey')}
-              hint={t('settings.promptApiKeyHint')}
-              placeholder="sk-…"
-              secret
-              {...fieldProps}
-              {...state.promptApiKey}
-              overridden={false}
-              onEdit={(text) => { props.edit('promptApiKey', text) }}
-              onReset={() => { props.resetField('promptApiKey') }}
-            />
-            </div> : null}
-            </SettingsSection>
-
-            <SettingsSection
-              id="storage"
-              title={t('settings.storageTitle')}
-              hint={t('settings.storageHint')}
-              summary={storageSummary}
-              tone={state.storageEnabled.text === 'true' ? 'ready' : 'neutral'}
-              expanded={activeSection === 'storage'}
-              onToggle={() => { setActiveSection(activeSection === 'storage' ? null : 'storage') }}
-            >
-            <ValueField
-              id="dsh-imagegen-settings-local-storage-path"
-              label={t('settings.localStoragePath')}
-              hint={t('settings.localStoragePathHint')}
-              placeholder="E:\\dsh-imagegen-data"
-              {...fieldProps}
-              {...state.localStoragePath}
-              onEdit={(text) => { props.edit('localStoragePath', text) }}
-              onReset={() => { props.resetField('localStoragePath') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-enabled"
-              label={t('settings.storageEnabled')}
-              hint={t('settings.storageHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageEnabled}
-              onEdit={(text) => { props.edit('storageEnabled', text) }}
-              onReset={() => { props.resetField('storageEnabled') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-endpoint"
-              label={t('settings.storageEndpoint')}
-              hint={t('settings.storageEndpointHint')}
-              placeholder="https://bucket-appid.cos.ap-guangzhou.myqcloud.com"
-              {...fieldProps}
-              {...state.storageEndpoint}
-              onEdit={(text) => { props.edit('storageEndpoint', text) }}
-              onReset={() => { props.resetField('storageEndpoint') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-region"
-              label={t('settings.storageRegion')}
-              hint={t('settings.storageRegionHint')}
-              placeholder="ap-guangzhou"
-              {...fieldProps}
-              {...state.storageRegion}
-              onEdit={(text) => { props.edit('storageRegion', text) }}
-              onReset={() => { props.resetField('storageRegion') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-prefix"
-              label={t('settings.storagePrefix')}
-              hint={t('settings.storagePrefixHint')}
-              placeholder="dsh-imagegen"
-              {...fieldProps}
-              {...state.storagePrefix}
-              onEdit={(text) => { props.edit('storagePrefix', text) }}
-              onReset={() => { props.resetField('storagePrefix') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-accesskey"
-              label={t('settings.storageAccessKey')}
-              hint={t('settings.storageAccessKeyHint')}
-              placeholder="AKID…"
-              {...fieldProps}
-              {...state.storageAccessKey}
-              onEdit={(text) => { props.edit('storageAccessKey', text) }}
-              onReset={() => { props.resetField('storageAccessKey') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-secretkey"
-              label={t('settings.storageSecretKey')}
-              hint={t('settings.storageSecretKeyHint')}
-              placeholder="…"
-              secret
-              {...fieldProps}
-              {...state.storageSecretKey}
-              overridden={false}
-              onEdit={(text) => { props.edit('storageSecretKey', text) }}
-              onReset={() => { props.resetField('storageSecretKey') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-gallery"
-              label={t('settings.storageSyncGallery')}
-              hint={t('settings.storageSyncGalleryHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageSyncGallery}
-              onEdit={(text) => { props.edit('storageSyncGallery', text) }}
-              onReset={() => { props.resetField('storageSyncGallery') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-history"
-              label={t('settings.storageSyncHistory')}
-              hint={t('settings.storageSyncHistoryHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageSyncHistory}
-              onEdit={(text) => { props.edit('storageSyncHistory', text) }}
-              onReset={() => { props.resetField('storageSyncHistory') }}
-            />
-            <div className={css.modelSummary}>
-              <button
-                type="button"
-                className={css.addModel}
-                disabled={disabled || storageTesting}
-                onClick={() => {
-                  setStorageTesting(true)
-                  setStorageTestResult(null)
-                  void props.storageTest().then(outcome => {
-                    setStorageTestResult(outcome.ok
-                      ? t('settings.storageTestOk', { ms: outcome.ms ?? 0 })
-                      : t('settings.storageTestFailed', { error: outcome.message ?? 'error' }))
-                  }).finally(() => { setStorageTesting(false) })
-                }}
-              >
-                {storageTesting ? t('settings.storageTesting') : t('settings.storageTest')}
-              </button>
-              {storageTestResult !== null ? <p className={css.failed} role="status">{storageTestResult}</p> : null}
-            </div>
-            <p className={css.hint}>{t('settings.storageKeyHint')}</p>
-            </SettingsSection>
-
-            <SettingsSection
-              id="skills"
-              title={t('settings.skillsTitle')}
-              hint={t('settings.skillsHint')}
-              summary={skillsSummary}
-              tone={state.skillsEnabled.text === 'false' ? 'neutral' : 'ready'}
-              expanded={activeSection === 'skills'}
-              onToggle={() => { setActiveSection(activeSection === 'skills' ? null : 'skills') }}
-            >
-            <BooleanField
-              id="dsh-imagegen-settings-skills-enabled"
-              label={t('settings.skillsEnabled')}
-              hint={t('settings.skillsEnabledHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.skillsEnabled}
-              onEdit={(text) => { props.edit('skillsEnabled', text) }}
-              onReset={() => { props.resetField('skillsEnabled') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-skills-heavy"
-              label={t('settings.allowHeavySkills')}
-              hint={t('settings.allowHeavySkillsHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.allowHeavySkills}
-              onEdit={(text) => { props.edit('allowHeavySkills', text) }}
-              onReset={() => { props.resetField('allowHeavySkills') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-allowlist"
-              label={t('settings.skillAllowlist')}
-              hint={t('settings.skillAllowlistHint')}
-              placeholder="extract-content, image-to-editable-ppt"
-              {...fieldProps}
-              {...state.skillAllowlist}
-              onEdit={(text) => { props.edit('skillAllowlist', text) }}
-              onReset={() => { props.resetField('skillAllowlist') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-output"
-              label={t('settings.skillOutputDir')}
-              hint={t('settings.skillOutputDirHint')}
-              placeholder=""
-              {...fieldProps}
-              {...state.skillOutputDir}
-              onEdit={(text) => { props.edit('skillOutputDir', text) }}
-              onReset={() => { props.resetField('skillOutputDir') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-timeout"
-              label={t('settings.skillHeavyTimeout')}
-              hint={t('settings.skillHeavyTimeoutHint')}
-              placeholder="20"
-              {...fieldProps}
-              {...state.skillHeavyTimeoutMinutes}
-              onEdit={(text) => { props.edit('skillHeavyTimeoutMinutes', text) }}
-              onReset={() => { props.resetField('skillHeavyTimeoutMinutes') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-preset"
-              label={t('settings.skillAgentPreset')}
-              hint={t('settings.skillAgentPresetHint')}
-              placeholder=""
-              {...fieldProps}
-              {...state.skillAgentPreset}
-              onEdit={(text) => { props.edit('skillAgentPreset', text) }}
-              onReset={() => { props.resetField('skillAgentPreset') }}
-            />
-            <div className={css.modelSummary}>
-              <button
-                type="button"
-                className={css.addModel}
-                disabled={disabled || skillProbing}
-                onClick={() => {
-                  setSkillProbing(true)
-                  setSkillProbeResult(null)
-                  void fetch(CANVAS_SKILL_API.list, { method: 'POST' })
-                    .then(async response => await response.json() as { ok?: boolean; skills?: unknown[]; agentAvailable?: boolean; registryAvailable?: boolean })
-                    .then(body => {
-                      const total = Array.isArray(body.skills) ? body.skills.length : 0
-                      setSkillProbeResult(t('settings.skillProbeOk', {
-                        count: total,
-                        agent: body.agentAvailable === true ? t('settings.skillProbeAgentOn') : t('settings.skillProbeAgentOff'),
-                      }))
-                    })
-                    .catch(caught => { setSkillProbeResult(t('settings.storageTestFailed', { error: caught instanceof Error ? caught.message : String(caught) })) })
-                    .finally(() => { setSkillProbing(false) })
-                }}
-              >
-                {skillProbing ? t('settings.skillProbing') : t('settings.skillProbe')}
-              </button>
-              {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
-            </div>
-            </SettingsSection>
-
-            <SettingsSection
-              id="general"
-              title={t('settings.generalTitle')}
-              hint={t('settings.generalHint')}
-              summary={generalSummary}
-              tone={state.enabled.text === 'false' ? 'attention' : 'ready'}
-              expanded={activeSection === 'general'}
-              onToggle={() => { setActiveSection(activeSection === 'general' ? null : 'general') }}
-            >
-            <BooleanField
-              id="dsh-imagegen-settings-enabled"
-              label={t('settings.enabled')}
-              hint={t('settings.enabledHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.enabled}
-              onEdit={(text) => { props.edit('enabled', text) }}
-              onReset={() => { props.resetField('enabled') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-announce"
-              label={t('settings.announceToAgent')}
-              hint={t('settings.announceToAgentHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.announceToAgent}
-              onEdit={(text) => { props.edit('announceToAgent', text) }}
-              onReset={() => { props.resetField('announceToAgent') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-agent-generation"
-              label={t('settings.allowAgentImageGeneration')}
-              hint={t('settings.allowAgentImageGenerationHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.allowAgentImageGeneration}
-              onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
-              onReset={() => { props.resetField('allowAgentImageGeneration') }}
-            />
-            </SettingsSection>
-            <div className={css.footer}>
-              {(state.failed || state.channels.failed) ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
-              <button
-                type="button"
-                className={css.discard}
-                disabled={!state.dirty || state.saving || state.channels.saving}
-                onClick={() => { props.discard(); props.channels.discard() }}
-              >
-                {t('settings.discard')}
-              </button>
-              <button
-                type="button"
-                className={css.save}
-                disabled={blocked}
-                onClick={() => { void props.channels.commit(); void props.save() }}
-              >
-                {t(!state.saving && !state.channels.saving ? 'settings.save' : 'settings.saving')}
-              </button>
-            </div>
-          </div>
-        )
-        : null}
-
-      {open && editing !== undefined ? (
-        <ChannelEditor
-          key={editing.id}
-          t={t}
-          channel={editing}
-          keyHeld={state.channels.keySet[editing.id] === true}
-          usage={usage}
-          otherChannels={channels.filter(channel => channel.id !== editing.id)}
-          isDefault={editing.id === state.channels.defaultChannelId}
-          writable={state.writable}
-          onPatch={(patch) => { replaceChannel(channels, editing.id, patch, props.channels) }}
-          onSetModels={(models) => { props.channels.setChannels(channels.map(channel => channel.id === editing.id ? { ...channel, models } : channel)) }}
-          onSetKey={(value) => { props.channels.setChannelKey(editing.id, value) }}
-          subscriptionStatus={editing.subscription === undefined ? undefined : subscriptionStatus[editing.subscription]}
-          subscriptionBusy={editing.subscription === undefined ? undefined : subscriptionBusy[editing.subscription]}
-          subscriptionMessage={editing.subscription === undefined ? undefined : subscriptionMessage[editing.subscription]}
-          onSubscriptionLogin={(provider) => { void subscriptionLogin(provider) }}
-          onSubscriptionComplete={(provider, input) => { void subscriptionComplete(provider, input) }}
-          onSubscriptionLogout={(provider) => { void subscriptionLogout(provider) }}
-          onSetDefault={() => { props.channels.setDefaultChannel(editing.id) }}
-          onRemove={() => { props.channels.setChannels(channels.filter(channel => channel.id !== editing.id)); if (editing.id === state.channels.defaultChannelId && channels.length > 1) { const next = channels.find(channel => channel.id !== editing.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setEditingId(null) }}
-          onClose={() => { setEditingId(null) }}
-        />
-      ) : null}
-
+      {open ? body : null}
+      {open ? editor : null}
     </section>
   )
+}
+
+/**
+ * The Settings navigation page: the shared surface plus its collapse chrome.
+ * @param props - locale copy, the card snapshot, and the form actions.
+ * @returns the card, or nothing while the namespace is still loading.
+ */
+export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
+  return <ImageGenSettingsSurface {...props} mode="section" />
 }
 
 /** Channel row + dialog helpers -------------------------------------------------- */
