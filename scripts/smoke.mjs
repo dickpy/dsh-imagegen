@@ -4543,7 +4543,10 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   /** Every fetch path the client issued (debug aid for the canvas tools). */
   const requestPaths = []
   let settingsDescribeResponses = 0
-  let pptSubmissions = [], pptUploaded = [], pptClientTasks = []
+  /** Assets the studio's own upload paths staged (prompt reverse). */
+  let uploadedAssets = []
+  /** Reverse-prompt requests the studio issued (body without the images' bytes). */
+  const reversePromptRequests = []
   let updateInstallMode = 'cli'
   let updateApplyCalls = 0
   const canvasDocument = {
@@ -4562,21 +4565,17 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const path = String(input)
     requestPaths.push(path)
     if (path.startsWith('/api/dsh-imagegen/agent-image?')) return { ok: true, blob: async () => new Blob([pngBytes], { type: 'image/png' }) }
-    if (path.endsWith('/ppt/tasks')) return { ok: true, json: async () => ({ ok: true, tasks: pptClientTasks }) }
     if (path.endsWith('/canvas/skills/list')) return { ok: true, json: async () => ({ ok: true, skills: [], installed: ['image-to-editable-ppt'], agentAvailable: true, registryAvailable: true }) }
     if (path.endsWith('/canvas/skills/library')) return { ok: true, json: async () => ({ ok: true, library: { entries: [] } }) }
     if (path.includes('/canvas/file/upload?')) {
       const name = new URL(path, 'http://localhost').searchParams.get('name')
-      const asset = { assetId: `${pptUploaded.length + 1}.png`, url: `/api/dsh-imagegen/canvas/asset/${pptUploaded.length + 1}.png`, mime: init.headers['content-type'], name, bytes: 12, width: 12, height: 12, origin: 'upload' }
-      pptUploaded.push(asset)
+      const asset = { assetId: `${uploadedAssets.length + 1}.png`, url: `/api/dsh-imagegen/canvas/asset/${uploadedAssets.length + 1}.png`, mime: init.headers['content-type'], name, bytes: 12, width: 12, height: 12, origin: 'upload' }
+      uploadedAssets.push(asset)
       return { ok: true, json: async () => ({ ok: true, asset }) }
     }
-    if (path.endsWith('/ppt/run')) {
-      const payload = JSON.parse(init.body)
-      pptSubmissions.push(payload)
-      const task = { id: 'ppt-client-1', persistenceError: 'EPERM: fixture checkpoint warning', canvasId: 'ppt', skillId: 'ppt.fromImages', label: 'PPT', tier: 'heavy', status: 'completed', startedAt: Date.now(), pptImages: payload.images, output: { nodes: [{ id: 'ppt-file', type: 'file', title: 'final.pptx', metadata: { asset: { assetId: 'deck.pptx', url: '/api/dsh-imagegen/canvas/asset/deck.pptx', name: 'final.pptx', mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' } } }], connections: [], warnings: [] } }
-      pptClientTasks = [task]
-      return { ok: true, json: async () => ({ ok: true, task }) }
+    if (path.endsWith('/reverse-prompt')) {
+      reversePromptRequests.push(JSON.parse(init.body))
+      return { ok: true, json: async () => ({ ok: true, prompt: 'a cinematic portrait, 85mm, f/1.8' }) }
     }
     if (path.endsWith('/update/check')) return { ok: true, json: async () => ({ ok: true, update: { currentVersion: '1.7.0', latestVersion: '9.9.9', updateAvailable: true, releaseUrl: 'https://github.com/dickpy/dsh-imagegen/releases', releaseNotes: 'Fixture notes', profile: updateInstallMode === 'cli' ? 'web' : 'desktop', installMode: updateInstallMode } }) }
     if (path.endsWith('/update/apply')) { updateApplyCalls += 1; return { ok: true, json: async () => updateInstallMode === 'host' ? { ok: true, updatedVersion: '9.9.9', restartRequired: true } : ({ ok: false, code: 'update-failed', message: 'profile: web\nERR_PNPM_UNEXPECTED_STORE: test store mismatch' }) } }
@@ -5192,7 +5191,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Gallery keeps the sidebar history visible, and selecting one history
     // group returns the center workspace to text-to-image.
     const tablistButtons = [...view.querySelectorAll('[role="tablist"] button')]
-    assert.equal(tablistButtons.length, 7, 'top nav has five entries and the normal workspace shows two generation modes')
+    assert.equal(tablistButtons.length, 6, 'top nav has four entries and the normal workspace shows two generation modes')
     const ecommerceSwitch = tablistButtons.find(button => button.textContent?.includes('电商模式'))
     assert.ok(ecommerceSwitch !== undefined, 'ecommerce top-nav entry is present')
     const normalSwitch = tablistButtons.find(button => button.textContent?.includes('普通生图'))
@@ -5204,7 +5203,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const ecommerceWorkspace = view.querySelector('[data-ecommerce-workspace]')
     assert.ok(ecommerceWorkspace !== null, 'ecommerce workspace is rendered')
     assert.equal(jsdomWindow.getComputedStyle(ecommerceWorkspace).fontSize, '12px', 'ecommerce UI inherits the compact panel type scale')
-    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 5, 'generation sub-modes hide in the ecommerce workspace')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 4, 'generation sub-modes hide in the ecommerce workspace')
     assert.equal([...view.querySelectorAll('textarea')].some(textarea => (textarea.getAttribute('placeholder') ?? '').includes('描述你想要的画面')), false, 'normal prompt card is hidden in ecommerce workspace')
     const ecommerceName = view.querySelector('input[placeholder="商品名称（必填）"]')
     assert.ok(ecommerceName !== null, 'ecommerce product form is rendered')
@@ -5282,7 +5281,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Back to the normal workspace via the top nav: gallery works as before.
     normalSwitch.click()
     await new Promise(resolve => setTimeout(resolve, 50))
-    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 7, 'generation sub-modes return in the normal workspace')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 6, 'generation sub-modes return in the normal workspace')
     const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('素材库'))
     assert.ok(galleryPill !== undefined, '素材库入口存在')
     galleryPill.click()
@@ -6112,45 +6111,30 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Earlier native-new-session coverage closed the studio; reopen it first.
     jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
     await new Promise(resolve => setTimeout(resolve, 40))
-    // Import directly from a completed generation, then upload/reorder slides.
-    view.querySelector('[data-comparison-task] [data-image-to-ppt]').click()
-    await waitForSelector(view, '[data-ppt-input]')
-    const pptView = view.querySelector('[data-ppt-workspace]')
-    assert.equal(pptView.hidden, false)
-    assert.equal(pptView.querySelector('[data-ppt-upload-empty]'), null, 'source thumbnails replace the upload hero')
-    assert.ok(pptView.querySelector('[data-ppt-add]'))
-    pptView.querySelector('[data-ppt-open-settings]').click()
-    await waitForSelector(jsdomDocument, '[role="dialog"][aria-label="图片转 PPT 配置"]')
-    assert.ok(jsdomDocument.querySelector('[data-ppt-setup]'))
-    jsdomDocument.querySelector('[role="dialog"][aria-label="图片转 PPT 配置"] button[aria-label="关闭"]').click()
-    await new Promise(resolve => setTimeout(resolve, 30))
-    assert.equal(pptUploaded[0].name, 'dsh-image-1.png')
-    const pptUpload = pptView.querySelector('input[type="file"]')
-    Object.defineProperty(pptUpload, 'files', { value: [new dom.window.File(['slide'], 'second.png', { type: 'image/png' })], configurable: true })
-    pptUpload.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
-    assert.ok(await waitUntil(() => pptView.querySelectorAll('[data-ppt-input]').length === 2))
-    pptView.querySelectorAll('[data-ppt-input]')[1].querySelector('button[aria-label="向前移动一页"]').click()
-    await new Promise(resolve => setTimeout(resolve, 30))
-    assert.ok(pptView.querySelector('[data-ppt-input]').textContent.includes('second.png'))
-    const convert = pptView.querySelector('[data-ppt-convert]')
-    assert.ok(await waitUntil(() => !convert.disabled))
-    convert.click()
-    assert.ok(await waitUntil(() => pptSubmissions.length === 1))
-    assert.equal(pptSubmissions[0].images[0].name, 'second.png')
-    assert.equal(pptSubmissions[0].offlineOcr, true)
-    assert.ok(await waitUntil(() => pptView.querySelector('a[download="final.pptx"]')))
-    assert.ok(pptView.textContent.includes('EPERM: fixture checkpoint warning'), 'a persistence warning stays visible without hiding the completed deck')
-    assert.equal(pptView.querySelectorAll('[data-ppt-task] img').length, 0, 'no source images are shown in the generated slide viewer')
-    assert.ok(await waitUntil(() => pptView.querySelector('[data-ppt-slide="1"]')?.textContent.includes('第一页可编辑内容')), 'generated PPT opens inline without an extra click')
-    pptView.querySelector('[data-ppt-page="2"]').click()
-    assert.ok(await waitUntil(() => pptView.querySelector('[data-ppt-slide="2"]')?.textContent.includes('第二页可编辑内容')))
-    pptView.querySelector('[data-ppt-preview]').click()
-    await waitForSelector(jsdomDocument, '[role="dialog"][aria-label="final.pptx"]')
-    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[role="dialog"]')?.textContent.includes('文件预览正文')))
-    jsdomDocument.querySelector('[role="dialog"][aria-label="final.pptx"] [aria-label="关闭"]').click()
-    normalSwitch.click()
-    await new Promise(resolve => setTimeout(resolve, 30))
-    assert.equal(pptView.hidden, true)
+    // The prompt-reverse entry sits where the removed PPT action used to be:
+    // it opens the dialog with that image, stages it as a canvas asset, posts
+    // the reverse request and hands the answer back to the composer.
+    view.querySelector('[data-comparison-task] [data-reverse-prompt]').click()
+    await waitForSelector(jsdomDocument, '[data-reverse-dialog]')
+    const reverseDialog = jsdomDocument.querySelector('[data-reverse-dialog]')
+    const reverseResult = reverseDialog.querySelector('[data-reverse-result]')
+    assert.equal(reverseResult.value, '', 'the result field starts empty')
+    assert.equal(uploadedAssets.length, 0, 'opening the dialog uploads nothing')
+    reverseDialog.querySelector('[data-reverse-run]').click()
+    assert.ok(await waitUntil(() => reversePromptRequests.length === 1), 'the run button posts the reverse request')
+    assert.equal(uploadedAssets.length, 1, 'the generated image travels as a canvas asset')
+    assert.equal(uploadedAssets[0].name, 'dsh-image-1.png')
+    assert.equal(reversePromptRequests[0].images[0].assetId, uploadedAssets[0].assetId, 'the request points at the uploaded asset')
+    assert.equal(reversePromptRequests[0].detail, 'standard', 'the detail selector defaults to standard')
+    assert.equal(reversePromptRequests[0].output, 'follow', 'the output selector follows the UI language by default')
+    assert.equal(reversePromptRequests[0].language, 'zh', 'the request carries the panel language')
+    assert.ok(await waitUntil(() => reverseResult.value === 'a cinematic portrait, 85mm, f/1.8', 5000), 'the returned prompt fills the result field')
+    const useReverse = [...reverseDialog.querySelectorAll('button')].find(button => button.textContent === '填入提示词')
+    assert.ok(useReverse !== undefined, 'the dialog offers the prompt to the composer')
+    useReverse.click()
+    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-reverse-dialog]') === null), 'using the prompt closes the dialog')
+    assert.equal(view.querySelector('textarea[placeholder*="描述你想要的画面"]').value, 'a cinematic portrait, 85mm, f/1.8', 'the prompt lands in the generation composer')
+    assert.equal([...view.querySelectorAll('[role="tablist"] button')].some(button => button.textContent?.includes('PPT')), false, 'the PPT top-nav entry is gone')
     assert.ok(view.querySelector('button[class*="generateButton"]'), 'normal generation remains available')
 
     // Re-applying the client module to the same document must retire the

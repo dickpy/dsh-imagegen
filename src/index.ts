@@ -444,6 +444,12 @@ export interface Config {
    * silently shipping a text-only slide); `text` is typography only.
    */
   pptVisualMode?: 'hybrid' | 'regions' | 'text'
+  /**
+   * Whether the image → PPT entry is advertised anywhere. Off by default: the
+   * deck pipeline needs a user-installed skill plus a vision model, and its
+   * results were not good enough to show. Routes stay reachable when re-enabled.
+   */
+  pptModeEnabled?: boolean
   /* --------------------------- skill configuration -------------------------- */
   /**
    * Per-skill configuration values declared by `skill.config.json`, keyed
@@ -507,6 +513,7 @@ const configSchema = z.object({
   pptConcurrency: z.number().default(2).volatile(),
   pptPageBudgetMinutes: z.number().default(6).volatile(),
   pptVisualMode: z.union([z.const('hybrid'), z.const('regions'), z.const('text')]).default('hybrid').volatile(),
+  pptModeEnabled: z.boolean().default(false).volatile(),
   skillConfig: z.dict(z.string()).default({}).volatile(),
   skillConfigSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
   apiUrl: z.string().default('').volatile(),
@@ -636,6 +643,8 @@ export interface EffectiveConfig {
      * `off` (typography only).
      */
     deckVisualMode: 'imagegen' | 'regions' | 'off'
+    /** Whether the deck entry is advertised at all (off by default). */
+    pptEnabled: boolean
   }
   /** Per-skill configuration values, secrets included (host side only). */
   skillConfig: SkillConfigStore
@@ -748,6 +757,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
         deckConcurrency: Math.min(3, Math.max(1, Math.round(value.pptConcurrency ?? 2))),
         deckPageBudgetMs: Math.max(60_000, Math.round((value.pptPageBudgetMinutes ?? 6) * 60_000)),
         deckVisualMode: value.pptVisualMode === 'text' ? 'off' : value.pptVisualMode === 'regions' ? 'regions' : 'imagegen',
+        pptEnabled: value.pptModeEnabled === true,
       },
       skillConfig: {
         values: asConfigDict(value.skillConfig),
@@ -817,12 +827,19 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     deckMode: () => resolveSkills().deckMode,
     /** Hybrid by default: measured visuals, image backend only for artwork pages. */
     deckVisualMode: () => resolveSkills().deckVisualMode,
+    /** The deck entry ships hidden; routes stay available for an opt-in. */
+    pptEnabled: () => resolveSkills().pptEnabled,
     deckLimits: () => {
       const value = resolveSkills()
       return { concurrency: value.deckConcurrency, pageBudgetMs: value.deckPageBudgetMs }
     },
     /** The local pipeline needs a vision-capable chat model to read a page. */
     deckChatReady: () => {
+      const model = resolvePromptModelConfig(resolve())
+      return model.model.trim() !== '' && model.apiUrl.trim() !== ''
+    },
+    /** Same requirement for every other image → model action. */
+    chatReady: () => {
       const model = resolvePromptModelConfig(resolve())
       return model.model.trim() !== '' && model.apiUrl.trim() !== ''
     },

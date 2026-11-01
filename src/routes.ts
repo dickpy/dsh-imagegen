@@ -30,7 +30,7 @@ import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate, updateInstallTarget, type UpdateHostContext } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
 import { clearDiagnostics, listDiagnostics } from './diagnostics-store.ts'
-import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isChannelProtocolPreference, isTemplateSourceId, type PptRunRequest, type PptRuntimeStatus, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, DIAGNOSTICS_API, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, REVERSE_PROMPT_API, SETTINGS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isChannelProtocolPreference, isTemplateSourceId, type PptRunRequest, type PptRuntimeStatus, type ReversePromptRequest, type ReversePromptResult, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -156,6 +156,8 @@ export interface ImageGenRoutesDeps {
     run: (request: CanvasSkillRunRequest) => Promise<CanvasSkillTask>
     runPpt?: (request: PptRunRequest) => Promise<CanvasSkillTask>
     pptTasks?: () => Promise<CanvasSkillTask[]>
+    /** Reverse-engineer a generation prompt from reference images (studio). */
+    reversePrompt?: (request: ReversePromptRequest) => Promise<ReversePromptResult>
     task: (id: string) => CanvasSkillTask | undefined
     tasksOfCanvas: (canvasId: string) => CanvasSkillTask[]
     cancel: (id: string) => Promise<boolean>
@@ -1558,6 +1560,42 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           if (runtime !== undefined && !runtime.available) throw new Error(`editppt 尚未就绪，请在生图配置中检查或安装运行环境。${runtime.message}`)
           writeJson(res, 200, { ok: true, task: await deps.skills.runPpt({ images, offlineOcr: body.offlineOcr, ...parseSkillLanguage(body), ...visualMode === undefined ? {} : { visualMode } }) })
         } catch (error) { writeJson(res, 200, { ok: false, code: 'ppt-run-failed', message: messageOf(error) }) }
+      },
+    },
+    // ------------------------------------------------ prompt reverse (studio)
+    //
+    // Same model call the canvas action makes, but addressed by asset id so the
+    // studio can reverse a generated/history/gallery image without a canvas.
+    {
+      kind: 'exact',
+      path: REVERSE_PROMPT_API.run,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (!Array.isArray(body?.images) || body.images.length < 1 || body.images.length > 6) {
+          writeJson(res, 200, { ok: false, code: 'bad-request', message: '请选择 1–6 张图片' }); return
+        }
+        const images: CanvasAssetRef[] = []
+        for (const raw of body.images) {
+          if (raw === null || typeof raw !== 'object' || typeof raw.assetId !== 'string' || !/^[\w.-]+$/.test(raw.assetId)) {
+            writeJson(res, 200, { ok: false, code: 'bad-request', message: '图片资产无效' }); return
+          }
+          images.push({ assetId: raw.assetId, url: `${CANVAS_API.asset}/${encodeURIComponent(raw.assetId)}`, mime: '', width: 0, height: 0, bytes: 0, origin: 'upload' })
+        }
+        if (deps.skills?.reversePrompt === undefined) { writeJson(res, 200, { ok: false, message: 'reverse prompt unavailable' }); return }
+        const detail = body.detail === 'brief' || body.detail === 'detailed' ? body.detail as 'brief' | 'detailed' : 'standard'
+        const output = body.output === 'zh' || body.output === 'en' ? body.output as 'zh' | 'en' : 'follow'
+        const instruction = typeof body.instruction === 'string' ? body.instruction.trim() : ''
+        try {
+          const result = await deps.skills.reversePrompt({
+            images,
+            detail,
+            output,
+            ...instruction === '' ? {} : { instruction },
+            ...parseSkillLanguage(body),
+          })
+          writeJson(res, 200, { ok: true, prompt: result.prompt })
+        } catch (error) { writeJson(res, 200, { ok: false, code: 'reverse-failed', message: messageOf(error) }) }
       },
     },
     // --------------------------------------------------- canvas skills list

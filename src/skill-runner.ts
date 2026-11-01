@@ -34,6 +34,8 @@ import type {
   CanvasSkillRunRequest,
   CanvasSkillTask,
   PptRunRequest,
+  ReversePromptRequest,
+  ReversePromptResult,
 } from './protocol.ts'
 import { extractFileText, MAX_EXTRACTED_CHARS } from './file-text.ts'
 import { redactDiagnosticText } from './diagnostics-store.ts'
@@ -43,6 +45,7 @@ import {
   BUILTIN_EXTRACT,
   BUILTIN_POLISH,
   BUILTIN_PPT,
+  BUILTIN_REVERSE,
   canvasSkillCatalog,
   EDITABLE_PPT_SKILL,
   isEditablePptSkill,
@@ -179,8 +182,20 @@ export interface SkillRunnerOptions {
   deckLimits?: () => { concurrency: number; pageBudgetMs: number }
   /** Whether a chat model is configured that can look at a slide image. */
   deckChatReady?: () => boolean
+  /**
+   * Whether any vision-capable chat model is configured. Shared by every action
+   * that sends an image to the model (describe, reverse prompt); the deck gate
+   * keeps its own copy for historical reasons.
+   */
+  chatReady?: () => boolean
   /** Read one document out of the installed upstream skill bundle. */
   pptSkillDoc?: (relative: string) => Promise<string | undefined>
+  /**
+   * Whether the image → PPT entry is advertised at all. It ships off: the deck
+   * pipeline needs a user-installed skill plus a vision model, and the results
+   * were not good enough to show by default. The routes stay reachable.
+   */
+  pptEnabled?: () => boolean
   /** Durable task storage seam; defaults to immutable filesystem checkpoints. */
   pptTasks?: Pick<PptTaskStore, 'write' | 'list'>
 }
@@ -204,6 +219,75 @@ const TEXT_NODE_SIZE = { width: 320, height: 260 }
 const FILE_NODE_SIZE = { width: 300, height: 170 }
 const NODE_GAP = 96
 const STACK_GAP = 48
+
+/** One resolved reference image for prompt reverse-engineering. */
+interface ReverseImage { mime: string; data: Buffer }
+
+/** How long the reverse-engineered prompt should be, per language. */
+const REVERSE_DETAIL_HINT: Record<'brief' | 'standard' | 'detailed', { zh: string; en: string }> = {
+  brief: {
+    zh: '长度：60 词以内，只写决定主体与风格的关键线索。',
+    en: 'Length: under 60 words; only the cues that decide subject and style.',
+  },
+  standard: {
+    zh: '长度：约 120 词，覆盖主体、构图、光线、色彩与风格。',
+    en: 'Length: about 120 words, covering subject, composition, lighting, colour and style.',
+  },
+  detailed: {
+    zh: '长度：可到 220 词，逐项写清镜头、光线、材质、后期与画质词。',
+    en: 'Length: up to 220 words; spell out lens, lighting, materials, post-processing and quality terms.',
+  },
+}
+
+/**
+ * System prompt for prompt reverse-engineering.
+ *
+ * A prompt that actually reproduces a picture is specific about the things a
+ * model can act on - lens, light direction, material, palette - so the rules
+ * forbid the "8K masterpiece" filler that makes reverse-engineered prompts
+ * useless, and forbid inventing brands or watermarks the image does not show.
+ */
+function reverseSystem(promptLanguage: 'zh' | 'en', detail: 'brief' | 'standard' | 'detailed', count: number): string {
+  const hint = REVERSE_DETAIL_HINT[detail]
+  if (promptLanguage === 'zh') {
+    return [
+      '你是图像逆向提示词工程师：读图，写出一段可以直接喂给文生图模型、能尽量复现这张图的提示词。',
+      '规则：',
+      '1. 只输出提示词正文。不要解释、不要标题、不要 markdown、不要用引号把整段包起来。',
+      '2. 组织顺序：主体与动作 → 构图与镜头（视角/景别/焦段）→ 光线与氛围 → 色彩与影调 → 材质与细节 → 风格与媒介（摄影/插画/3D/胶片…）→ 画质与参数词。',
+      '3. 只写看得见的具体信息：「85mm 定焦、f/1.8、浅景深、背景奶油散景」而不是「虚化」；「浅金色晨光从左侧 45° 打入，地面拉出长阴影」而不是「光线很好」。',
+      '4. 图里有文字时，用引号原样抄录关键文字并说明它的位置与层级；不要编造品牌名、作者名或水印。',
+      '5. 多图时：第一张定主体与构图，其余只贡献风格、材质、配色线索，并在结尾注明「其余参考图提供风格」。',
+      '6. 不堆砌「高清、8K、杰作、最佳画质」这类空词；只有原图确实呈现该质感时才写。',
+      `7. ${hint.zh}`,
+      count > 1 ? '8. 这是一组参考图，写成一段整体提示词，不要逐张分写。' : '',
+    ].filter(Boolean).join('\n')
+  }
+  return [
+    'You are an image prompt reverse-engineer: read the picture and write one prompt that a text-to-image model could use to reproduce it.',
+    'Rules:',
+    '1. Output the prompt only - no explanation, no heading, no markdown, no surrounding quotes.',
+    '2. Order: subject and action -> composition and lens (angle, framing, focal length) -> lighting and atmosphere -> colour and tonality -> materials and detail -> style and medium (photo/illustration/3D/film) -> quality and parameter terms.',
+    '3. Only concrete, visible facts: "85mm prime, f/1.8, shallow depth of field, creamy background bokeh" rather than "blurred"; "low golden morning light from camera left at 45 degrees, long shadows on the floor" rather than "good lighting".',
+    '4. When the image contains text, quote the key wording verbatim and say where it sits and how prominent it is; never invent brands, authors or watermarks.',
+    '5. With several references: the first sets subject and composition, the others only contribute style, material and palette cues; say so at the end.',
+    '6. No filler ("high quality, 8K, masterpiece"); only claim a look the source actually shows.',
+    `7. ${hint.en}`,
+    count > 1 ? '8. These are reference images: write one combined prompt, not one per image.' : '',
+  ].filter(Boolean).join('\n')
+}
+
+/** Detail parameter of the reverse action (`detail:brief|standard|detailed`). */
+function reverseDetailOf(params?: Record<string, string>): 'brief' | 'standard' | 'detailed' {
+  const raw = (params?.detail ?? '').trim()
+  return raw === 'brief' || raw === 'detailed' ? raw : 'standard'
+}
+
+/** Output-language parameter of the reverse action (`output:follow|zh|en`). */
+function reverseOutputOf(params?: Record<string, string>): 'follow' | 'zh' | 'en' {
+  const raw = (params?.output ?? '').trim()
+  return raw === 'zh' || raw === 'en' ? raw : 'follow'
+}
 
 /** Chat-model instructions per built-in light action. */
 const POLISH_DIRECTIVES: Record<string, { zh: string; en: string }> = {
@@ -509,6 +593,7 @@ export class SkillRunner {
     return {
       skills: canvasSkillCatalog(external, t, {
         agentAvailable,
+        pptEnabled: this.options.pptEnabled?.() ?? true,
         ...this.options.pptInstallUrl === undefined ? {} : { pptInstallUrl: this.options.pptInstallUrl },
         ...missing === undefined ? {} : { configMissing: name => missing.get(name) },
       }),
@@ -766,6 +851,7 @@ export class SkillRunner {
       return this.runCollectedLight(target, inputs, skill, t)
     }
     if (skill.id === BUILTIN_DESCRIBE) return this.runBuiltinDescribe(target, inputs, skill, chat, t)
+    if (skill.id === BUILTIN_REVERSE) return this.runBuiltinReverse(target, inputs, skill, request, chat, t)
     if (skill.id === BUILTIN_POLISH) return this.runBuiltinPolish(target, skill, request, chat, t)
     return this.runExternalLight(target, inputs, skill, request, chat, t)
   }
@@ -853,6 +939,98 @@ export class SkillRunner {
     const warnings = images.length > MAX_VISION_IMAGES ? [t('canvas.skills.tooManyImages', { count: MAX_VISION_IMAGES })] : []
     const node = textOutputNode(target.node, skill.name, answer, skill.id, skill.name, [target.node.id])
     return outputOf([node], [{ id: newId('edge'), fromNodeId: target.node.id, toNodeId: node.id }], warnings)
+  }
+
+  /**
+   * Reverse-engineer a generation prompt from images (canvas node action).
+   *
+   * The value is in the wording of `reverseSystem`: a prompt that reproduces the
+   * picture needs concrete lens/light/material terms, not "high quality, 8K".
+   */
+  private async runBuiltinReverse(
+    target: RunInput,
+    inputs: RunInput[],
+    skill: CanvasSkillDescriptor,
+    request: CanvasSkillRunRequest,
+    chat: SkillChatBackend,
+    t: CatalogTranslate,
+  ): Promise<CanvasSkillOutput> {
+    const images = inputs.filter(input => input.node.type === 'image' && input.asset !== undefined && isImageAsset(input.asset!) && input.data !== undefined)
+    if (images.length === 0) throw new Error(t('canvas.skills.needImage'))
+    const prompt = await this.reverseFromImages({
+      chat,
+      images: images.map(input => ({ mime: baseMime(input.asset!.mime), data: input.data! })),
+      detail: reverseDetailOf(request.params),
+      output: reverseOutputOf(request.params),
+      instruction: request.instruction,
+      language: currentSkillLanguage(),
+    })
+    const warnings = images.length > MAX_VISION_IMAGES ? [t('canvas.skills.tooManyImages', { count: MAX_VISION_IMAGES })] : []
+    const node = textOutputNode(target.node, skill.name, prompt, skill.id, skill.name, [target.node.id])
+    return outputOf([node], [{ id: newId('edge'), fromNodeId: target.node.id, toNodeId: node.id }], warnings)
+  }
+
+  /**
+   * Standalone reverse prompt for the studio (no canvas, no task queue): the
+   * caller passes asset ids, the host resolves the bytes and asks the same model.
+   */
+  async reversePrompt(request: ReversePromptRequest): Promise<ReversePromptResult> {
+    const t = this.translate(request.language)
+    const chat = this.backend.chat
+    if (chat === undefined) throw new Error(t('canvas.skills.noChat'))
+    if (this.options.chatReady?.() === false) throw new Error(t('prompt.reverse.needModel'))
+    if (request.images.length === 0) throw new Error(t('canvas.skills.needImage'))
+    if (request.images.length > MAX_VISION_IMAGES) throw new Error(t('canvas.skills.tooManyImages', { count: MAX_VISION_IMAGES }))
+    const resolved: ReverseImage[] = []
+    for (const ref of request.images) {
+      const found = await this.backend.canvas.readAsset(ref.assetId)
+      if (found === undefined || !baseMime(found.mime).startsWith('image/')) throw new Error(t('canvas.skills.needImage'))
+      resolved.push({ mime: baseMime(found.mime), data: found.data })
+    }
+    const prompt = await this.reverseFromImages({
+      chat,
+      images: resolved,
+      detail: request.detail ?? 'standard',
+      output: request.output ?? 'follow',
+      instruction: request.instruction,
+      language: request.language,
+    })
+    return { prompt }
+  }
+
+  /** One model call that turns reference images into a generation prompt. */
+  private async reverseFromImages(input: {
+    chat: SkillChatBackend
+    images: ReverseImage[]
+    detail: 'brief' | 'standard' | 'detailed'
+    output: 'follow' | 'zh' | 'en'
+    instruction?: string
+    language?: string
+  }): Promise<string> {
+    const language = input.language ?? currentSkillLanguage()
+    const english = !(language.startsWith('zh') || language === '')
+    const promptLanguage = input.output === 'follow' ? (english ? 'en' : 'zh') : input.output
+    const parts: SkillChatPart[] = [{
+      type: 'text',
+      text: english
+        ? `Reverse-engineer the generation prompt for ${input.images.length} reference image(s).`
+        : `请反推这 ${input.images.length} 张参考图的生成提示词。`,
+    }]
+    for (const image of input.images.slice(0, MAX_VISION_IMAGES)) {
+      parts.push({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.data.toString('base64')}` } })
+    }
+    const extra = (input.instruction ?? '').trim()
+    if (extra !== '') {
+      parts.push({ type: 'text', text: english ? `Extra requirement: ${extra}` : `额外要求：${extra}` })
+    }
+    const answer = await input.chat.complete({
+      system: reverseSystem(promptLanguage, input.detail, input.images.length),
+      content: parts,
+      temperature: 0.35,
+    })
+    const prompt = answer.trim().replace(/^```[a-z]*\n?|```$/g, '').trim()
+    if (prompt === '') throw new Error(english ? 'the model returned an empty prompt' : '模型没有返回提示词')
+    return prompt
   }
 
   private async runBuiltinPolish(

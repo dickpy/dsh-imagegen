@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.13.0'
+export const PLUGIN_VERSION = '1.14.0'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -608,6 +608,27 @@ export interface PptRuntimeStatus {
   available: boolean
   message: string
 }
+
+/** Standalone "reverse-engineer a prompt from images" request (studio + canvas). */
+export interface ReversePromptRequest {
+  images: CanvasAssetRef[]
+  /** Output length: brief / standard / detailed. */
+  detail?: 'brief' | 'standard' | 'detailed'
+  /** Prompt language: follow the UI, Chinese or English. */
+  output?: 'follow' | 'zh' | 'en'
+  /** Extra requirement from the user (style focus, keep/change hints). */
+  instruction?: string
+  language?: string
+}
+
+export interface ReversePromptResult {
+  prompt: string
+}
+
+/** Loopback prompt-reverse endpoint (mirrors the deck's standalone route). */
+export const REVERSE_PROMPT_API = {
+  run: '/api/dsh-imagegen/reverse-prompt',
+} as const
 
 export interface CanvasSkillRunRequest {
   canvasId: string

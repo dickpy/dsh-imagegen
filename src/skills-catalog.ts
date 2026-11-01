@@ -53,7 +53,30 @@ const POLISH_STYLE_KEYS = {
 export const BUILTIN_POLISH = 'polish.text'
 export const BUILTIN_DESCRIBE = 'describe.image'
 export const BUILTIN_EXTRACT = 'extract.content'
+export const BUILTIN_REVERSE = 'prompt.reverse'
 export const BUILTIN_PPT = 'ppt.fromImages'
+
+/** How long the reverse-engineered prompt should be. */
+export const REVERSE_DETAILS = ['brief', 'standard', 'detailed'] as const
+export type ReverseDetail = typeof REVERSE_DETAILS[number]
+
+/** Which language the reverse-engineered prompt is written in. */
+export const REVERSE_OUTPUTS = ['follow', 'zh', 'en'] as const
+export type ReverseOutput = typeof REVERSE_OUTPUTS[number]
+
+/** Copy keys of the detail levels (literal so the copy table can typecheck). */
+const REVERSE_DETAIL_KEYS = {
+  brief: 'canvas.reverse.detailBrief',
+  standard: 'canvas.reverse.detailStandard',
+  detailed: 'canvas.reverse.detailDetailed',
+} as const
+
+/** Copy keys of the output languages. */
+const REVERSE_OUTPUT_KEYS = {
+  follow: 'canvas.reverse.outputFollow',
+  zh: 'canvas.reverse.outputZh',
+  en: 'canvas.reverse.outputEn',
+} as const
 
 /**
  * The built-in catalog. Order is the menu order: the high-frequency text
@@ -65,9 +88,13 @@ export const BUILTIN_PPT = 'ppt.fromImages'
  */
 export function builtinCanvasSkills(
   t: CatalogTranslate,
-  options: { agentAvailable: boolean; pptInstallUrl?: string },
+  options: { agentAvailable: boolean; pptInstallUrl?: string; pptEnabled?: boolean },
 ): CanvasSkillDescriptor[] {
   const polishStyles: CanvasSkillDescriptor['params'] = POLISH_STYLES.map(style => ({ id: style, label: t(POLISH_STYLE_KEYS[style]) }))
+  const reverseParams: CanvasSkillDescriptor['params'] = [
+    ...REVERSE_DETAILS.map(detail => ({ id: `detail:${detail}`, label: t(REVERSE_DETAIL_KEYS[detail]) })),
+    ...REVERSE_OUTPUTS.map(output => ({ id: `output:${output}`, label: t(REVERSE_OUTPUT_KEYS[output]) })),
+  ]
   return [
     {
       id: BUILTIN_POLISH,
@@ -89,6 +116,16 @@ export function builtinCanvasSkills(
       output: 'text',
     },
     {
+      id: BUILTIN_REVERSE,
+      name: t('canvas.skills.reverse'),
+      description: t('canvas.skills.reverseDesc'),
+      origin: BUILTIN_ORIGIN,
+      tier: 'light',
+      accepts: ['image'],
+      output: 'text',
+      params: reverseParams,
+    },
+    {
       id: BUILTIN_EXTRACT,
       name: t('canvas.skills.extract'),
       description: t('canvas.skills.extractDesc'),
@@ -97,21 +134,32 @@ export function builtinCanvasSkills(
       accepts: ['file', 'image'],
       output: 'text',
     },
-    {
-      id: BUILTIN_PPT,
-      name: t('canvas.skills.ppt'),
-      description: t('canvas.skills.pptDesc'),
-      origin: BUILTIN_ORIGIN,
-      tier: 'heavy',
-      accepts: ['image'],
-      output: 'file',
-      costHint: t('canvas.skills.pptCost'),
-      requires: options.agentAvailable ? [t('canvas.skills.pptRequires')] : [t('canvas.skills.needAgent')],
-      // Backed by a user-installed host skill: the picker offers the install.
-      skillName: EDITABLE_PPT_SKILL,
-      ...options.pptInstallUrl === undefined ? {} : { installUrl: options.pptInstallUrl },
-    },
+    // The deck pipeline stays implemented but is no longer advertised: it needs a
+    // user-installed skill plus a vision model, and its results were not good
+    // enough to show by default. `pptModeEnabled` turns the entry back on.
+    ...options.pptEnabled === false ? [] : [pptDescriptor(t, options)],
   ]
+}
+
+/** The deck entry, kept in its own function so its literal types stay narrow. */
+function pptDescriptor(
+  t: CatalogTranslate,
+  options: { agentAvailable: boolean; pptInstallUrl?: string },
+): CanvasSkillDescriptor {
+  return {
+    id: BUILTIN_PPT,
+    name: t('canvas.skills.ppt'),
+    description: t('canvas.skills.pptDesc'),
+    origin: BUILTIN_ORIGIN,
+    tier: 'heavy',
+    accepts: ['image'],
+    output: 'file',
+    costHint: t('canvas.skills.pptCost'),
+    requires: options.agentAvailable ? [t('canvas.skills.pptRequires')] : [t('canvas.skills.needAgent')],
+    // Backed by a user-installed host skill: the picker offers the install.
+    skillName: EDITABLE_PPT_SKILL,
+    ...options.pptInstallUrl === undefined ? {} : { installUrl: options.pptInstallUrl },
+  }
 }
 
 /** Long-running pipeline markers: a skill matching one of these runs an agent. */
@@ -204,7 +252,7 @@ export function mergeExternalSkills(
 export function canvasSkillCatalog(
   external: readonly ExternalSkillSummary[],
   t: CatalogTranslate,
-  options: { agentAvailable: boolean; pptInstallUrl?: string; configMissing?: (name: string) => string[] | undefined },
+  options: { agentAvailable: boolean; pptInstallUrl?: string; pptEnabled?: boolean; configMissing?: (name: string) => string[] | undefined },
 ): CanvasSkillDescriptor[] {
   const builtins = builtinCanvasSkills(t, options)
   const taken = new Set(builtins.map(skill => skill.id))
