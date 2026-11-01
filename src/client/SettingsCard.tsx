@@ -20,7 +20,7 @@ import { CardForm, booleanField, secretField, textField, type CardActions, type 
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel, modelFamily } from '../model-catalog.ts'
-import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isChatCompletionsUrl, isSubscriptionProvider, resolveChannelProtocol, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
+import { IMAGE_MODEL_API, PLUGIN_VERSION, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isChatCompletionsUrl, isSubscriptionProvider, resolveChannelProtocol, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -661,6 +661,9 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
           <span className={css.healthBadge} data-state={overallReady ? 'ready' : 'attention'}>
             {overallReady ? t('settings.summaryReady') : t('settings.summaryNeedsSetup')}
           </span>
+          {/* Which build is actually loaded: the fastest way to tell a stale
+              client bundle from a broken setting when a user reports "no effect". */}
+          <span className={css.versionBadge} data-plugin-version={PLUGIN_VERSION}>v{PLUGIN_VERSION}</span>
         </div>
         <div className={css.summaryGrid}>
           {summaryItems.map(item => (

@@ -1325,6 +1325,15 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* Which build is loaded — quiet, but always visible in the overview head. */
+.versionBadge {
+  flex: none;
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
 .healthBadge[data-state='ready'],
 .sectionSummary[data-tone='ready'] {
   color: var(--dsw-color-success, var(--dsw-alias-label-secondary));
