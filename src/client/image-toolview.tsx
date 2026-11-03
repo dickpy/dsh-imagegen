@@ -5,9 +5,11 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AGENT_IMAGE_API } from '../protocol.ts'
 import { CHAT_IMAGE_EVENT } from './conversation-sync.ts'
+import { tt } from './helpers.ts'
 import css from './image-toolview.module.css'
 
 /** Owner props supplied by the host's keyed tool-call slot. */
@@ -28,6 +30,22 @@ interface LoadedImage {
 
 interface ImageToolViewProps extends ImageToolViewOwnerProps {
   sessionId: SessionId
+}
+
+/** Download filename extension per accepted media type. */
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+}
+
+/** Filename for a downloaded result; the attachment name wins when it has one. */
+export function imageFileName(ref: ImageAttachmentRef, index: number): string {
+  const extension = IMAGE_EXTENSIONS[ref.mediaType] ?? 'png'
+  const name = (ref.name ?? '').trim()
+  if (name === '') return `dsh-image-${index + 1}.${extension}`
+  return /\.[a-z0-9]{2,5}$/i.test(name) ? name : `${name}.${extension}`
 }
 
 function isSettled(block: ToolCallBlock): block is Extract<ToolCallBlock, { kind: 'tool-result' }> {
@@ -143,64 +161,221 @@ function useAttachmentImages(
   return { images, error }
 }
 
+/** Decode any accepted result format into PNG, which the clipboard accepts everywhere. */
+function toPngBlob(src: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const source = new Image()
+    source.onerror = () => reject(new Error('Unable to decode image'))
+    source.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = source.naturalWidth
+      canvas.height = source.naturalHeight
+      const context = canvas.getContext('2d')
+      if (context === null || canvas.width === 0 || canvas.height === 0) {
+        reject(new Error('Image conversion unavailable'))
+        return
+      }
+      context.drawImage(source, 0, 0)
+      canvas.toBlob(blob => blob === null ? reject(new Error('Image conversion failed')) : resolve(blob), 'image/png')
+    }
+    source.src = src
+  })
+}
+
+/** Copy a rendered result to the system clipboard (PNG-encoded). */
+async function copyImageSource(src: string): Promise<void> {
+  if (typeof ClipboardItem === 'undefined' || navigator.clipboard?.write === undefined) {
+    throw new Error('Image clipboard unavailable')
+  }
+  const blob = await (await fetch(src)).blob()
+  const png = blob.type.split(';')[0]?.trim().toLowerCase() === 'image/png' ? blob : await toPngBlob(src)
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+}
+
+/**
+ * Full-screen result viewer.
+ *
+ * The conversation window cannot open a new window for a `blob:` URL: the
+ * desktop shell denies every `window.open` / `target="_blank"` that is not
+ * http(s), so an anchor around the thumbnail is a silent no-op there. Rendering
+ * the viewer in place (portal to body, download through `<a download>`) keeps
+ * preview and save working on both the desktop app and `dsh web`.
+ */
+function ImageLightbox(props: {
+  images: LoadedImage[]
+  index: number
+  onIndex: (index: number) => void
+  onClose: () => void
+}): React.JSX.Element | null {
+  const { images, index, onIndex, onClose } = props
+  const dialog = useRef<HTMLDivElement | null>(null)
+  const [copying, setCopying] = useState(false)
+  const [notice, setNotice] = useState<'copied' | 'failed' | null>(null)
+  const image = images[index]
+
+  useEffect(() => {
+    dialog.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (images.length < 2) return
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        onIndex((index - 1 + images.length) % images.length)
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        onIndex((index + 1) % images.length)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [images.length, index, onClose, onIndex])
+
+  if (image === undefined) return null
+
+  const copy = async (): Promise<void> => {
+    setCopying(true)
+    setNotice(null)
+    try {
+      await copyImageSource(image.src)
+      setNotice('copied')
+    } catch {
+      setNotice('failed')
+    } finally {
+      setCopying(false)
+    }
+  }
+
+  const step = (direction: number): void => {
+    onIndex((index + direction + images.length) % images.length)
+  }
+
+  return createPortal(
+    <div className={css.lightbox} data-image-lightbox="" role="presentation" onClick={onClose}>
+      <div
+        className={css.lightboxDialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label={tt('canvas.preview.expand')}
+        ref={dialog}
+        tabIndex={-1}
+        onClick={event => event.stopPropagation()}
+      >
+        <header className={css.lightboxHeader}>
+          <span className={css.lightboxTitle}>{image.ref.name ?? tt('canvas.preview.expand')}</span>
+          {images.length > 1 && <span className={css.lightboxIndex}>{index + 1} / {images.length}</span>}
+          <button type="button" className={css.lightboxClose} aria-label={tt('preview.close')} onClick={onClose}>
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+          </button>
+        </header>
+        <div className={css.lightboxStage}>
+          {images.length > 1 && <button type="button" className={css.lightboxNav} data-dir="prev" aria-label="previous" onClick={() => step(-1)}>‹</button>}
+          <img className={css.lightboxImage} src={image.src} alt={image.ref.name ?? '生成图片'} />
+          {images.length > 1 && <button type="button" className={css.lightboxNav} data-dir="next" aria-label="next" onClick={() => step(1)}>›</button>}
+        </div>
+        <footer className={css.lightboxFooter}>
+          <span className={css.lightboxMeta}>{image.ref.width} × {image.ref.height}</span>
+          {notice !== null && <span className={css.lightboxNotice} role="status">{tt(notice === 'copied' ? 'image.copied' : 'image.copyFailed')}</span>}
+          <span className={css.lightboxActions}>
+            <button type="button" className={css.lightboxAction} disabled={copying} onClick={() => { void copy() }}>{tt('image.copy')}</button>
+            <a className={css.lightboxDownload} href={image.src} download={imageFileName(image.ref, index)} data-image-download="">{tt('download')}</a>
+            <button type="button" className={css.lightboxAction} onClick={onClose}>{tt('preview.close')}</button>
+          </span>
+        </footer>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/** Fetch one result attachment and hand the view a same-origin object URL. */
+export async function loadToolImage(_sessionId: SessionId, ref: ImageAttachmentRef): Promise<string> {
+  // Tool-result images intentionally do not occur in model-visible session
+  // content, so session.readAttachment() rejects them. The plugin route
+  // reads the same durable attachment after validating the complete ref.
+  const query = new URLSearchParams({
+    attachment_id: String(ref.attachmentId),
+    media_type: ref.mediaType,
+    bytes: String(ref.bytes),
+    width: String(ref.width),
+    height: String(ref.height),
+  })
+  const response = await fetch(`${AGENT_IMAGE_API}?${query.toString()}`)
+  if (!response.ok) throw new Error(`无法读取图片附件（HTTP ${response.status}）。`)
+  const blob = await response.blob()
+  return URL.createObjectURL(blob)
+}
+
+/** The inline result view; exported for the preview/e2e fixture. */
+export function ImageToolView(props: ImageToolViewProps): React.JSX.Element {
+  const refs = useMemo(() => imageRefsOf(props.block), [props.block])
+  const { status, message } = resultInfo(props.block)
+  const { images, error } = useAttachmentImages(props.sessionId, refs, loadToolImage)
+  const [preview, setPreview] = useState<number | null>(null)
+  const opener = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (images.length === 0) return
+    document.dispatchEvent(new CustomEvent(CHAT_IMAGE_EVENT, {
+      detail: {
+        sessionId: props.sessionId,
+        refs: images.map(image => image.ref),
+      },
+    }))
+  }, [images, props.sessionId])
+
+  // A shrinking result set (a reload, a reconciled block) must not strand the
+  // viewer on an index that no longer exists.
+  useEffect(() => {
+    if (preview !== null && preview >= images.length) setPreview(images.length === 0 ? null : images.length - 1)
+  }, [images.length, preview])
+
+  const openPreview = useCallback((index: number): void => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setPreview(index)
+  }, [])
+
+  const closePreview = useCallback((): void => {
+    setPreview(null)
+    const element = opener.current
+    opener.current = null
+    element?.focus()
+  }, [])
+
+  return <section className={css.root} data-state={status} data-tool={props.toolName}>
+    <header className={css.header}>
+      <span className={css.icon} aria-hidden="true">▧</span>
+      <strong>{props.toolName}</strong>
+      <span className={css.status}>{statusLabel(status)}</span>
+    </header>
+    {message !== '' && <p className={css.message}>{message}</p>}
+    {images.length > 0 && <div className={css.images}>
+      {images.map((image, index) => <button
+        type="button"
+        className={css.imageButton}
+        key={String(image.ref.attachmentId)}
+        title={tt('canvas.preview.expand')}
+        aria-label={tt('canvas.preview.expand')}
+        data-image-preview-trigger=""
+        onClick={() => openPreview(index)}
+      >
+        <img className={css.image} src={image.src} alt={image.ref.name ?? '生成图片'} />
+      </button>)}
+    </div>}
+    {refs.length > 0 && images.length === 0 && error === null && <p className={css.loading}>正在加载图片…</p>}
+    {error !== null && <p className={css.error}>{error}</p>}
+    {preview !== null && <ImageLightbox images={images} index={preview} onIndex={setPreview} onClose={closePreview} />}
+  </section>
+}
+
 /** Register the inline image result view for all image-generation result tools. */
 export function registerImageToolviews(ctx: ClientContext): void {
-  const load = async (_sessionId: SessionId, ref: ImageAttachmentRef): Promise<string> => {
-    // Tool-result images intentionally do not occur in model-visible session
-    // content, so session.readAttachment() rejects them. The plugin route
-    // reads the same durable attachment after validating the complete ref.
-    const query = new URLSearchParams({
-      attachment_id: String(ref.attachmentId),
-      media_type: ref.mediaType,
-      bytes: String(ref.bytes),
-      width: String(ref.width),
-      height: String(ref.height),
-    })
-    const response = await fetch(`${AGENT_IMAGE_API}?${query.toString()}`)
-    if (!response.ok) throw new Error(`无法读取图片附件（HTTP ${response.status}）。`)
-    const blob = await response.blob()
-    return URL.createObjectURL(blob)
-  }
-
-  const ImageToolView = (props: ImageToolViewProps): React.JSX.Element => {
-    const refs = useMemo(() => imageRefsOf(props.block), [props.block])
-    const { status, message } = resultInfo(props.block)
-    const { images, error } = useAttachmentImages(props.sessionId, refs, load)
-
-    useEffect(() => {
-      if (images.length === 0) return
-      document.dispatchEvent(new CustomEvent(CHAT_IMAGE_EVENT, {
-        detail: {
-          sessionId: props.sessionId,
-          refs: images.map(image => image.ref),
-        },
-      }))
-    }, [images, props.sessionId])
-
-    return <section className={css.root} data-state={status} data-tool={props.toolName}>
-      <header className={css.header}>
-        <span className={css.icon} aria-hidden="true">▧</span>
-        <strong>{props.toolName}</strong>
-        <span className={css.status}>{statusLabel(status)}</span>
-      </header>
-      {message !== '' && <p className={css.message}>{message}</p>}
-      {images.length > 0 && <div className={css.images}>
-        {images.map(image => <a
-          className={css.imageLink}
-          href={image.src}
-          key={String(image.ref.attachmentId)}
-          rel="noreferrer"
-          target="_blank"
-          title="打开原图"
-        >
-          <img className={css.image} src={image.src} alt={image.ref.name ?? '生成图片'} />
-        </a>)}
-      </div>}
-      {refs.length > 0 && images.length === 0 && error === null && <p className={css.loading}>正在加载图片…</p>}
-      {error !== null && <p className={css.error}>{error}</p>}
-    </section>
-  }
-
   ctx.slots.inject('tool.call.toolview', function* () {
     for (const key of ['generate_image', 'edit_image', 'get_image_generation_task']) {
       yield ctx.slots.register({

@@ -4991,10 +4991,28 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   for (const toolName of ['generate_image', 'edit_image', 'get_image_generation_task']) {
     const registration = registered.find(row => row.name === 'tool.call.toolview' && row.key === toolName)
     assert.ok(registration?.component, `${toolName} registers its real conversation renderer`)
+    // Each iteration remounts by key, so wait for the NEW node: the previous
+    // render already satisfies a value-based predicate and would leave the
+    // click on a detached button.
+    const previousThumbnail = chatResultHost.querySelector('[data-image-preview-trigger]')
     chatResultRoot.render(react.createElement(registration.component, { key: toolName, sessionId: 'issue-46-other', toolName, callId: 'call-image', block: toolBlock }))
-    assert.ok(await waitUntil(() => chatResultHost.querySelector('img')?.getAttribute('src') === 'blob:image-toolview-smoke'), `${toolName} displays metadata-only generated images`)
+    assert.ok(await waitUntil(() => {
+      const node = chatResultHost.querySelector('[data-image-preview-trigger]')
+      return node !== null && node !== previousThumbnail && node.querySelector('img')?.getAttribute('src') === 'blob:image-toolview-smoke'
+    }), `${toolName} displays metadata-only generated images`)
     assert.equal(chatResultHost.querySelectorAll('img').length, 1)
-    assert.equal(chatResultHost.querySelector('a')?.getAttribute('href'), 'blob:image-toolview-smoke')
+    // #62: the desktop shell denies window.open for blob: URLs, so the result
+    // image previews in place; an anchor there would be a silent no-op.
+    assert.equal(chatResultHost.querySelector('a'), null, `${toolName} does not wrap the result in a new-window anchor`)
+    const thumbnail = chatResultHost.querySelector('button[data-image-preview-trigger]')
+    assert.ok(thumbnail, `${toolName} result thumbnail is previewable`)
+    thumbnail.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-image-lightbox]') !== null), `${toolName} opens the in-place preview`)
+    const download = jsdomDocument.querySelector('[data-image-download]')
+    assert.equal(download?.getAttribute('href'), 'blob:image-toolview-smoke', `${toolName} preview downloads the same object URL`)
+    assert.equal(download?.getAttribute('download'), 'chat-result.png', `${toolName} download keeps the attachment name`)
+    jsdomDocument.dispatchEvent(new jsdomWindow.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-image-lightbox]') === null), `${toolName} closes the preview on Escape`)
   }
   chatResultRoot.unmount()
   chatResultHost.remove()

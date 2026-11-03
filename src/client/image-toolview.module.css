@@ -46,17 +46,26 @@
   gap: 8px;
 }
 
-.imageLink {
+/* The thumbnail is a button: the desktop shell denies window.open for blob:
+ * URLs, so previewing has to happen in place. */
+.imageButton {
   display: block;
   max-width: min(280px, 100%);
+  padding: 0;
   overflow: hidden;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 6px;
   background: var(--dsw-alias-bg-base);
+  cursor: zoom-in;
 }
 
-.imageLink:hover {
+.imageButton:hover {
   border-color: var(--dsw-alias-brand-primary);
+}
+
+.imageButton:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
 }
 
 .image {
@@ -70,4 +79,198 @@
 
 .error {
   color: var(--dsw-alias-state-error-primary);
+}
+
+/* ---- full-screen result viewer ------------------------------------------- */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 72%);
+}
+
+.lightboxDialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  outline: none;
+  box-shadow: 0 18px 60px rgb(0 0 0 / 45%);
+}
+
+.lightboxHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.lightboxTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightboxIndex {
+  margin-left: auto;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.lightboxClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.lightboxIndex + .lightboxClose {
+  margin-left: 0;
+}
+
+.lightboxClose:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.lightboxStage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px;
+}
+
+.lightboxImage {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  max-height: calc(100dvh - 190px);
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.lightboxNav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-2);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.lightboxNav:hover {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.lightboxFooter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  font-size: 12px;
+}
+
+.lightboxMeta {
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.lightboxNotice {
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightboxActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.lightboxAction,
+.lightboxDownload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 7px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.lightboxAction:hover,
+.lightboxDownload:hover {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.lightboxAction:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.lightboxDownload {
+  color: var(--dsw-alias-bg-layer-1);
+  border-color: transparent;
+  background: var(--dsw-alias-brand-primary);
+  font-weight: 500;
+}
+
+.lightboxDownload:hover {
+  color: var(--dsw-alias-bg-layer-1);
+  filter: brightness(1.06);
+}
+
+@media (max-width: 600px) {
+  .lightbox {
+    padding: 10px;
+  }
+
+  .lightboxImage {
+    max-height: calc(100dvh - 170px);
+  }
 }

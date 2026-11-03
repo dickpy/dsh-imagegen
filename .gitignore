@@ -37,3 +37,6 @@ Thumbs.db
 
 # Local editable PPT component fixture output
 .ppt-preview/
+
+# Local conversation result-view fixture output
+.toolview-preview/
