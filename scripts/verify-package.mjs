@@ -13,8 +13,8 @@ assert.ok(entries.includes(`package/docs/releases/v${manifest.version}.md`), 'pa
 assert.ok(entries.includes('package/src/ppt-runtime.ts'))
 assert.ok(entries.includes('package/src/client/PptWorkspace.tsx'))
 const client = execFileSync('tar', ['-xOzf', file, 'package/lib/client.js'], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
-assert.ok(client.includes('data-ppt-workspace'), 'packaged client includes standalone PPT mode')
-assert.ok(client.includes('data-image-to-ppt'), 'packaged client includes image conversion actions')
+// PPT conversion now uses the shared canvas skill surface, not a standalone tab.
+assert.ok(client.includes('data-skill-run'), 'packaged client includes canvas skill task status')
 assert.ok(client.includes('data-comparison-task'), 'packaged client includes per-model comparison slots')
 assert.ok(client.includes('data-result-preview-grid'), 'packaged client includes the fitted result preview')
 assert.ok(client.includes('update.hostManagedHint'), 'packaged client includes desktop update guidance')
