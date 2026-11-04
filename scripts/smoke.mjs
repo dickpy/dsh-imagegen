@@ -382,7 +382,7 @@ const upstream = createServer(async (req, res) => {
     assert.ok(body.model === 'gpt-image-2' || body.model === 'grok-imagine-image')
     assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this' || body.prompt === 'signed urls' || body.prompt === 'foreign url' || body.prompt === 'parallel one' || body.prompt === 'parallel two')
     if (body.model === 'gpt-image-2') {
-      assert.equal(body.size, '1024x1024')
+      assert.equal(body.size, '2880x2880')
       assert.equal(body.quality, 'high')
     } else {
       assert.equal(body.aspect_ratio, '1:1')
@@ -421,7 +421,10 @@ const upstream = createServer(async (req, res) => {
     const commandEdit = body.includes('edit via command') || body.includes('edit attached image')
     assert.ok(body.includes('name="prompt"') && (body.includes('edit this') || commandEdit), 'prompt part missing')
     assert.ok(body.includes('name="model"') && body.includes('gpt-image-2'), 'model part missing')
-    if (!commandEdit) assert.ok(body.includes('name="size"') && body.includes('1536x1024'), 'size part missing')
+    if (!commandEdit) {
+      const form = await new Response(Buffer.concat(chunks), { headers: { 'content-type': req.headers['content-type'] } }).formData()
+      assert.equal(form.get('size'), form.get('quality') === 'high' ? '3456x2304' : '2592x1728', 'edit resolution must follow the clarity tier')
+    }
     assert.ok(!body.includes('name="n"'), 'n must not be sent (batch param rejected)')
     assert.ok(body.includes('name="image"'), 'image part missing')
     res.writeHead(200, { 'content-type': 'application/json' })

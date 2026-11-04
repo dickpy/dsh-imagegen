@@ -63,8 +63,8 @@ const SIZE_KEYS: Record<string, 'size.auto' | 'size.square' | 'size.portrait34' 
 }
 
 /** Quality options, shown as output-resolution tiers (auto = let the model
- *  decide). The host maps them: resolution for Grok, quality level for
- *  OpenAI-compatible endpoints (1k→low, 2k→medium, 4k→high). */
+ *  decide). The host maps them: resolution for Grok, size + quality for GPT
+ *  Image 2+, quality level for other OpenAI-compatible endpoints. */
 const QUALITIES = ['auto', '1k', '2k', '4k'] as const
 
 /** Detail options ('' = omit the passthrough). */

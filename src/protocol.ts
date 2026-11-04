@@ -1055,13 +1055,13 @@ export interface GenerateRequest extends EcommerceTaskMeta {
   prompt: string
   /** Canvas size as an aspect ratio: 'auto' or e.g. '1:1' / '16:9' / '21:9'.
    *  The host maps it onto each model's own vocabulary (aspect_ratio for Grok
-   *  and Nano Banana, resolution-tier size for Seedream, the closest pixel size for
-   *  OpenAI-compatible endpoints). */
+   *  and Nano Banana, resolution-tier size for Seedream, clarity-aware pixel
+   *  sizes for GPT Image 2+, and legacy presets for other OpenAI endpoints). */
   size: string
   /** Clarity tier: 'auto' | '1k' | '2k' | '4k'. The host maps it onto the
    *  model's own vocabulary (resolution for Grok, image_size for Nano Banana,
-   *  and size for Seedream,
-   *  Nano Banana, quality for OpenAI). */
+   *  size for Seedream, size + quality for GPT Image 2+, and quality for
+   *  other OpenAI-compatible models). */
   quality: string
   /** Number of images, 1-4. */
   n: number
