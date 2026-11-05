@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 const require=createRequire(import.meta.url)
 const runtime=process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES?createRequire(`${process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES}/.reference-test.cjs`):require
 const {chromium}=runtime('playwright'),sharp=runtime('sharp')
@@ -37,7 +38,7 @@ try{
  await upload.setInputFiles([file(0),file(1),file(2)]);await count(3)
  assert.deepEqual(await thumbs.locator('img').evaluateAll(images=>images.map(image=>image.alt)),['ref-1.png','ref-2.png','ref-3.png'])
  const b=await thumbs.first().boundingBox();assert.equal(b.width,64);assert.equal(b.height,64)
- const images=new URL('../docs/images/',import.meta.url);mkdirSync(images,{recursive:true})
+ const images=process.env.REFERENCES_SCREENSHOT_DIR?pathToFileURL(`${process.env.REFERENCES_SCREENSHOT_DIR}/`):new URL('../docs/images/',import.meta.url);mkdirSync(images,{recursive:true})
  const shot=async name=>{await page.screenshot({path:new URL(name,images).pathname})}
  await shot('multi-reference-desktop.png')
  await page.getByRole('button',{name:'预览图1：ref-1.png',exact:true}).click()
@@ -57,9 +58,20 @@ try{
  await generate.click();await page.waitForTimeout(50);assert.equal(submissions.at(-1).images,undefined,'one reference uses legacy shape')
  await page.getByLabel('模型',{exact:true}).selectOption('gpt-image-2')
  // Drop on the whole reference card; clipboard images also append from prompt.
- await page.evaluate(async()=>{const blob=await(await fetch('/sample/1.png')).blob(),dt=new DataTransfer();dt.items.add(new File([blob],'dropped.png',{type:'image/png'}));document.querySelector('[data-edit-references]').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}))});await count(2)
+ await page.evaluate(async()=>{
+   const blob=await(await fetch('/sample/1.png')).blob(),dt=new DataTransfer();dt.items.add(new File([blob],'dropped.png',{type:'image/png'}))
+   const card=document.querySelector('[data-edit-references]'),fire=(target,type)=>target.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt}))
+   fire(document.body,'dragenter');fire(card,'dragenter');fire(card.querySelector('button'),'dragenter');fire(card,'dragover');fire(card,'drop')
+ });await count(2)
+ assert.deepEqual(await page.evaluate(()=>({active:window.hostDrop.active,depth:window.hostDrop.depth,attachments:window.hostDrop.attachments.length})),{active:false,depth:0,attachments:0},'external nested drop closes the host overlay without attaching to chat')
  await page.evaluate(async()=>{const blob=await(await fetch('/sample/2.png')).blob(),dt=new DataTransfer();dt.items.add(new File([blob],'pasted.png',{type:'image/png'}));document.querySelector('textarea').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt}))});await count(3)
  assert.equal(await page.evaluate(()=>{const dt=new DataTransfer();dt.setData('text/plain','keep ordinary text paste');const event=new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt});document.querySelector('textarea').dispatchEvent(event);return event.defaultPrevented}),false,'ordinary text paste remains native')
+ // Exercise the browser clipboard API itself, not a mocked navigator object.
+ await page.context().grantPermissions(['clipboard-read','clipboard-write'])
+ await page.evaluate(async()=>{const blob=await(await fetch('/sample/0.png')).blob();await navigator.clipboard.write([new ClipboardItem({'image/png':blob})])})
+ await page.getByRole('button',{name:'粘贴图片',exact:true}).click();await count(4)
+ assert.equal(await thumbs.last().locator('img').getAttribute('alt'),'clipboard-1.png')
+ await page.getByRole('button',{name:'删除图4：clipboard-1.png',exact:true}).click();await count(3)
  await page.evaluate(()=>document.documentElement.setAttribute('data-dark',''));await shot('multi-reference-dark.png');await page.evaluate(()=>document.documentElement.removeAttribute('data-dark'))
  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth),390);await shot('multi-reference-mobile.png')
  await page.getByRole('button',{name:'预览图1：ref-1.png',exact:true}).click();const p=await preview.boundingBox();assert.ok(p.x>=0&&p.x+p.width<=390);await page.keyboard.press('Escape')
@@ -79,5 +91,5 @@ try{
  await clear.click();await upload.setInputFiles([0,1].map(i=>({name:`large-${i}.png`,mimeType:'image/png',buffer:Buffer.concat([samples[i],Buffer.alloc(9*1024*1024-samples[i].length)])})));await count(1);await page.getByRole('alert').filter({hasText:'合计大小不能超过16MB'}).waitFor()
  await page.getByRole('button',{name:'新建创作',exact:true}).click();await count(0);assert.equal(await generate.isDisabled(),true)
  assert.deepEqual(errors,[],'no browser runtime errors')
- console.log('PASS multi-reference browser: thumbnails, append, ordered async reads/batches, cancel on clear, preview/focus/keyboard, delete/renumber, paste/drop, model guard, file/count/total limits, mobile/dark, request fields; 4 screenshots')
+ console.log('PASS multi-reference browser: thumbnails, append, ordered async reads/batches, cancel on clear, preview/focus/keyboard, delete/renumber, external host drag lifecycle, real clipboard API paste, model guard, file/count/total limits, mobile/dark, request fields; 4 screenshots')
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve))}

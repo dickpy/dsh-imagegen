@@ -11,6 +11,7 @@ export const EDIT_REFERENCE_MAX_BYTES = 10 * 1024 * 1024
 export const EDIT_REFERENCE_TOTAL_BYTES = 16 * 1024 * 1024
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 export interface EditReference { id: string; name: string; dataUrl: string; bytes: number }
+export type ReferencePasteResult = 'added' | 'empty' | 'cancelled'
 
 /** Current adapter capabilities, not a claim about every vendor's API. */
 export function editReferenceLimit(model: string, channel?: Pick<ChannelConfig, 'apiUrl' | 'apiUrlFull' | 'protocol' | 'auth' | 'models'>): number {
@@ -35,6 +36,19 @@ export function clipboardImageFiles(data: DataTransfer | null): File[] {
     const file = item.getAsFile()
     return file ? [file] : []
   })
+}
+
+/** Prefer one supported representation per clipboard item to avoid adding a
+ *  copied image twice when the browser exposes both PNG and JPEG formats. */
+export async function readClipboardImageFiles(clipboard: Pick<Clipboard, 'read'> | undefined): Promise<File[]> {
+  if (typeof clipboard?.read !== 'function') throw new Error(tt('edit.pasteUnavailable'))
+  const items = await clipboard.read()
+  return Promise.all(items.flatMap((item, index) => {
+    const type = item.types.find(type => IMAGE_TYPES.has(type))
+    if (type === undefined) return []
+    const extension = type === 'image/jpeg' ? 'jpg' : type.slice('image/'.length)
+    return [item.getType(type).then(blob => new File([blob], `clipboard-${index + 1}.${extension}`, { type }))]
+  }))
 }
 
 function readFile(file: File): Promise<string> {
@@ -112,10 +126,20 @@ export function useEditReferences(onError: (message: string | null) => void) {
       if (pending.current === 0) setReading(false)
     })
   }
+  const paste = async (clipboard: Pick<Clipboard, 'read'> | undefined, signal: AbortSignal): Promise<ReferencePasteResult> => {
+    const version = epoch.current
+    const files = await readClipboardImageFiles(clipboard)
+    // The parent can clear references (for example, New creation) while the
+    // clipboard permission/read is pending, even if the uploader stays mounted.
+    if (signal.aborted || version !== epoch.current) return 'cancelled'
+    if (files.length === 0) return 'empty'
+    add(files)
+    return 'added'
+  }
   const replace = (image: Omit<EditReference, 'id'>): void => {
     if (image.bytes > EDIT_REFERENCE_MAX_BYTES) { report.current(tt('edit.invalidFiles')); return }
     clear()
     commit([{ ...image, id: `edit-ref-${++nextId.current}` }])
   }
-  return { images, reading, add, remove, clear, replace }
+  return { images, reading, add, paste, remove, clear, replace }
 }

@@ -2227,6 +2227,10 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   margin-top: -6px;
 }
 
+.promptClear { border: 0; padding: 4px 0; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.promptClear:hover:not(:disabled) { color: var(--dsw-alias-brand-primary); }
+.promptClear:disabled { opacity: .5; cursor: default; }
+
 .templatesButton {
   display: inline-flex;
   align-items: center;

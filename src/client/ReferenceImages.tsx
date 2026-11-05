@@ -1,15 +1,16 @@
 /** Compact edit-reference thumbnails; the generation form owns the images. */
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, X, ChevronLeft, ChevronRight, ImagePlus } from 'lucide-react'
+import { Plus, X, ChevronLeft, ChevronRight, ImagePlus, ClipboardPaste } from 'lucide-react'
 import { tt } from './helpers.ts'
-import { clipboardImageFiles, EDIT_REFERENCE_LIMIT, type EditReference } from './reference-images.ts'
+import { clipboardImageFiles, EDIT_REFERENCE_LIMIT, type EditReference, type ReferencePasteResult } from './reference-images.ts'
 import css from './reference-images.module.css'
 
 export function ReferenceImages(props: {
   images: EditReference[]
   reading: boolean
   onAdd: (files: File[]) => void
+  onPasteImages: (signal: AbortSignal) => Promise<ReferencePasteResult>
   onRemove: (id: string) => void
   onClear: () => void
   notice?: string | null
@@ -18,6 +19,32 @@ export function ReferenceImages(props: {
   const dialog = useRef<HTMLElement>(null)
   const previousFocus = useRef<HTMLElement | null>(null)
   const [previewId, setPreviewId] = useState<string | null>(null)
+  const [pasting, setPasting] = useState(false)
+  const [pasteMessage, setPasteMessage] = useState<string | null>(null)
+  const pasteController = useRef<AbortController | null>(null)
+  useEffect(() => () => { pasteController.current?.abort() }, [])
+  const addFiles = (files: File[]): void => { setPasteMessage(null); props.onAdd(files) }
+  const clearReferences = (): void => {
+    pasteController.current?.abort()
+    setPasting(false)
+    setPasteMessage(null)
+    props.onClear()
+  }
+  const pasteImages = async (): Promise<void> => {
+    pasteController.current?.abort()
+    const controller = new AbortController()
+    pasteController.current = controller
+    setPasting(true)
+    setPasteMessage(null)
+    try {
+      const result = await props.onPasteImages(controller.signal)
+      if (!controller.signal.aborted && result === 'empty') setPasteMessage(tt('edit.pasteEmpty'))
+    } catch {
+      if (!controller.signal.aborted) setPasteMessage(tt('edit.pasteUnavailable'))
+    } finally {
+      if (!controller.signal.aborted) setPasting(false)
+    }
+  }
   const index = props.images.findIndex(image => image.id === previewId)
   const preview = props.images[index]
   const close = (): void => { setPreviewId(null) }
@@ -50,10 +77,21 @@ export function ReferenceImages(props: {
 
   return <>
     <section className={css.root} data-edit-references="" aria-label={tt('edit.references')} tabIndex={0}
+      onDragEnter={event => { event.preventDefault(); event.stopPropagation() }}
+      onDragLeave={event => { event.stopPropagation() }}
       onDragOver={event => { event.preventDefault(); event.stopPropagation() }}
-      onDrop={event => { event.preventDefault(); event.stopPropagation(); props.onAdd(Array.from(event.dataTransfer.files)) }}
-      onPaste={event => { const files = clipboardImageFiles(event.clipboardData); if (files.length > 0) { event.preventDefault(); event.stopPropagation(); props.onAdd(files) } }}>
-      <header className={css.header}><strong>{tt('edit.references')}</strong><span className={css.count} aria-live="polite">{tt('edit.addedCount', { count: props.images.length })}</span><button type="button" className={css.clear} disabled={props.images.length === 0 && !props.reading} onClick={props.onClear}>{tt('edit.clearAll')}</button></header>
+      onDrop={event => {
+        event.preventDefault(); event.stopPropagation()
+        const files = Array.from(event.dataTransfer.files)
+        // DSH tracks external file drags on document, but this card owns the
+        // drop. Signal its window-level dragend cleanup without bubbling a
+        // second drop (which would attach these files to the conversation).
+        const view = event.currentTarget.ownerDocument.defaultView
+        if (view) view.dispatchEvent(typeof view.DragEvent === 'function' ? new view.DragEvent('dragend') : new view.Event('dragend'))
+        addFiles(files)
+      }}
+      onPaste={event => { const files = clipboardImageFiles(event.clipboardData); if (files.length > 0) { event.preventDefault(); event.stopPropagation(); addFiles(files) } }}>
+      <header className={css.header}><strong>{tt('edit.references')}</strong><span className={css.count} aria-live="polite">{tt('edit.addedCount', { count: props.images.length })}</span><button type="button" data-paste-reference="" className={css.paste} disabled={pasting || props.reading || props.images.length >= EDIT_REFERENCE_LIMIT} onClick={() => { void pasteImages() }}><ClipboardPaste size={13} aria-hidden="true" />{tt(pasting ? 'edit.pasting' : 'edit.paste')}</button><button type="button" className={css.clear} disabled={props.images.length === 0 && !props.reading && !pasting} onClick={clearReferences}>{tt('edit.clearAll')}</button></header>
       {props.images.length === 0 ? <button type="button" className={css.empty} onClick={() => input.current?.click()}><ImagePlus size={22} aria-hidden="true" /><span>{tt('edit.uploadMultiple')}</span></button> : <div className={css.grid}>
         {props.images.map((image, index) => <div className={css.item} key={image.id} data-edit-reference="">
           <button type="button" className={css.thumbnail} aria-label={tt('edit.previewReference', { index: index + 1, name: image.name })} title={image.name} onClick={() => { previousFocus.current = document.activeElement as HTMLElement; setPreviewId(image.id) }}><img src={image.dataUrl} alt={image.name} /><span className={css.number}>{index + 1}</span></button>
@@ -64,7 +102,8 @@ export function ReferenceImages(props: {
       <p className={css.hint} role={props.reading ? 'status' : undefined}>{props.reading ? tt('edit.reading') : tt('edit.multiHint')}</p>
       <p className={css.limits}>{tt('edit.limits', { count: EDIT_REFERENCE_LIMIT })}</p>
       {props.notice ? <p className={css.notice} role="status">{props.notice}</p> : null}
-      <input ref={input} className={css.file} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" aria-label={tt('edit.uploadMultiple')} onChange={event => { props.onAdd(Array.from(event.target.files ?? [])); event.target.value = '' }} />
+      {pasteMessage ? <p className={css.notice} role="status">{pasteMessage}</p> : null}
+      <input ref={input} className={css.file} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" aria-label={tt('edit.uploadMultiple')} onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
     </section>
     {preview ? createPortal(<div className={css.overlay} data-edit-reference-preview="" onClick={close} onKeyDown={event => event.stopPropagation()}>
       <section ref={dialog} className={css.preview} tabIndex={-1} role="dialog" aria-modal="true" aria-label={tt('edit.referencePreview')} onClick={event => event.stopPropagation()}>

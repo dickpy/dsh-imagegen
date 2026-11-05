@@ -226,8 +226,8 @@ function qwenSize(model: string, ratio: string): string | undefined {
   return (isVersionedQwenImage(model) ? QWEN_SIZE_HD : QWEN_SIZE_CLASSIC)[ratio]
 }
 
-/** The panel's aspect ratios mapped to the closest OpenAI pixel size
- *  (gpt-image-2 / generic OpenAI-compatible endpoints). */
+/** Legacy OpenAI-compatible pixel presets, also retained for GPT Image 2's
+ *  1K and automatic clarity settings to preserve their existing behavior. */
 const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
   '1:1': '1024x1024',
   '3:4': '1024x1536',
@@ -237,6 +237,33 @@ const OPENAI_SIZE_BY_RATIO: Readonly<Record<string, string>> = {
   '3:2': '1536x1024',
   '16:9': '1792x1024',
   '21:9': '1792x1024',
+}
+
+/** GPT Image 2+ high-resolution presets (#63). Both edges are multiples of
+ *  16, the longest edge is <= 3840, and total pixels are <= 8,294,400. Square
+ *  and less-wide 4K presets stay below that pixel budget; >2K is experimental.
+ *  https://developers.openai.com/api/reference/resources/images/methods/generate */
+const OPENAI_HIGH_RES_SIZES_BY_RATIO: Readonly<Record<string, Readonly<Record<'2k' | '4k', string>>>> = {
+  '1:1': { '2k': '2048x2048', '4k': '2880x2880' },
+  '3:4': { '2k': '1536x2048', '4k': '2448x3264' },
+  '4:3': { '2k': '2048x1536', '4k': '3264x2448' },
+  '9:16': { '2k': '1440x2560', '4k': '2160x3840' },
+  '2:3': { '2k': '1728x2592', '4k': '2304x3456' },
+  '3:2': { '2k': '2592x1728', '4k': '3456x2304' },
+  '16:9': { '2k': '2560x1440', '4k': '3840x2160' },
+  '21:9': { '2k': '2560x1104', '4k': '3840x1648' },
+}
+
+/** Select by the resolved wire model, not its user-facing alias. Unversioned
+ *  GPT Image aliases, GPT Image 1.x and other compatible models keep the old
+ *  presets; only explicit GPT Image versions >=2 support the larger sizes. */
+function openaiSizeFor(model: string, ratio: string, quality: string): string | undefined {
+  if (ratio === '' || ratio === 'auto') return undefined
+  const version = /^gpt-image-(\d+)(?:\.\d+)?(?:-|$)/i.exec(model.trim())
+  if (version !== null && Number(version[1]) >= 2 && (quality === '2k' || quality === '4k')) {
+    return OPENAI_HIGH_RES_SIZES_BY_RATIO[ratio]?.[quality]
+  }
+  return OPENAI_SIZE_BY_RATIO[ratio]
 }
 
 /** Panel ratios that need renaming for a model's vocabulary. Grok documents
@@ -425,13 +452,13 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
       quality: isGlmImage(model) ? 'hd' : 'standard',
     }
   }
-  // OpenAI-compatible endpoints: nearest pixel size, clarity tiers mapped to
-  // the quality levels (1k→low / 2k→medium / 4k→high), detail passthrough.
+  // GPT Image 2+ clarity tiers scale the actual size as well as quality.
+  // Other OpenAI-compatible models retain their legacy size presets and
+  // quality levels (1k→low / 2k→medium / 4k→high), plus detail passthrough.
+  const openaiSize = openaiSizeFor(model, request.size, request.quality)
   return {
     model,
-    ...request.size !== '' && request.size !== 'auto' && OPENAI_SIZE_BY_RATIO[request.size] !== undefined
-      ? { size: OPENAI_SIZE_BY_RATIO[request.size] }
-      : {},
+    ...openaiSize !== undefined ? { size: openaiSize } : {},
     ...request.quality === '1k' ? { quality: 'low' } : {},
     ...request.quality === '2k' ? { quality: 'medium' } : {},
     ...request.quality === '4k' ? { quality: 'high' } : {},

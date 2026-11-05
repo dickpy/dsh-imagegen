@@ -382,7 +382,7 @@ const upstream = createServer(async (req, res) => {
     assert.ok(body.model === 'gpt-image-2' || body.model === 'grok-imagine-image')
     assert.ok(body.prompt === 'a cat' || body.prompt === 'a mismatch cat' || body.prompt === 'a background cat' || body.prompt === 'cancel this' || body.prompt === 'signed urls' || body.prompt === 'foreign url' || body.prompt === 'parallel one' || body.prompt === 'parallel two')
     if (body.model === 'gpt-image-2') {
-      assert.equal(body.size, '1024x1024')
+      assert.equal(body.size, '2880x2880')
       assert.equal(body.quality, 'high')
     } else {
       assert.equal(body.aspect_ratio, '1:1')
@@ -421,7 +421,10 @@ const upstream = createServer(async (req, res) => {
     const commandEdit = body.includes('edit via command') || body.includes('edit attached image')
     assert.ok(body.includes('name="prompt"') && (body.includes('edit this') || commandEdit), 'prompt part missing')
     assert.ok(body.includes('name="model"') && body.includes('gpt-image-2'), 'model part missing')
-    if (!commandEdit) assert.ok(body.includes('name="size"') && body.includes('1536x1024'), 'size part missing')
+    if (!commandEdit) {
+      const form = await new Response(Buffer.concat(chunks), { headers: { 'content-type': req.headers['content-type'] } }).formData()
+      assert.equal(form.get('size'), form.get('quality') === 'high' ? '3456x2304' : '2592x1728', 'edit resolution must follow the clarity tier')
+    }
     assert.ok(!body.includes('name="n"'), 'n must not be sent (batch param rejected)')
     assert.ok(body.includes('name="image"'), 'image part missing')
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -6152,6 +6155,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     useReverse.click()
     assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-reverse-dialog]') === null), 'using the prompt closes the dialog')
     assert.equal(view.querySelector('textarea[placeholder*="描述你想要的画面"]').value, 'a cinematic portrait, 85mm, f/1.8', 'the prompt lands in the generation composer')
+    const retainedReferenceCount = view.querySelectorAll('[data-edit-reference]').length
+    const clearPrompt = view.querySelector('[data-clear-prompt]')
+    assert.ok(clearPrompt && !clearPrompt.disabled, 'normal generation offers a clear-prompt action')
+    clearPrompt.click()
+    assert.ok(await waitUntil(() => view.querySelector('textarea').value === ''), 'clear prompt empties the controlled field')
+    assert.equal(view.querySelectorAll('[data-edit-reference]').length, retainedReferenceCount, 'clearing the prompt preserves reference images')
+    assert.equal(jsdomDocument.activeElement, view.querySelector('textarea'), 'clearing returns focus to the prompt')
+    assert.equal(view.querySelector('[data-clear-prompt]').disabled, true, 'empty prompt disables the clear action')
     assert.equal([...view.querySelectorAll('[role="tablist"] button')].some(button => button.textContent?.includes('PPT')), false, 'the PPT top-nav entry is gone')
     assert.ok(view.querySelector('button[class*="generateButton"]'), 'normal generation remains available')
 
