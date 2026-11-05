@@ -1,7 +1,7 @@
 {
   "name": "@dickpy/dsh-imagegen",
   "description": "AI image generation plugin for the dsh web GUI: text-to-image and image-to-image through configurable provider channels (gpt-image-2 / grok-imagine-image / nanobanana series / seedream-5.0-pro / dall-e-3, with native xAI Grok Imagine, Google Nano Banana and ByteDance Seedream request shaping), per-channel model catalogs, a three-column studio beside the native conversation, an infinite canvas with node-graph workflows (annotation boxes with attached prompt cards, local background removal, AI layer split, per-node model choice, file nodes with any-file upload, and a canvas skill system covering skill-driven next steps on every node: text polish, image description, content extraction, and a host-driven image-to-editable-ppt pipeline that rebuilds the visual layer from measured pixels (the legacy headless-agent driver stays selectable), with a local skill library that installs and removes skills from URLs or uploaded archives), an ecommerce product-set mode and a prompt template library.",
-  "version": "1.15.4",
+  "version": "1.15.5",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -81,8 +81,9 @@
     "prepare": "tsdown",
     "build": "tsdown",
     "test": "pnpm run test:unit && pnpm run test:e2e",
-    "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs scripts/image-clipboard.test.mjs scripts/engine-openai-size.test.mjs",
-    "test:e2e": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-dom-e2e.mjs && pnpm exec tsdown --config scripts/toolview-preview.config.ts && node scripts/toolview-dom-e2e.mjs",
+    "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs scripts/image-clipboard.test.mjs scripts/engine-openai-size.test.mjs scripts/reference-clipboard.test.mjs",
+    "test:e2e": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-dom-e2e.mjs && pnpm exec tsdown --config scripts/toolview-preview.config.ts && node scripts/toolview-dom-e2e.mjs && pnpm run test:references",
+    "test:references": "pnpm exec tsdown --config scripts/references-preview.config.ts && node scripts/references-dom-e2e.mjs",
     "test:browser": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-browser-test.mjs",
     "watch": "tsdown --watch",
     "typecheck": "tsc --noEmit",

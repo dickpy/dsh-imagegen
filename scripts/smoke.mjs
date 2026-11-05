@@ -6155,6 +6155,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     useReverse.click()
     assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-reverse-dialog]') === null), 'using the prompt closes the dialog')
     assert.equal(view.querySelector('textarea[placeholder*="描述你想要的画面"]').value, 'a cinematic portrait, 85mm, f/1.8', 'the prompt lands in the generation composer')
+    const retainedReferenceCount = view.querySelectorAll('[data-edit-reference]').length
+    const clearPrompt = view.querySelector('[data-clear-prompt]')
+    assert.ok(clearPrompt && !clearPrompt.disabled, 'normal generation offers a clear-prompt action')
+    clearPrompt.click()
+    assert.ok(await waitUntil(() => view.querySelector('textarea').value === ''), 'clear prompt empties the controlled field')
+    assert.equal(view.querySelectorAll('[data-edit-reference]').length, retainedReferenceCount, 'clearing the prompt preserves reference images')
+    assert.equal(jsdomDocument.activeElement, view.querySelector('textarea'), 'clearing returns focus to the prompt')
+    assert.equal(view.querySelector('[data-clear-prompt]').disabled, true, 'empty prompt disables the clear action')
     assert.equal([...view.querySelectorAll('[role="tablist"] button')].some(button => button.textContent?.includes('PPT')), false, 'the PPT top-nav entry is gone')
     assert.ok(view.querySelector('button[class*="generateButton"]'), 'normal generation remains available')
 

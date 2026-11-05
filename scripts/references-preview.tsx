@@ -13,6 +13,35 @@ const policies = [
 ] as const
 // Expose only fixture assertions, never image content, for browser tests.
 ;(window as unknown as { checkPolicies: () => boolean }).checkPolicies = () => policies.every(([model, channel, expected]) => editReferenceLimit(model, {...channel,models:[...channel.models]}) === expected)
+
+// Model DSH ui-attachment's document-level drag counter and dragend reset.
+// A plain drop-only test misses #65: the host overlay opens before our card
+// consumes the drop, and must close without adding an attachment to chat.
+const hostDrop = { depth: 0, active: false, attachments: [] as File[] }
+;(window as unknown as { hostDrop: typeof hostDrop }).hostDrop = hostDrop
+const hostOverlay = document.createElement('div')
+hostOverlay.dataset.hostDropOverlay = ''
+hostOverlay.textContent = '文件或图片拖动到此处即可添加'
+hostOverlay.style.cssText = 'position:fixed;inset:0;z-index:999;pointer-events:none;background:#8883'
+hostOverlay.hidden = true
+document.body.append(hostOverlay)
+const resetDrop = (): void => { hostDrop.depth = 0; hostDrop.active = false; hostOverlay.hidden = true }
+const isFileDrag = (event: DragEvent): boolean => event.dataTransfer?.types.includes('Files') === true
+document.addEventListener('dragenter', event => {
+  if (!isFileDrag(event)) return
+  event.preventDefault(); hostDrop.depth += 1; hostDrop.active = true; hostOverlay.hidden = false
+})
+document.addEventListener('dragover', event => { if (isFileDrag(event)) event.preventDefault() })
+document.addEventListener('dragleave', event => {
+  if (!isFileDrag(event)) return
+  hostDrop.depth = Math.max(0, hostDrop.depth - 1)
+  if (hostDrop.depth === 0) resetDrop()
+})
+document.addEventListener('drop', event => {
+  if (!isFileDrag(event)) return
+  event.preventDefault(); resetDrop(); hostDrop.attachments.push(...event.dataTransfer!.files)
+})
+window.addEventListener('dragend', resetDrop)
 function Fixture() {
   const [error, setError] = useState<string|null>(null)
   const references = useEditReferences(setError)
@@ -22,10 +51,10 @@ function Fixture() {
   const limit = editReferenceLimit(model, base)
   const notice = references.images.length > limit ? tt('edit.modelLimit', { count:limit }) : null
   return <><header className="fixture-header"><strong>DSH Image Studio</strong><span>普通生图</span><span>无限画布</span><span>电商模式</span><span>素材库</span></header>
-    <main className="fixture-workspace" onPaste={event=>{const files=clipboardImageFiles(event.clipboardData);if(files.length){event.preventDefault();references.add(files)}}}>
+    <main className="fixture-workspace" onPaste={event=>{const files=clipboardImageFiles(event.clipboardData);if(files.length){event.preventDefault();event.stopPropagation();references.add(files)}}}>
       <aside className="fixture-config"><div className="fixture-modes"><span>文生图</span><strong>图生图</strong></div>
         <select aria-label="模型" value={model} onChange={event=>setModel(event.target.value)}><option value="gpt-image-2">GPT Image 2</option><option value="grok-imagine-image">Grok Imagine</option></select>
-        <div className="fixture-card"><ReferenceImages images={references.images} reading={references.reading} onAdd={references.add} onRemove={references.remove} onClear={references.clear} notice={notice}/></div>
+        <div className="fixture-card"><ReferenceImages images={references.images} reading={references.reading} onAdd={references.add} onPasteImages={signal=>references.paste(navigator.clipboard,signal)} onRemove={references.remove} onClear={references.clear} notice={notice}/></div>
         <div className="fixture-card"><strong>提示词</strong><textarea aria-label="提示词" value={prompt} onChange={event=>setPrompt(event.target.value)}/><small>AI 润色</small></div>
         <div className="fixture-card"><span>画面比例</span><div className="fixture-ratios"><strong>1:1</strong><span>3:4</span><span>16:9</span></div><p>画质　自动</p></div>
         {error ? <p role="alert" className="fixture-error">{error}</p> : null}
