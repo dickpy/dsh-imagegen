@@ -33,6 +33,7 @@ interface StoredImage {
   file: string
   mime: string
   revisedPrompt?: string
+  durationMs?: number
 }
 
 /** One entry's on-disk record. */
@@ -165,6 +166,7 @@ function toWire(entry: StoredEntry): HistoryEntry {
       url: `/api/dsh-imagegen/history/image/${image.file}`,
       mime: image.mime,
       ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
+      ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.channel === undefined ? {} : { channel: entry.channel },
@@ -202,6 +204,7 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
           file,
           mime: image.mime,
           ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
+          ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
         })
       }
     } catch (error) {

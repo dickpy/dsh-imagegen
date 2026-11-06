@@ -44,6 +44,7 @@ interface StoredImage {
   file: string
   mime: string
   revisedPrompt?: string
+  durationMs?: number
 }
 
 /** One entry's on-disk record. `hash` fingerprints the first image so the
@@ -184,6 +185,7 @@ function toWire(entry: StoredEntry): HistoryEntry {
       url: `/api/dsh-imagegen/gallery/image/${image.file}`,
       mime: image.mime,
       ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
+      ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.tags === undefined ? {} : { tags: entry.tags },
@@ -229,6 +231,7 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
           file,
           mime: image.mime,
           ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
+          ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
         })
       }
     } catch (error) {

@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { GenerationLoading } from '../src/client/GenerationLoading'
+import { GenerationDurationBadge } from '../src/client/GenerationDurationBadge.tsx'
 import css from '../src/client/panel.module.css'
 
 function Fixture() {
@@ -24,7 +25,7 @@ function Fixture() {
           const status = state === 'mixed' ? ['completed', 'running', 'queued', 'failed'][index] : state
           return <article key={index} data-comparison-task={`model-${index}`} data-task-status={status}>
             <strong>{['GPT Image 2', 'Grok Imagine', 'Seedream', 'Nano Banana'][index]}</strong>
-            {status === 'completed' ? <button className={css.comparisonImageButton}><img alt="已完成的本地示例" src={'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="700"><rect width="600" height="700" fill="#dfdad0"/><rect x="210" y="220" width="180" height="300" rx="22" fill="#f8f6ec"/><rect x="236" y="160" width="128" height="80" rx="10" fill="#687764"/><text x="300" y="380" text-anchor="middle" font-family="serif" font-size="40" fill="#687764">pure.</text></svg>')} /></button>
+            {status === 'completed' ? <button className={css.comparisonImageButton}><img alt="已完成的本地示例" src={'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="700"><rect width="600" height="700" fill="#dfdad0"/><rect x="210" y="220" width="180" height="300" rx="22" fill="#f8f6ec"/><rect x="236" y="160" width="128" height="80" rx="10" fill="#687764"/><text x="300" y="380" text-anchor="middle" font-family="serif" font-size="40" fill="#687764">pure.</text></svg>')} /><GenerationDurationBadge durationMs={[62345, 125000, 0, undefined][index]} /></button>
               : ['submitting', 'queued', 'running'].includes(status!) ? <div className={css.comparisonPending} role="status"><GenerationLoading compact title={status === 'queued' ? '任务排队中…' : '正在生成图片…'} hint="已用时 24 秒" /></div>
                 : <span>{status === 'failed' ? '失败' : '已取消'}</span>}
           </article>

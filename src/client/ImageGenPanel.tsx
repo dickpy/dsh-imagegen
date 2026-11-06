@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GenerationLoading } from './GenerationLoading'
+import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { createPortal } from 'react-dom'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
@@ -363,6 +364,7 @@ async function historyImagesToGenerated(refs: HistoryImageRef[]): Promise<Genera
       b64: comma >= 0 ? dataUrl.slice(comma + 1) : '',
       mime: ref.mime,
       ...ref.revisedPrompt === undefined ? {} : { revisedPrompt: ref.revisedPrompt },
+      ...ref.durationMs === undefined ? {} : { durationMs: ref.durationMs },
     }
   }))
 }
@@ -1874,6 +1876,7 @@ export function ImageGenPanel(props: {
                 onClick={() => { openPreview(item.images, imageIndex) }}
               >
                 <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} onContextMenu={event => openCopyMenu(event, image)} />
+                <GenerationDurationBadge durationMs={image.durationMs} />
                 <span className={css.ecommerceResultBadge}>{group.label}</span>
                 <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
                   <a className={css.ecommerceActionChip} href={srcOf(image)} download={`product-${item.slotKey || item.id}-${imageIndex + 1}.${extensionOf(image.mime)}`}>{tt('download')}</a>
@@ -2793,6 +2796,7 @@ export function ImageGenPanel(props: {
                         </label>
                         <button type="button" className={css.galleryImageButton} data-selecting={gallerySelecting ? '' : undefined} onClick={() => { if (gallerySelecting) toggleGallerySelection(entry.id); else void viewGalleryEntry(entry) }} title={gallerySelecting ? tt('gallery.select') : tt('preview.open')}>
                           <img className={css.galleryImage} src={image.url} alt={entry.prompt} loading="lazy" decoding="async" />
+                          <GenerationDurationBadge durationMs={image.durationMs} />
                           <span className={css.galleryBadge}>{entry.mode === 'edit' ? tt('mode.edit') : tt('mode.text')}</span>
                         </button>
                         <div className={css.galleryCardActions}>
@@ -2988,6 +2992,7 @@ export function ImageGenPanel(props: {
                           onClick={() => { openPreview(taskImages, 0) }}
                         >
                           <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />
+                          <GenerationDurationBadge durationMs={image.durationMs} />
                         </button>
                       ) : task.status === 'queued' || task.status === 'running' ? (
                         <div className={css.comparisonPending} role="status">
@@ -3068,6 +3073,7 @@ export function ImageGenPanel(props: {
                       alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
                       onContextMenu={event => openCopyMenu(event, image)}
                     />
+                    <GenerationDurationBadge durationMs={image.durationMs} />
                     {image.revisedPrompt !== undefined ? (
                       <figcaption className={css.imageCaption} title={image.revisedPrompt}>
                         {tt('revisedPrompt', { prompt: image.revisedPrompt })}
@@ -3160,7 +3166,12 @@ export function ImageGenPanel(props: {
           <button type="button" className={css.fullscreenPrivacy} aria-pressed={privacyMode} title={tt('image.privacyHint')} onClick={event => { event.stopPropagation(); setPrivacyMode(value => !value) }}>{tt(privacyMode ? 'image.show' : 'image.hide')}</button>
           <div className={css.comparisonFullscreenGrid} onClick={event => { event.stopPropagation() }}>
             {comparisonResults.map(task => (
-              <figure key={task.id}><figcaption>{task.request.model}</figcaption>{task.result!.images.map((image, index) => <img key={index} src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />)}</figure>
+              <figure key={task.id}><figcaption>{task.request.model}</figcaption>{task.result!.images.map((image, index) => (
+                <div key={index} className={css.comparisonFullscreenImage}>
+                  <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />
+                  <GenerationDurationBadge durationMs={image.durationMs} />
+                </div>
+              ))}</figure>
             ))}
           </div>
         </div>, document.body) : null}
