@@ -1309,6 +1309,7 @@ const history = {
         url: `/api/dsh-imagegen/history/image/${entry.id}-${index}.png`,
         mime: image.mime,
         ...(image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt }),
+        ...(image.durationMs === undefined ? {} : { durationMs: image.durationMs }),
       })),
     }
     persistedHistory.unshift(wire)
@@ -1813,10 +1814,12 @@ await check('C3 generate route persists history server-side and enforces loopbac
   assert.equal(status, 200)
   assert.equal(body.ok, true)
   assert.equal(body.images.length, 2)
+  assert.ok(body.images.every(image => Number.isFinite(image.durationMs) && image.durationMs >= 0), '#66: generated images carry a completed duration')
   assert.equal(persistedHistory.length, 1, 'history is written before the response reaches the browser')
   assert.equal(persistedHistory[0].prompt, 'a cat')
   assert.equal(persistedHistory[0].images.length, 2)
   assert.equal(body.history.length, 1)
+  assert.equal(body.history[0].images[0].durationMs, body.images[0].durationMs, '#66: history preserves the generation clock')
   const missing = await post('/api/dsh-imagegen/generate', { mode: 'text', model: 'gpt-image-2', prompt: '  ', size: 'auto', quality: 'auto', n: 1, detail: '' })
   assert.equal(missing.body.ok, false)
   assert.match(missing.body.message, /prompt is required/)
@@ -4644,10 +4647,10 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
         json: async () => ({
           ok: true,
           entries: [
-            { id: 'history-grok', createdAt: 2, mode: 'text', model: 'grok-imagine-image', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/grok.png', mime: 'image/png' }], ...comparisonHistory },
+            { id: 'history-grok', createdAt: 2, mode: 'text', model: 'grok-imagine-image', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/grok.png', mime: 'image/png', durationMs: 62345 }], ...comparisonHistory },
             { id: 'history-gpt', createdAt: 1, mode: 'text', model: 'gpt-image-2', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/gpt.png', mime: 'image/png' }], ...comparisonHistory },
             { id: 'hist-ecom-1', createdAt: 4, mode: 'text', model: 'gpt-image-2', prompt: 'product main image', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom1.png', mime: 'image/png' }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'main-1', slotLabel: '主图' },
-            { id: 'hist-ecom-2', createdAt: 5, mode: 'text', model: 'gpt-image-2', prompt: 'product selling point', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom2.png', mime: 'image/png' }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'sp-1', slotLabel: '卖点图' },
+            { id: 'hist-ecom-2', createdAt: 5, mode: 'text', model: 'gpt-image-2', prompt: 'product selling point', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom2.png', mime: 'image/png', durationMs: 125000 }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'sp-1', slotLabel: '卖点图' },
           ],
         }),
       }
@@ -4657,7 +4660,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
         ok: true,
         json: async () => ({
           ok: true,
-          entries: [{ id: 'gallery-one', createdAt: 3, mode: 'text', model: 'gpt-image-2', prompt: 'gallery prompt', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/api/dsh-imagegen/gallery/image/gallery.png', mime: 'image/png' }] }],
+          entries: [{ id: 'gallery-one', createdAt: 3, mode: 'text', model: 'gpt-image-2', prompt: 'gallery prompt', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/api/dsh-imagegen/gallery/image/gallery.png', mime: 'image/png', durationMs: 125000 }] }],
         }),
       }
     }
@@ -4807,7 +4810,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
             request: payload,
             status,
             createdAt: 1,
-            ...status === 'completed' ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png' }] } } : {},
+            ...status === 'completed' ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png', durationMs: (index + 1) * 61000 }] } } : {},
           },
         }),
       }
@@ -5316,6 +5319,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history]') !== null, 'history remains visible in gallery mode')
     assert.equal(view.querySelectorAll('[data-gallery="true"]').length, 2, 'gallery mode is active')
     assert.ok(view.querySelector('[data-gallery="true"] [data-gallery-add-conversation]') !== null, 'gallery entries expose add-to-conversation action')
+    assert.equal(view.querySelector('[data-gallery="true"] [data-generation-duration]')?.textContent, '耗时 2分5秒', '#66: gallery retains the saved duration')
     const galleryHistoryMain = jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history-main]')
     assert.ok(galleryHistoryMain !== null, 'gallery mode exposes clickable history')
     galleryHistoryMain.click()
@@ -5324,6 +5328,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(view.querySelector('textarea[placeholder*="描述你想要的画面"]') !== null, 'normal prompt returns after gallery')
     assert.ok(view.querySelector('[class*="generateButton"]') !== null, 'normal generate button returns after gallery')
     assert.ok(view.querySelectorAll('[data-count]').length > 0, 'history result is visible before starting a new creation')
+    assert.equal(view.querySelectorAll('[data-result-preview-grid] [data-generation-duration]').length, 1, '#66: legacy comparison images have no invented time')
+    assert.equal(view.querySelector('[data-result-preview-grid] [data-generation-duration]')?.textContent, '耗时 1分2秒', '#66: history hydration preserves duration')
     jsdomDocument.querySelector('[data-history-new]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.equal(view.querySelectorAll('[data-count]').length, 0, 'new creation clears the image preview')
@@ -5560,6 +5566,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.ok(restoredResults !== null, 'restored project keeps the ecommerce canvas')
     assert.ok(restoredResults.textContent?.includes('2/2'), 'restored results report history progress')
     assert.ok(restoredResults.querySelector('[data-ecommerce-group="卖点图"] img') !== null, 'restored groups render stored images')
+    assert.equal(restoredResults.querySelector('[data-ecommerce-group="卖点图"] [data-generation-duration]')?.textContent, '耗时 2分5秒', '#66: restored product results retain duration')
+    assert.equal(restoredResults.querySelector('[data-ecommerce-group="主图"] [data-generation-duration]'), null, '#66: old product results remain untimed')
 
     // The clear path: resetting the key stages an explicit clear and must
     // also report success.
@@ -6047,6 +6055,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     completeGenerationTasks = true
     assert.ok(await waitUntil(() => view.querySelector('[data-generation-animation]') === null, 5000), 'the animation unmounts when host tasks complete')
     await waitForSelector(view, '[data-result-preview-grid] img')
+    assert.match(view.querySelector('[data-result-preview-grid] [data-generation-duration]')?.textContent ?? '', /^耗时 \d+分\d+秒$/, '#66: completed single-model results retain duration')
     jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
     assert.ok(await waitUntil(() => jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-active')))
     await new Promise(resolve => setTimeout(resolve, 30))
@@ -6117,6 +6126,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       assert.ok(await waitUntil(() => slot(0)?.querySelector('img') && slot(1)?.getAttribute('data-task-status') === 'running', 5000), 'a completed result is visible beside the still-running model')
       assert.equal(view.querySelectorAll('[data-comparison-task] [data-generation-animation]').length, 1)
       assert.ok(!slot(1).textContent.includes('%'), 'comparison has no fake percentage')
+      const firstDuration = slot(0).querySelector('[data-generation-duration]')?.textContent
+      assert.match(firstDuration ?? '', /^耗时 \d+分\d+秒$/, '#66: completed comparison result shows minutes and seconds')
+      assert.equal(slot(1).querySelector('[data-generation-duration]'), null, '#66: a running model has no completed clock')
       comparisonTaskStates.set(ids[1], 'failed')
       assert.ok(await waitUntil(() => slot(1)?.getAttribute('data-task-status') === 'failed', 5000))
       assert.equal(slot(1).querySelector('[data-generation-animation]'), null, 'failure stops only that slot animation')
@@ -6127,6 +6139,12 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       comparisonTaskStates.set(ids[1], 'completed')
       assert.ok(await waitUntil(() => view.querySelectorAll('[data-comparison-task] img').length === 2, 5000))
       assert.equal(view.querySelectorAll('[data-comparison-task] [data-generation-animation]').length, 0, 'all animations unmount when all models finish')
+      assert.equal(slot(0).querySelector('[data-generation-duration]')?.textContent, firstDuration, '#66: earlier duration stays fixed while other models finish')
+      assert.notEqual(slot(1).querySelector('[data-generation-duration]')?.textContent, firstDuration, '#66: models display independent durations')
+      ;[...view.querySelectorAll('button')].find(button => button.textContent === '全屏对比').click()
+      await waitForSelector(jsdomDocument, '[class*="comparisonFullscreen"] [data-generation-duration]')
+      assert.equal(jsdomDocument.querySelectorAll('[class*="comparisonFullscreenGrid"] [data-generation-duration]').length, 2, '#66: fullscreen comparison retains each duration')
+      jsdomDocument.querySelector('[class*="comparisonFullscreen"] [aria-label="关闭"]').click()
     }
 
     // Earlier native-new-session coverage closed the studio; reopen it first.

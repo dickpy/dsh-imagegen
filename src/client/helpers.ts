@@ -56,6 +56,13 @@ export function tt(key: ImageGenKey, values?: TranslateValues): string {
   return interpolate(key, values, activeLocale)
 }
 
+/** Completed generations keep a fixed clock; old records have no timing data. */
+export function generationDurationLabel(durationMs: number | undefined): string | undefined {
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) return undefined
+  const totalSeconds = Math.floor(durationMs / 1000)
+  return tt('canvas.duration', { minutes: Math.floor(totalSeconds / 60), seconds: totalSeconds % 60 })
+}
+
 /** Human-readable error text from an unknown thrown value. */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message

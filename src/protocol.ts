@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.15.5'
+export const PLUGIN_VERSION = '1.15.6'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -1104,6 +1104,8 @@ export interface GeneratedImage {
   mime: string
   /** Upstream revised prompt, when provided. */
   revisedPrompt?: string
+  /** Producing generation's elapsed time, excluding queue wait and history writes. */
+  durationMs?: number
 }
 
 /** Successful generate outcome. */
@@ -1245,6 +1247,8 @@ export interface HistoryImageRef {
   mime: string
   /** Upstream revised prompt, when provided. */
   revisedPrompt?: string
+  /** Producing generation's elapsed time; absent on older records and uploads. */
+  durationMs?: number
 }
 
 /** A saved generation as the browser consumes it (metadata + served images). */

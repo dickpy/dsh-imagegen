@@ -401,6 +401,7 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
       b64: image.b64,
       mime: image.mime,
       ...typeof image.revisedPrompt === 'string' ? { revisedPrompt: image.revisedPrompt } : {},
+      ...typeof image.durationMs === 'number' && Number.isFinite(image.durationMs) && image.durationMs >= 0 ? { durationMs: image.durationMs } : {},
     })
   }
   const comparisonModels = Array.isArray(entry.comparisonModels)
