@@ -4638,16 +4638,19 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       }
     }
     if (path.endsWith('/history/list')) {
+      // The comparison models match what the fixture channel configures, so the
+      // #68 restore path resolves both of them (a model that is no longer
+      // configured would collapse the comparison to a single choice).
       const comparisonHistory = {
         comparisonId: 'client-comparison',
-        comparisonModels: ['gpt-image-2', 'grok-imagine-image'],
+        comparisonModels: ['gpt-image-2', 'gpt-image-2-alt'],
       }
       return {
         ok: true,
         json: async () => ({
           ok: true,
           entries: [
-            { id: 'history-grok', createdAt: 2, mode: 'text', model: 'grok-imagine-image', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/grok.png', mime: 'image/png', durationMs: 62345 }], ...comparisonHistory },
+            { id: 'history-grok', createdAt: 2, mode: 'text', model: 'gpt-image-2-alt', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/grok.png', mime: 'image/png', durationMs: 62345 }], ...comparisonHistory },
             { id: 'history-gpt', createdAt: 1, mode: 'text', model: 'gpt-image-2', prompt: 'compare prompt', size: '1:1', quality: '4k', detail: '', n: 1, images: [{ url: '/history/gpt.png', mime: 'image/png' }], ...comparisonHistory },
             { id: 'hist-ecom-1', createdAt: 4, mode: 'text', model: 'gpt-image-2', prompt: 'product main image', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom1.png', mime: 'image/png' }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'main-1', slotLabel: '主图' },
             { id: 'hist-ecom-2', createdAt: 5, mode: 'text', model: 'gpt-image-2', prompt: 'product selling point', size: '1:1', quality: '2k', detail: '', n: 1, images: [{ url: '/history/ecom2.png', mime: 'image/png', durationMs: 125000 }], workflow: 'ecommerce', projectId: 'project-hist', projectName: '历史保温杯', slotKey: 'sp-1', slotLabel: '卖点图' },
@@ -6025,6 +6028,13 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     nativeTextAreaSetter.call(finalPrompt, 'Combine the three references in order')
     finalPrompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 25))
+    // #68: restoring a comparison record can leave compare mode on; this form
+    // submits exactly one task, so the test states the mode it exercises.
+    const multiCompare = view.querySelector('[class*="compareToggle"] input')
+    if (multiCompare.checked) {
+      multiCompare.click()
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
     const beforeMultiSubmit = ecommerceSubmissions.length
     view.querySelector('button[class*="generateButton"]').click()
     assert.ok(await waitUntil(() => ecommerceSubmissions.length === beforeMultiSubmit + 1), 'multi-reference form submits a task')
@@ -6183,6 +6193,45 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(view.querySelector('[data-clear-prompt]').disabled, true, 'empty prompt disables the clear action')
     assert.equal([...view.querySelectorAll('[role="tablist"] button')].some(button => button.textContent?.includes('PPT')), false, 'the PPT top-nav entry is gone')
     assert.ok(view.querySelector('button[class*="generateButton"]'), 'normal generation remains available')
+
+    // #68: the composer's corner button opens the full-window prompt editor —
+    // a narrow column can never show a long prompt, so the editor is how it is
+    // read and written. Edits stream back into the composer and Escape closes.
+    const composerPrompt = view.querySelector('textarea[placeholder*="描述你想要的画面"]')
+    nativeTextAreaSetter.call(composerPrompt, '一条需要整段阅读的很长很长的提示词')
+    composerPrompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const expandButton = view.querySelector('[data-prompt-expand]')
+    assert.ok(expandButton !== null, '#68: the prompt field exposes an expand button')
+    expandButton.click()
+    await waitForSelector(jsdomDocument, '[data-prompt-editor]')
+    const promptDialog = jsdomDocument.querySelector('[data-prompt-editor]')
+    assert.ok(promptDialog !== null, '#68: the expand button opens the full-window editor')
+    assert.equal(promptDialog.querySelector('[role="dialog"]')?.getAttribute('aria-label'), '提示词', 'the editor is a labelled dialog')
+    const promptDialogField = promptDialog.querySelector('[data-prompt-editor-field]')
+    assert.equal(promptDialogField.value, '一条需要整段阅读的很长很长的提示词', 'the editor opens with the composer text')
+    nativeTextAreaSetter.call(promptDialogField, '一条需要整段阅读的很长很长的提示词，补上光线和材质')
+    promptDialogField.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    assert.ok(await waitUntil(() => composerPrompt.value === '一条需要整段阅读的很长很长的提示词，补上光线和材质'), 'edits in the editor sync back to the composer')
+    promptDialogField.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-prompt-editor]') === null), 'Escape closes the editor')
+    assert.equal(composerPrompt.value, '一条需要整段阅读的很长很长的提示词，补上光线和材质', 'closing the editor keeps the edited prompt')
+
+    // #68: a history row now loads its prompt and parameters, so 开始生成
+    // reproduces that run instead of a highlight that changes nothing.
+    const historyRow = jsdomDocument.querySelector('[data-dsh-imagegen-history-host] [data-dsh-imagegen-history-main]')
+    historyRow.click()
+    assert.ok(await waitUntil(() => view.querySelector('textarea[placeholder*="描述你想要的画面"]')?.value === 'compare prompt'), 'history restores the record prompt')
+    assert.ok(historyRow.closest('[data-active]') !== null, 'the restored history row is the active one')
+    assert.equal(historyRow.getAttribute('aria-current'), 'true', 'the active row is exposed as current')
+    assert.equal(jsdomDocument.querySelectorAll('[data-dsh-imagegen-history] [class*="historyItem"][data-active]').length, 1, 'only one history row is active at a time')
+    assert.equal(view.querySelector('[class*="compareToggle"] input').checked, true, 'a comparison record restores its comparison mode')
+    assert.ok(await waitUntil(() => {
+      try { return JSON.parse(jsdomWindow.localStorage.getItem('dsh-imagegen:generation-settings')).size === '1:1' } catch { return false }
+    }), '#68: the restored size is remembered for the next launch')
+    const storedSettings = JSON.parse(jsdomWindow.localStorage.getItem('dsh-imagegen:generation-settings'))
+    assert.equal(storedSettings.quality, '4k', '#68: the restored quality is remembered for the next launch')
+    assert.ok(typeof storedSettings.model === 'string' && storedSettings.model !== '', '#68: the restored model is remembered for the next launch')
 
     // Re-applying the client module to the same document must retire the
     // previous React root before it portals history into the reused host.

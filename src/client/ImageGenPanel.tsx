@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Mous
 import { GenerationLoading } from './GenerationLoading'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { createPortal } from 'react-dom'
+import { Maximize2 } from 'lucide-react'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -29,12 +30,26 @@ import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
 import { ReversePromptDialog } from './ReversePromptDialog.tsx'
+import { PromptEditorDialog } from './PromptEditorDialog.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
 import type { DiagnosticEntry, EcommerceRefRole, GeneratedImage, GenerateMode, GenerateRequest, GenerationTask, GenerationTaskStatus, GenerationTaskSummary, HistoryEntry, HistoryImageRef, ProductSetDraft, ProductSetSlot, UpdateInfo } from '../protocol.ts'
 import { AGENT_IMAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenConfig, ImageGenScope, ImageModelGroup } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
+import {
+  compareChoice,
+  compareKey,
+  GENERATION_DETAILS as DETAILS,
+  GENERATION_QUALITIES as QUALITIES,
+  GENERATION_SIZES as SIZES,
+  normalizeCount,
+  normalizeDetail,
+  normalizeQuality,
+  normalizeSize,
+  readGenerationSettings,
+  writeGenerationSettings,
+} from './generation-settings.ts'
 import { describeModel, promptCharLimit } from '../model-catalog.ts'
 import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService } from './conversation-sync.ts'
 import { useConversationImageAttachment } from './use-conversation-image-attachment.tsx'
@@ -42,15 +57,10 @@ import { ConversationSessionPicker } from './ConversationSessionPicker.tsx'
 import { Select } from './Select.tsx'
 import css from './panel.module.css'
 
-/** Size options, presented as aspect ratios (auto = let the model decide).
- *  The host maps each ratio onto the model's own vocabulary: aspect_ratio for
- *  Grok Imagine, the closest pixel size for OpenAI-compatible endpoints. */
-const SIZES = ['auto', '1:1', '3:4', '4:3', '9:16', '2:3', '3:2', '16:9', '21:9'] as const
-
-/** Size option keys in the locale dictionary. */
 /** Re-check Releases while the panel stays open; the host caches for 15 minutes. */
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60_000
 
+/** Size option keys in the locale dictionary. */
 const SIZE_KEYS: Record<string, 'size.auto' | 'size.square' | 'size.portrait34' | 'size.landscape43' | 'size.portrait916' | 'size.portrait23' | 'size.landscape32' | 'size.wide169' | 'size.ultrawide21'> = {
   auto: 'size.auto',
   '1:1': 'size.square',
@@ -62,14 +72,6 @@ const SIZE_KEYS: Record<string, 'size.auto' | 'size.square' | 'size.portrait34' 
   '16:9': 'size.wide169',
   '21:9': 'size.ultrawide21',
 }
-
-/** Quality options, shown as output-resolution tiers (auto = let the model
- *  decide). The host maps them: resolution for Grok, size + quality for GPT
- *  Image 2+, quality level for other OpenAI-compatible endpoints. */
-const QUALITIES = ['auto', '1k', '2k', '4k'] as const
-
-/** Detail options ('' = omit the passthrough). */
-const DETAILS = ['', 'standard', 'high'] as const
 
 const REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 // The local DSH attachment backend defaults to a 2000px per-side limit. Keep
@@ -111,36 +113,8 @@ const PRODUCT_SET_SLOTS: ProductSetSlot[] = [
   { key: 'model', label: '使用图', description: '人物上手或穿戴效果', count: 1, enabled: false, refRole: 'product' },
 ]
 
-/** Legacy pixel sizes saved by older versions, mapped onto the current
- *  aspect-ratio vocabulary so restoring old history entries still works. */
-const LEGACY_SIZE_TO_RATIO: Record<string, string> = {
-  '512x512': '1:1',
-  '1024x1024': '1:1',
-  '1536x1024': '3:2',
-  '1024x1536': '2:3',
-  '1792x1024': '16:9',
-  '1024x1792': '9:16',
-}
-
-/** Legacy quality levels saved by older versions, mapped onto resolution. */
-const LEGACY_QUALITY_TO_RES: Record<string, string> = {
-  low: '1k',
-  medium: '2k',
-  high: '4k',
-}
-
-/** Normalize a saved size value into a current dropdown option. */
-function normalizeSize(value: string): string {
-  if ((SIZES as readonly string[]).includes(value)) return value
-  return LEGACY_SIZE_TO_RATIO[value] ?? 'auto'
-}
-
-/** Normalize a saved quality value into a current dropdown option. */
-function normalizeQuality(value: string): string {
-  if ((QUALITIES as readonly string[]).includes(value)) return value
-  return LEGACY_QUALITY_TO_RES[value] ?? 'auto'
-}
-
+/** Legacy pixel sizes and quality levels are normalized by
+ *  ./generation-settings.ts, which also owns the persisted selection (#68). */
 function clampPreviewScale(scale: number): number {
   return Math.min(PREVIEW_SCALE_MAX, Math.max(PREVIEW_SCALE_MIN, scale))
 }
@@ -187,6 +161,17 @@ function readConfigWidth(): number {
     if (Number.isFinite(value) && value > 0) return Math.min(CONFIG_WIDTH_MAX, Math.max(CONFIG_WIDTH_MIN, Math.round(value)))
   } catch { /* storage unavailable */ }
   return CONFIG_WIDTH_DEFAULT
+}
+
+/** Per-device studio preferences (last-used generation settings) live in browser
+ *  storage; embedded shells may block it, in which case the panel still works
+ *  with in-memory defaults. */
+function settingsStorage(): Storage | null {
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
 }
 
 /** Read the current config from the settings scope snapshot. */
@@ -524,16 +509,12 @@ function mergeTaskSummary(summary: GenerationTaskSummary, previous: GenerationTa
 
 /** Stable key for one channel+model pair in the comparison selector. */
 function modelChoiceKey(choice: ModelPickerValue): string {
-  return `${choice.channelId}\u0000${choice.model}`
+  return compareKey(choice.channelId, choice.model)
 }
 
 /** Decode a comparison key, rejecting malformed persisted state. */
 function modelChoiceFromKey(key: string): ModelPickerValue | undefined {
-  const separator = key.indexOf('\u0000')
-  if (separator < 0) return undefined
-  const channelId = key.slice(0, separator)
-  const model = key.slice(separator + 1)
-  return model === '' ? undefined : { channelId, model }
+  return compareChoice(key)
 }
 
 /** Render the studio. */
@@ -651,15 +632,21 @@ export function ImageGenPanel(props: {
   }
   const [prompt, setPrompt] = useState('')
   const promptInput = useRef<HTMLTextAreaElement>(null)
-  const [size, setSize] = useState<string>('auto')
-  const [quality, setQuality] = useState<string>('auto')
-  const [count, setCount] = useState(1)
-  const [detail, setDetail] = useState('')
-  const [model, setModel] = useState<string>('')
-  const [modelChannelId, setModelChannelId] = useState<string>('')
-  const [compareEnabled, setCompareEnabled] = useState(false)
+  /** The full-window prompt editor: the composer column is too narrow to read a
+   *  long prompt, and growing the box vertically never fixes that. */
+  const [promptEditorOpen, setPromptEditorOpen] = useState(false)
+  // #68: reopen the studio with the model, size, quality, count and detail the
+  // operator used last instead of resetting every field on each launch.
+  const [initialSettings] = useState(() => readGenerationSettings(settingsStorage()))
+  const [size, setSize] = useState<string>(initialSettings.size)
+  const [quality, setQuality] = useState<string>(initialSettings.quality)
+  const [count, setCount] = useState(initialSettings.count)
+  const [detail, setDetail] = useState(initialSettings.detail)
+  const [model, setModel] = useState<string>(initialSettings.model)
+  const [modelChannelId, setModelChannelId] = useState<string>(initialSettings.channelId)
+  const [compareEnabled, setCompareEnabled] = useState(initialSettings.compareEnabled)
   /** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
-  const [compareModels, setCompareModels] = useState<string[]>([])
+  const [compareModels, setCompareModels] = useState<string[]>(initialSettings.compareModels)
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [privacyMode, setPrivacyMode] = useState(false)
   const [copyMenu, setCopyMenu] = useState<{ image: GeneratedImage; x: number; y: number } | null>(null)
@@ -756,7 +743,7 @@ export function ImageGenPanel(props: {
   const updateAreaRef = useRef<HTMLSpanElement>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const generationRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { setLibraryOpen(false) }, [workspace, tab])
+  useEffect(() => { setLibraryOpen(false); setPromptEditorOpen(false) }, [workspace, tab])
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
   const initialDataRequestedRef = useRef(false)
@@ -879,12 +866,20 @@ export function ImageGenPanel(props: {
   }, [api, tasks, ecommerceAnchor])
 
 
-  // A saved settings change is authoritative. Keep both levels of the active
-  // selection and comparison choices inside the current channel/model matrix.
+  // A saved settings change is authoritative — but only for a selection that no
+  // longer exists. #68: the studio restores the model used last from browser
+  // storage, and this effect must not snap it back to the configured default
+  // the moment the channel matrix loads.
   const modelPreferenceKey = `${modeGroups.map(group => `${group.id}:${group.models.join(',')}`).join('|')}\u0000${defaultModel ?? ''}`
   useEffect(() => {
-    const preferred = defaultModel !== undefined && modeModels.includes(defaultModel) ? defaultModel : modeModels[0] ?? ''
-    const selected = resolveModelChoice(modeGroups, { channelId: modelChannelId, model: preferred }, defaultChannelId)
+    // Nothing to resolve against yet (settings still loading): keep whatever the
+    // remembered selection was instead of clearing it.
+    if (modeModels.length === 0) return
+    const keepsCurrent = model !== '' && modeModels.includes(model)
+    const preferred = keepsCurrent
+      ? model
+      : defaultModel !== undefined && modeModels.includes(defaultModel) ? defaultModel : modeModels[0] ?? ''
+    const selected = resolveModelChoice(modeGroups, { channelId: keepsCurrent ? modelChannelId : undefined, model: preferred }, defaultChannelId)
     setModel(selected.model)
     setModelChannelId(selected.channelId)
     setCompareModels(previous => {
@@ -897,6 +892,22 @@ export function ImageGenPanel(props: {
       return selected.model === '' ? [] : [modelChoiceKey(selected)]
     })
   }, [modelPreferenceKey])
+
+  // Remember the selection for the next launch (#68). Written after the model
+  // effect above has resolved the remembered choice against the live matrix, so
+  // storage always holds a selection this channel configuration can honour.
+  useEffect(() => {
+    writeGenerationSettings(settingsStorage(), {
+      size,
+      quality,
+      count,
+      detail,
+      model,
+      channelId: modelChannelId,
+      compareEnabled,
+      compareModels,
+    })
+  }, [size, quality, count, detail, model, modelChannelId, compareEnabled, compareModels])
 
   const filteredGallery = gallery
     .filter(entry => {
@@ -1500,6 +1511,45 @@ export function ImageGenPanel(props: {
     return loaded.flat()
   }
 
+  /**
+   * Adopt one history record's prompt and parameters (#68).
+   *
+   * Picking a history slot used to swap only the images, so reproducing a run
+   * meant copying the prompt and re-picking model, size, quality, count and
+   * detail by hand — the highlight made the slot look "selected" without
+   * actually loading anything. Restoring the record makes 开始生成 reproduce it.
+   */
+  const applyHistorySettings = (group: HistoryGroup): void => {
+    const entry = group.entries[0]
+    if (entry === undefined) return
+    const targetTab: PanelTab = entry.mode === 'edit' ? 'edit' : 'text'
+    // Resolve against the matrix the target tab will actually offer, otherwise
+    // an edit-mode record could restore a text-only model for one render.
+    const targetGroups = targetTab === 'edit'
+      ? modelGroups
+          .map(group => ({ ...group, models: group.models.filter(candidate => describeModel(candidate).supportsEdit) }))
+          .filter(group => group.models.length > 0)
+      : modelGroups
+    const restored = resolveModelChoice(targetGroups, { channelId: entry.channelId ?? '', model: entry.model }, defaultChannelId)
+    setPrompt(entry.prompt)
+    setSize(normalizeSize(entry.size))
+    setQuality(normalizeQuality(entry.quality))
+    setCount(normalizeCount(entry.n))
+    setDetail(normalizeDetail(entry.detail))
+    setModel(restored.model)
+    setModelChannelId(restored.channelId)
+    // A comparison run carries every model it submitted: restore the whole set
+    // so one click reproduces the comparison instead of a single image.
+    const comparisonKeys = group.models.length > 1
+      ? [...new Set(group.models.map(name => modelChoiceKey(resolveModelChoice(targetGroups, { channelId: entry.channelId ?? '', model: name }, defaultChannelId))))]
+      : []
+    setCompareEnabled(comparisonKeys.length > 1)
+    setCompareModels(comparisonKeys.length > 1
+      ? comparisonKeys
+      : restored.model === '' ? [] : [modelChoiceKey(restored)])
+    openTab(targetTab)
+  }
+
   /** View every model result from one comparison as one canvas result set. */
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
@@ -1511,8 +1561,9 @@ export function ImageGenPanel(props: {
       return
     }
     // History is also the bridge out of the gallery: show the image workspace
-    // immediately, then hydrate the selected result into its canvas.
-    openTab('text')
+    // immediately, then hydrate the selected result into its canvas. The
+    // record's prompt and parameters come back with it (#68).
+    applyHistorySettings(group)
     try {
       setImages(await loadHistoryGroup(group))
       setComparison(null)
@@ -2017,18 +2068,20 @@ export function ImageGenPanel(props: {
           {filteredHistory.map(group => {
             const entry = group.entries[0]!
             const isComparison = group.models.length > 1
+            const isActive = group.entries.some(item => item.id === viewingHistoryId)
             const imageCount = group.entries.reduce((total, item) => total + item.images.length, 0)
             return (
               <div
                 key={group.key}
                 className={css.historyItem}
-                data-active={group.entries.some(item => item.id === viewingHistoryId) ? '' : undefined}
+                data-active={isActive ? '' : undefined}
                 data-comparison={isComparison ? '' : undefined}
               >
                 <button
                   type="button"
                   className={css.historyMain}
                   data-dsh-imagegen-history-main=""
+                  aria-current={isActive ? 'true' : undefined}
                   onClick={() => { void viewHistoryGroup(group) }}
                 >
                   {entry.images.length > 0 ? (
@@ -2538,13 +2591,27 @@ export function ImageGenPanel(props: {
                 {/* prompt (normal workspace only — ecommerce has its own form) */}
                 {isGeneration ? (<>
                 <section className={css.card}>
-              <textarea
-                ref={promptInput}
-                className={css.prompt}
-                value={prompt}
-                placeholder={tt('prompt.placeholder')}
-                onChange={(event) => { setPrompt(event.target.value) }}
-              />
+              <div className={css.promptBox}>
+                <textarea
+                  ref={promptInput}
+                  className={css.prompt}
+                  value={prompt}
+                  placeholder={tt('prompt.placeholder')}
+                  onChange={(event) => { setPrompt(event.target.value) }}
+                />
+                {/* The composer column is narrow: open the prompt full-window
+                    instead of asking the user to drag a resize handle. */}
+                <button
+                  type="button"
+                  className={css.promptExpand}
+                  data-prompt-expand=""
+                  title={tt('prompt.expandHint')}
+                  aria-label={tt('prompt.expand')}
+                  onClick={() => { setPromptEditorOpen(true) }}
+                >
+                  <Maximize2 size={13} strokeWidth={1.9} aria-hidden="true" />
+                </button>
+              </div>
               <div className={css.promptFooter}>
                 <button type="button" className={css.promptClear} data-clear-prompt="" disabled={prompt === '' || enhancing} onClick={() => { setPrompt(''); promptInput.current?.focus() }}>{tt('prompt.clear')}</button>
                 <button
@@ -3333,6 +3400,19 @@ export function ImageGenPanel(props: {
             setError(null)
           }}
           close={() => { setReverseTarget(null) }}
+        />
+      ) : null}
+      {/* ------------------------------------------- full-window prompt editor */}
+      {promptEditorOpen ? (
+        <PromptEditorDialog
+          value={prompt}
+          limit={promptLimit}
+          overLimit={promptOverLimit}
+          enhancing={enhancing}
+          onChange={next => { setPrompt(next) }}
+          onEnhance={() => { void enhanceCurrentPrompt() }}
+          onClear={() => { setPrompt('') }}
+          close={() => { setPromptEditorOpen(false) }}
         />
       ) : null}
       <DiagnosticsPanel api={api} open={diagnosticsOpen} onClose={() => { setDiagnosticsOpen(false) }} />

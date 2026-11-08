@@ -1121,8 +1121,12 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   border-color: var(--dsw-alias-border-l2);
 }
 
+/* The one record currently loaded into the studio. Tinted background + ring, so
+   it reads as "loaded", not merely hovered (#68). */
 .historyItem[data-active] {
   border-color: var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-2));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent);
 }
 
 .historyMain {
@@ -2195,10 +2199,17 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 
 /* --- prompt -------------------------------------------------------------------- */
 
+/* The prompt field is a controlled box with the expand affordance pinned to its
+   bottom-right corner (where the native resize grip used to be). */
+.promptBox {
+  position: relative;
+}
+
 .prompt {
+  display: block;
   width: 100%;
   min-height: 120px;
-  padding: 10px 12px;
+  padding: 10px 12px 22px;
   font-size: 13px;
   line-height: 1.6;
   color: var(--dsw-alias-label-primary);
@@ -2206,7 +2217,7 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 10px;
   outline: none;
-  resize: vertical;
+  resize: none;
   font-family: inherit;
   box-sizing: border-box;
 }
@@ -2217,6 +2228,160 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 
 .prompt::placeholder {
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* Opens the full-window editor: a narrow column can never show a long prompt,
+   no matter how tall the field is dragged. */
+.promptExpand {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-bg-layer-3);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.promptExpand:hover {
+  color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.promptExpand:focus-visible {
+  color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+  outline: none;
+}
+
+/* --- full-window prompt editor -------------------------------------------------- */
+
+.promptEditorBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgb(0 0 0 / 62%);
+  backdrop-filter: blur(6px);
+}
+
+.promptEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(880px, calc(100vw - 64px));
+  height: min(720px, calc(100vh - 64px));
+  padding: 16px 18px 14px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  box-shadow: 0 28px 72px rgb(0 0 0 / 36%);
+}
+
+.promptEditorHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.promptEditorTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.promptEditorHint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.promptEditorClose {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.promptEditorClose:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.promptEditorField {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 12px 14px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-3);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.7;
+  box-sizing: border-box;
+}
+
+.promptEditorField:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.promptEditorField::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.promptEditorFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.promptEditorSpacer {
+  flex: 1;
+}
+
+.promptEditorDone {
+  height: 28px;
+  padding: 0 18px;
+  color: #fff;
+  background: var(--dsw-alias-brand-primary);
+  border: 1px solid var(--dsw-alias-brand-primary);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.promptEditorDone:hover {
+  filter: brightness(1.06);
 }
 
 .promptFooter {
@@ -3164,7 +3329,11 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 .comparisonFullscreen figcaption { margin-bottom: 8px; color: #fff; font-size: 13px; font-weight: 600; }
 .comparisonFullscreenImage { position: relative; margin-bottom: 10px; }
 .comparisonFullscreen img { display: block; width: 100%; background: #111; }
-.historyItem[data-comparison] { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l1)); }
+/* A comparison run is a property of the record, not a selection state: mark it
+   with an edge accent instead of the brand border it used to share with the
+   active slot, which made several rows look selected at once (#68). */
+.historyItem[data-comparison] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 42%, transparent); }
+.historyItem[data-comparison][data-active] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 62%, transparent), 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent); }
 .galleryMasonry { display: grid; flex: 1 1 auto; width: 100%; height: 0; max-width: 100%; min-width: 0; min-height: 0; box-sizing: border-box; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 16px; overflow-y: scroll; overflow-x: hidden; overscroll-behavior: contain; padding: 2px 8px 16px 2px; scrollbar-width: thin; scrollbar-color: var(--dsw-alias-border-l2) transparent; }
 .galleryMasonry::-webkit-scrollbar { width: 8px; }
 .galleryMasonry::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l2); border-radius: 999px; }
