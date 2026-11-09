@@ -80,7 +80,8 @@
   "scripts": {
     "prepare": "tsdown",
     "build": "tsdown",
-    "test": "pnpm run test:unit && pnpm run test:e2e",
+    "test": "pnpm run test:unit && pnpm run test:remote && pnpm run test:e2e",
+    "test:remote": "pnpm run build && pnpm exec tsdown --config scripts/remote-settings.config.ts && node --test scripts/remote-access.test.mjs scripts/remote-access-routes.test.mjs scripts/remote-settings-client.test.mjs",
     "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs scripts/image-clipboard.test.mjs scripts/engine-openai-size.test.mjs scripts/reference-clipboard.test.mjs scripts/generation-duration.test.mjs scripts/generation-settings.test.mjs",
     "test:duration:browser": "pnpm exec tsdown --config scripts/generation-preview.config.ts && pnpm exec tsdown --config scripts/result-preview.config.ts && node scripts/generation-duration-browser-test.mjs",
     "test:e2e": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-dom-e2e.mjs && pnpm exec tsdown --config scripts/toolview-preview.config.ts && node scripts/toolview-dom-e2e.mjs && pnpm run test:references",

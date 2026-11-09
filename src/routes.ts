@@ -1,8 +1,9 @@
 /**
- * The /api/dsh-imagegen route family: a loopback-only settings bridge for the
- * plugin's own namespace (describe/mutate, mirroring the dsh-web-ui family
- * bridge wire) and the generate proxy that forwards to the configured
- * OpenAI-compatible endpoint with the API key held host-side.
+ * The /api/dsh-imagegen route family: a settings bridge for the plugin's own
+ * namespace and the generation proxy with every API key held host-side.
+ * Genuine loopback requests retain their local policy; remote requests require
+ * official browser-owner admission plus a profile-level trusted-host opt-in
+ * (except the authenticated, read-only settings description).
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -15,6 +16,7 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { SubscriptionManager } from './subscription/manager.ts'
+import { isLoopbackRequest, remoteSettingsMutationAllowed, requestAccessRejection, type RemoteAccess, type RemoteAccessConnection } from './remote-access.ts'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, polishPrompt, type PromptModelConfig } from './prompt-enhancer.ts'
 import { analyzeLayers, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
@@ -94,6 +96,10 @@ export interface SettingsSeam {
 
 /** Route dependencies. */
 export interface ImageGenRoutesDeps {
+  /** Profile-only policy; absent/unknown values fail closed to read-only. */
+  resolveRemoteAccess?: () => RemoteAccess
+  /** Resolve dynamically so service replacement/removal cannot leave stale trust. */
+  resolveConnection?: () => RemoteAccessConnection | undefined
   /** Optional launcher facts; older hosts keep argv/env discovery. */
   resolveUpdateContext?: () => UpdateHostContext
   /** The settings seam (namespace storage). */
@@ -203,29 +209,6 @@ export interface CanvasBackend {
   readAssets?: (refs: readonly CanvasAssetRef[]) => Promise<Map<string, { data: Buffer; mime: string }>>
   /** Copy one asset to a real path for a heavy skill run. */
   materialize?: (ref: CanvasAssetRef, targetPath: string) => Promise<void>
-}
-
-/** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
-function isLoopbackRequest(request: IncomingMessage): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL(`http://${host}`)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
 }
 
 /** One JSON response. */
@@ -598,11 +581,23 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     const mapping = picked.models.find(model => model.alias === asked)!
     return { ok: true, request: { ...request, model: asked, upstream: mapping.id, channelId: picked.id, channel: picked.name } }
   }
-  const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
-      return false
-    }
+  const remoteAccess = (): RemoteAccess => {
+    try { return deps.resolveRemoteAccess?.() === 'trusted-host' ? 'trusted-host' : 'read-only' }
+    catch { return 'read-only' }
+  }
+  const authorize = (req: IncomingMessage, res: ServerResponse, describe = false): boolean => {
+    if (isLoopbackRequest(req)) return true
+    const rejection = requestAccessRejection(req, remoteAccess(), deps.resolveConnection, describe)
+    if (rejection === undefined) return true
+    writeJson(res, rejection, {
+      ok: false,
+      code: rejection === 401 ? 'unauthorized' : 'remote-access-denied',
+      error: rejection === 401 ? 'unauthorized' : 'forbidden: remote access requires an authenticated host owner and trusted-host profile policy',
+    })
+    return false
+  }
+  const guard = (req: IncomingMessage, res: ServerResponse, method: string, describe = false): boolean => {
+    if (!authorize(req, res, describe)) return false
     if (req.method !== method) {
       writeJson(res, 405, { error: `method not allowed: ${req.method}` })
       return false
@@ -642,10 +637,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'prefix' as const,
       path: AGENT_IMAGE_API,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
-          return
-        }
+        if (!authorize(req, res)) return
         if (req.method !== 'GET') {
           writeJson(res, 405, { error: `method not allowed: ${req.method}` })
           return
@@ -779,14 +771,15 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'exact',
       path: SETTINGS_API.describe,
       handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
+        if (!guard(req, res, 'POST', true)) return
         const descriptor = deps.settings.describe({ redactSecrets: true })
           .find(candidate => String(candidate.ns) === settingsNamespace)
         writeJson(res, 200, {
           ok: true,
           value: {
             namespaces: descriptor === undefined ? [] : [toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE)],
-            writable: deps.settings.writable !== false,
+            writable: deps.settings.writable !== false && (isLoopbackRequest(req) || remoteAccess() === 'trusted-host'),
+            remoteAccess: remoteAccess(),
           },
         })
       },
@@ -803,6 +796,10 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         const ns = typeof body.ns === 'string' ? body.ns : ''
+        if (!isLoopbackRequest(req) && !remoteSettingsMutationAllowed(ns, IMAGEGEN_SETTINGS_NAMESPACE, body.ops)) {
+          writeJson(res, 403, { ok: false, code: 'remote-settings-denied', error: 'forbidden: remote settings cannot change the namespace root or remoteAccess policy' })
+          return
+        }
         if (ns !== IMAGEGEN_SETTINGS_NAMESPACE || !Array.isArray(body.ops)) {
           writeJson(res, 200, { ok: false, code: 'settings-rejected', message: 'malformed bridge settings request' })
           return
@@ -1101,10 +1098,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'prefix',
       path: HISTORY_API.image,
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
-          return
-        }
+        if (!authorize(req, res)) return
         if (req.method !== 'GET') {
           writeJson(res, 405, { error: `method not allowed: ${req.method}` })
           return
@@ -1219,10 +1213,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'prefix',
       path: GALLERY_API.image,
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
-          return
-        }
+        if (!authorize(req, res)) return
         if (req.method !== 'GET') {
           writeJson(res, 405, { error: `method not allowed: ${req.method}` })
           return
@@ -1422,7 +1413,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'prefix',
       path: CANVAS_API.asset,
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeJson(res, 403, { error: 'forbidden: loopback-only' }); return }
+        if (!authorize(req, res)) return
         if (req.method !== 'GET') { writeJson(res, 405, { error: `method not allowed: ${req.method}` }); return }
         const file = imageFileFrom(req.url, CANVAS_API.asset)
         const found = file === undefined ? undefined : await canvas.readAsset(file)
@@ -1885,10 +1876,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'prefix',
       path: TEMPLATES_API.image,
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
-          return
-        }
+        if (!authorize(req, res)) return
         if (req.method !== 'GET') {
           writeJson(res, 405, { error: `method not allowed: ${req.method}` })
           return
