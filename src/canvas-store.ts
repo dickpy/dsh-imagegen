@@ -316,6 +316,12 @@ function isNode(value: unknown): value is CanvasNode {
   if (node.type === 'image') {
     if (state.poster !== undefined && !isPosterDocument(state.poster)) return false
     if (state.asset !== undefined && !isAssetRef(state.asset)) return false
+    if (state.editMask !== undefined && !isAssetRef(state.editMask)) return false
+    if (state.maskEdit !== undefined) {
+      if (state.maskEdit === null || typeof state.maskEdit !== 'object') return false
+      const edit = state.maskEdit as Record<string, unknown>
+      if (typeof edit.sourceNodeId !== 'string' || !isAssetRef(edit.mask)) return false
+    }
     return state.status === undefined || state.status === 'idle' || state.status === 'generating' || state.status === 'success' || state.status === 'error'
   }
   if (node.type === 'file') {

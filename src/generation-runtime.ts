@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto'
 import { generateImage, ImageGenError, type UpstreamConfig } from './engine.ts'
 import { detectImageMime } from './image-format.ts'
+import { imageDimensions } from './image-dimensions.ts'
 import { vendorOf, type SubscriptionManager, type SubscriptionReferenceImage } from './subscription/manager.ts'
 import { appendHistory } from './history-store.ts'
 import { GenerationTaskQueue } from './task-queue.ts'
@@ -61,7 +62,7 @@ export class ImageGenerationRuntime {
     const durationMs = Math.max(0, Math.round(performance.now() - started))
     const result: GenerateResult = {
       ...generated,
-      images: generated.images.map(image => ({ ...image, durationMs })),
+      images: generated.images.map(image => ({ ...image, durationMs, ...imageDimensions(Buffer.from(image.b64, 'base64')), model: request.model, channelId: channel.id, channel: channel.name, upstream: request.upstream ?? request.model })),
     }
     try {
       const history = await this.history.append({
@@ -95,6 +96,7 @@ export class ImageGenerationRuntime {
 
   /** Generate images through one logged-in subscription account. */
   private async generateSubscription(provider: SubscriptionProvider, request: GenerateRequest, signal?: AbortSignal): Promise<GeneratedImage[]> {
+    if (request.mask !== undefined) throw new ImageGenError('订阅渠道暂不支持原生遮罩，请选择支持 images/edits 遮罩的 API 渠道', 'mask-unsupported')
     if (this.subscriptions === undefined) {
       throw new ImageGenError('当前部署未挂载 DSH Credentials，订阅账号不可用', 'subscription-unavailable')
     }

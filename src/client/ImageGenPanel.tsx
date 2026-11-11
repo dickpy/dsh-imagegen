@@ -11,6 +11,10 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GenerationLoading } from './GenerationLoading'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
+import { pickImageMetadata } from '../image-metadata.ts'
+import { StudioResults, ImageResultMeta } from './StudioResults.tsx'
+import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
+import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
 import { Maximize2 } from 'lucide-react'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -18,6 +22,7 @@ import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
+import { ImageGenApiError } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { renderMarkdown } from './markdown.tsx'
 import { openImageGenConfig } from './config-entry.tsx'
@@ -350,6 +355,7 @@ async function historyImagesToGenerated(refs: HistoryImageRef[]): Promise<Genera
       mime: ref.mime,
       ...ref.revisedPrompt === undefined ? {} : { revisedPrompt: ref.revisedPrompt },
       ...ref.durationMs === undefined ? {} : { durationMs: ref.durationMs },
+      ...pickImageMetadata(ref),
     }
   }))
 }
@@ -460,9 +466,7 @@ interface EcommerceResultItem {
 }
 
 function modelsOfHistoryEntry(entry: HistoryEntry): string[] {
-  return entry.comparisonModels?.length !== undefined && entry.comparisonModels.length > 1
-    ? entry.comparisonModels
-    : [entry.model]
+  return [...new Set([...(entry.comparisonModels ?? []), entry.model])]
 }
 
 /** Comparison runs collapse by comparisonId, product sets by projectId. */
@@ -609,6 +613,17 @@ export function ImageGenPanel(props: {
     && promptKeyConfigured
 
   const [tab, setTab] = useState<PanelTab>('text')
+  const generationMode: GenerateMode = tab === 'edit' ? 'edit' : 'text'
+  const [studioRuns, setStudioRuns] = useState<StudioRuns>(() => {
+    try { return readStudioRuns(window.sessionStorage) } catch { return { text: null, edit: null } }
+  })
+  const studioRunsRef = useRef(studioRuns)
+  studioRunsRef.current = studioRuns
+  const studioRun = studioRuns[generationMode]
+  const [studioBusy, setStudioBusy] = useState(false)
+  const [maskEditorOpen, setMaskEditorOpen] = useState(false)
+  const [editMask, setEditMask] = useState<string | undefined>()
+  useEffect(() => { try { writeStudioRuns(window.sessionStorage, studioRuns) } catch { /* optional */ } }, [studioRuns])
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
   /** The image handed to the prompt-reverse dialog, already decoded to a File. */
   const [reverseTarget, setReverseTarget] = useState<{ file: File } | null>(null)
@@ -647,7 +662,10 @@ export function ImageGenPanel(props: {
   const [compareEnabled, setCompareEnabled] = useState(initialSettings.compareEnabled)
   /** Compare selections are `${channelId}\0${model}` so duplicate aliases stay distinct. */
   const [compareModels, setCompareModels] = useState<string[]>(initialSettings.compareModels)
-  const [images, setImages] = useState<GeneratedImage[]>([])
+  const [modeImages, setModeImages] = useState<Record<GenerateMode, GeneratedImage[]>>({ text: [], edit: [] })
+  const images = modeImages[generationMode]
+  const setImagesForMode = (mode: GenerateMode, next: GeneratedImage[]): void => { setModeImages(previous => ({ ...previous, [mode]: next })) }
+  const setImages = (next: GeneratedImage[]): void => { setImagesForMode(generationMode, next) }
   const [privacyMode, setPrivacyMode] = useState(false)
   const [copyMenu, setCopyMenu] = useState<{ image: GeneratedImage; x: number; y: number } | null>(null)
   const [copyNotice, setCopyNotice] = useState<'copied' | 'failed' | null>(null)
@@ -687,7 +705,9 @@ export function ImageGenPanel(props: {
   const [galleryConversationAddingId, setGalleryConversationAddingId] = useState<string | null>(null)
   const [historyConversationAddingId, setHistoryConversationAddingId] = useState<string | null>(null)
   const [conversationMessage, setConversationMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [modeErrors, setModeErrors] = useState<Record<GenerateMode, string | null>>({ text: null, edit: null })
+  const error = modeErrors[generationMode]
+  const setError = (next: string | null): void => { setModeErrors(previous => ({ ...previous, [generationMode]: next })) }
   const conversationAttachment = useConversationImageAttachment({
     sessions,
     conversation,
@@ -706,6 +726,8 @@ export function ImageGenPanel(props: {
     },
   })
   const editReferences = useEditReferences(setError)
+  const editSource = editReferences.images[0]?.dataUrl
+  useEffect(() => { setEditMask(undefined); setMaskEditorOpen(false) }, [editSource])
   // Submission is brief; actual generation stays visible until the host
   // queue reports that every queued/running task has finished.
   const [submitting, setSubmitting] = useState(false)
@@ -713,6 +735,7 @@ export function ImageGenPanel(props: {
   const [configGuide, setConfigGuide] = useState<'generation' | 'enhancement' | 'disabled' | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
+  const historyViewRequestRef = useRef(0)
   const [gallery, setGallery] = useState<HistoryEntry[]>([])
   const [galleryViewingId, setGalleryViewingId] = useState<string | null>(null)
   const [galleryAdding, setGalleryAdding] = useState(false)
@@ -750,6 +773,7 @@ export function ImageGenPanel(props: {
   const taskPollStartedAtRef = useRef(Date.now())
   const observedTaskIdsRef = useRef<Set<string>>(new Set())
   const submittedTaskIdsRef = useRef<Set<string>>(new Set())
+  const lostStudioTaskIdsRef = useRef<Set<string>>(new Set())
   const [taskTrayOpen, setTaskTrayOpen] = useState(false)
   /** #38: the retained record of upstream attempts, opened from the task tray. */
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
@@ -805,8 +829,11 @@ export function ImageGenPanel(props: {
   const modeModels = [...new Set(modeGroups.flatMap(group => group.models))]
   const previewStage = useRef<HTMLDivElement>(null)
   const activeTasks = tasks.filter(task => task.status === 'queued' || task.status === 'running')
-  const activeTask = activeTasks.find(task => task.status === 'running') ?? activeTasks[0]
-  const generating = submitting || activeTasks.length > 0
+  const viewActiveTasks = workspace === 'normal'
+    ? activeTasks.filter(task => task.request.mode === generationMode && task.request.canvas === undefined && task.request.workflow === undefined)
+    : workspace === 'ecommerce' ? activeTasks.filter(task => task.request.workflow === 'ecommerce') : activeTasks
+  const activeTask = viewActiveTasks.find(task => task.status === 'running') ?? viewActiveTasks[0]
+  const generating = submitting || viewActiveTasks.length > 0
   const generationStartedAt = activeTask?.startedAt ?? activeTask?.createdAt ?? null
   const elapsed = useElapsed(generating, generationStartedAt)
 
@@ -956,7 +983,8 @@ export function ImageGenPanel(props: {
       void Promise.all(detail.refs.map(attachmentToGenerated))
         .then(next => {
           openTab('text')
-          setImages(next)
+          setImagesForMode('text', next)
+          setStudioRuns(previous => ({ ...previous, text: null }))
           setComparison(null)
           setViewingHistoryId(null)
           setGalleryViewingId(null)
@@ -980,6 +1008,23 @@ export function ImageGenPanel(props: {
           if (disposed) return
           const previousTasks = tasksRef.current
           const previousById = new Map(previousTasks.map(task => [task.id, task] as const))
+          // The host's poll feed is bounded. Restore current cards by id even
+          // when a busy host has pushed them outside the newest 100 summaries.
+          const feedIds = new Set(summaries.map(task => task.id))
+          const retained = await Promise.all([...studioTaskIds(studioRunsRef.current)].filter(id => !feedIds.has(id)).map(async id => {
+            const held = previousById.get(id)
+            if (held?.result !== undefined || lostStudioTaskIdsRef.current.has(id)) return held
+            try { return await api.taskGet(id) } catch (caught) {
+              if (!(caught instanceof ImageGenApiError) || caught.code !== 'not-found') return held
+              lostStudioTaskIdsRef.current.add(id)
+              for (const run of Object.values(studioRunsRef.current)) {
+                const slot = run?.slots.find(slot => slot.taskId === id)
+                if (run !== null && slot !== undefined) return { id, request: { mode: run.mode, prompt: run.prompt, model: slot.model, channelId: slot.channelId, size: 'auto', quality: 'auto', detail: '', n: 1 }, status: 'failed' as const, createdAt: 0, error: tt('canvas.taskLost') }
+              }
+              return undefined
+            }
+          }))
+          if (disposed) return
           for (const summary of summaries) {
             if (summary.status === 'queued' || summary.status === 'running') {
               observedTaskIdsRef.current.add(summary.id)
@@ -992,9 +1037,10 @@ export function ImageGenPanel(props: {
             const previous = previousById.get(summary.id)
             return summary.status === 'completed'
               && summary.resultAvailable
-              && previous?.status !== 'completed'
+              && previous?.result === undefined
               && (submittedTaskIdsRef.current.has(summary.id)
                 || observedTaskIdsRef.current.has(summary.id)
+                || studioTaskIds(studioRunsRef.current).has(summary.id)
                 || summary.createdAt >= taskPollStartedAtRef.current)
           })
           const fetched = await Promise.all(needsHydration.map(async summary => {
@@ -1024,22 +1070,30 @@ export function ImageGenPanel(props: {
             if (pending.has(summary.id)) return previous === undefined ? [] : [previous]
             return [mergeTaskSummary(summary, previous)]
           })
+          next.push(...retained.filter((task): task is GenerationTask => task !== undefined))
           for (const task of fullById.values()) observedTaskIdsRef.current.add(task.id)
           const hydratedCompleted = next.filter(task => task.status === 'completed'
             && task.result !== undefined
             && !previousTasks.some(old => old.id === task.id && old.status === 'completed'))
           tasksRef.current = next
-          setTasks(current => {
-            const completed = next.find(task => task.status === 'completed'
-              && task.result !== undefined
-              && !current.some(old => old.id === task.id && old.status === 'completed')
-              && !comparison?.taskIds.includes(task.id))
-            if (completed?.result !== undefined) {
-              setImages(completed.result.images)
-              if (completed.result.history !== undefined) setHistory(completed.result.history)
-              setError(completed.result.historyError ?? null)
+          // Results belong to their recorded board/canvas. Background tasks must
+          // never replace the result of whichever mode happens to be visible.
+          setTasks(next)
+          setStudioRuns(previous => {
+            let changed = false
+            const updated = { ...previous }
+            for (const mode of ['text', 'edit'] as const) {
+              const run = previous[mode]
+              if (run === null) continue
+              const slots = run.slots.map(slot => {
+                const task = next.find(item => item.id === slot.taskId)
+                if (task === undefined || (task.status === slot.status && task.error === slot.error)) return slot
+                changed = true
+                return { ...slot, status: task.status, error: task.error }
+              })
+              updated[mode] = { ...run, slots }
             }
-            return next
+            return changed ? updated : previous
           })
           if (hydratedCompleted.length > 0) {
             void api.historyList().then(entries => {
@@ -1253,6 +1307,7 @@ export function ImageGenPanel(props: {
       quality,
       n: count,
       detail,
+      ...(tab === 'edit' && editMask !== undefined ? { mask: editMask } : {}),
       ...(tab === 'edit' && editReferences.images.length > 0 ? {
         image: editReferences.images[0]!.dataUrl,
         ...(editReferences.images.length > 1 ? { images: editReferences.images.slice(1).map(image => image.dataUrl) } : {}),
@@ -1262,7 +1317,7 @@ export function ImageGenPanel(props: {
     setError(null)
     setSubmitting(true)
     try {
-      const targetChoices = (compareEnabled ? compareModels.map(modelChoiceFromKey).filter((choice): choice is ModelPickerValue => choice !== undefined) : [selectedChoice])
+      const targetChoices = (compareEnabled ? orderedStudioChoices(modeGroups, compareModels, compareKey) : [selectedChoice])
         .filter(choice => modeGroups.some(group => group.id === choice.channelId && group.models.includes(choice.model)))
       if (targetChoices.length === 0) {
         setError(tt('compare.selectRequired'))
@@ -1277,8 +1332,8 @@ export function ImageGenPanel(props: {
         setError(tt('edit.modelLimit', { count: referenceLimit }))
         return
       }
-      const comparisonId = targetChoices.length > 1 ? newComparisonId() : undefined
-      const comparisonFields = comparisonId === undefined ? {} : { comparisonId, comparisonModels: targetChoices.map(choice => choice.model) }
+      const comparisonId = newComparisonId()
+      const comparisonFields = { comparisonId, comparisonModels: targetChoices.map(choice => choice.model) }
       const submitted = await Promise.all(targetChoices.map(choice => api.taskSubmit({
         ...baseRequest,
         model: choice.model,
@@ -1287,12 +1342,46 @@ export function ImageGenPanel(props: {
       })))
       for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
-      setComparison(comparisonId === undefined ? null : { taskIds: submitted.map(task => task.id), prompt: promptText, comparisonId })
+      setComparison(null)
+      setStudioRuns(previous => ({ ...previous, [baseRequest.mode]: newStudioRun(comparisonId, baseRequest.mode, promptText, submitted) }))
+      setViewingHistoryId(null)
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const retryStudioSlot = async (run: StudioRun, slot: StudioSlot): Promise<void> => {
+    if (studioBusy) return
+    setStudioBusy(true)
+    setError(null)
+    try {
+      const original = await api.taskGet(slot.taskId)
+      const task = await api.taskSubmit(studioRetryRequest(original.request))
+      submittedTaskIdsRef.current.add(task.id)
+      setTasks(previous => [task, ...previous])
+      setStudioRuns(previous => ({ ...previous, [run.mode]: previous[run.mode]?.id === run.id ? replaceStudioSlot(previous[run.mode]!, slot.id, task) : previous[run.mode] }))
+    } catch (caught) { setError(caught instanceof ImageGenApiError && caught.code === 'not-found' ? tt('canvas.taskLost') : errorMessage(caught)) } finally { setStudioBusy(false) }
+  }
+
+  const appendStudioModel = async (run: StudioRun, choice: ModelPickerValue): Promise<void> => {
+    if (studioBusy || run.slots.length >= 80) return
+    setStudioBusy(true)
+    setError(null)
+    try {
+      if (!channelReady(choice.channelId)) { openSettingsGuide('generation'); return }
+      const original = await api.taskGet(run.sourceTaskId)
+      const request: GenerateRequest = { ...original.request, model: choice.model, channelId: choice.channelId, comparisonId: run.id }
+      delete request.upstream
+      delete request.channel
+      const references = [request.image, ...(request.images ?? [])].filter(Boolean).length
+      if (references > referenceLimitForChoice(choice)) throw new Error(tt('edit.modelLimit', { count: referenceLimitForChoice(choice) }))
+      const task = await api.taskSubmit(request)
+      submittedTaskIdsRef.current.add(task.id)
+      setTasks(previous => [task, ...previous])
+      setStudioRuns(previous => ({ ...previous, [run.mode]: previous[run.mode]?.id === run.id ? { ...previous[run.mode]!, slots: [...previous[run.mode]!.slots, ...slotsForTask(task)] } : previous[run.mode] }))
+    } catch (caught) { setError(caught instanceof ImageGenApiError && caught.code === 'not-found' ? tt('canvas.taskLost') : errorMessage(caught)) } finally { setStudioBusy(false) }
   }
 
   const handleEcommerceGenerate = async (): Promise<void> => {
@@ -1507,7 +1596,7 @@ export function ImageGenPanel(props: {
   }, [preview, previewScale])
 
   const loadHistoryGroup = async (group: HistoryGroup): Promise<GeneratedImage[]> => {
-    const loaded = await Promise.all(group.entries.map(entry => historyImagesToGenerated(entry.images)))
+    const loaded = await Promise.all(group.entries.map(async entry => (await historyImagesToGenerated(entry.images)).map(image => ({ ...image, model: image.model ?? entry.model, channel: image.channel ?? entry.channel, channelId: image.channelId ?? entry.channelId }))))
     return loaded.flat()
   }
 
@@ -1540,9 +1629,8 @@ export function ImageGenPanel(props: {
     setModelChannelId(restored.channelId)
     // A comparison run carries every model it submitted: restore the whole set
     // so one click reproduces the comparison instead of a single image.
-    const comparisonKeys = group.models.length > 1
-      ? [...new Set(group.models.map(name => modelChoiceKey(resolveModelChoice(targetGroups, { channelId: entry.channelId ?? '', model: name }, defaultChannelId))))]
-      : []
+    const recordedChoices = group.entries.map(record => resolveModelChoice(targetGroups, { channelId: record.channelId ?? '', model: record.model }, defaultChannelId))
+    const comparisonKeys = [...new Set(recordedChoices.map(modelChoiceKey))]
     setCompareEnabled(comparisonKeys.length > 1)
     setCompareModels(comparisonKeys.length > 1
       ? comparisonKeys
@@ -1564,14 +1652,18 @@ export function ImageGenPanel(props: {
     // immediately, then hydrate the selected result into its canvas. The
     // record's prompt and parameters come back with it (#68).
     applyHistorySettings(group)
+    const requestId = ++historyViewRequestRef.current
+    setViewingHistoryId(entry.id)
+    setGalleryViewingId(null)
     try {
-      setImages(await loadHistoryGroup(group))
+      const restoredImages = await loadHistoryGroup(group)
+      if (requestId !== historyViewRequestRef.current) return
+      setImagesForMode(entry.mode, restoredImages)
+      setStudioRuns(previous => ({ ...previous, [entry.mode]: null }))
       setComparison(null)
       setError(null)
-      setViewingHistoryId(entry.id)
-      setGalleryViewingId(null)
     } catch (caught) {
-      setError(errorMessage(caught))
+      if (requestId === historyViewRequestRef.current) setError(errorMessage(caught))
     }
   }
 
@@ -1596,6 +1688,7 @@ export function ImageGenPanel(props: {
 
   /** Reset the workspace for a fresh image-generation run. */
   const startNewCreation = (): void => {
+    historyViewRequestRef.current += 1
     openTab('text')
     setPrompt('')
     editReferences.clear()
@@ -1609,6 +1702,8 @@ export function ImageGenPanel(props: {
     setSelectedGalleryIds(new Set())
     setComparison(null)
     setComparisonFullscreen(false)
+    setStudioRuns({ text: null, edit: null })
+    setModeImages({ text: [], edit: [] })
     setEcommerceRestored(null)
     setError(null)
     setConversationMessage(null)
@@ -1631,9 +1726,9 @@ export function ImageGenPanel(props: {
    *  `entry` makes the action available from a history/gallery list item (its
    *  metadata + first image are saved); otherwise the current form state is
    *  used. */
-  const addToGallery = async (image: GeneratedImage, entry?: HistoryEntry): Promise<void> => {
+  const addToGallery = async (image: GeneratedImage, entry?: HistoryEntry | GenerateRequest): Promise<void> => {
     if (galleryAdding || (workspace === 'normal' && tab === 'gallery')) return
-    const source = entry ?? viewingEntry ?? {
+    const source: Pick<GenerateRequest, 'mode' | 'model' | 'prompt' | 'size' | 'quality' | 'detail' | 'refName' | 'channelId' | 'channel'> = entry ?? viewingEntry ?? {
       mode: tab === 'edit' ? 'edit' as GenerateMode : 'text' as GenerateMode,
       model,
       prompt: prompt.trim(),
@@ -1655,6 +1750,8 @@ export function ImageGenPanel(props: {
         detail: source.detail,
         n: 1,
         images: [image],
+        ...source.channelId === undefined ? {} : { channelId: source.channelId },
+        ...source.channel === undefined ? {} : { channel: source.channel },
         ...source.refName === undefined ? {} : { refName: source.refName },
       })
       setGallery(result.entries)
@@ -1948,7 +2045,7 @@ export function ImageGenPanel(props: {
     </section>
   )
   const conversationBusy = conversationAttachment.busyKey !== null || conversationAttachment.pending !== null || galleryConversationAddingId !== null || historyConversationAddingId !== null
-  const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId) ?? null
+  const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId && entry.mode === generationMode) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
   const comparisonTasks = comparison === null ? [] : comparison.taskIds.map(id => tasks.find(task => task.id === id)).filter((task): task is GenerationTask => task !== undefined)
@@ -2585,6 +2682,7 @@ export function ImageGenPanel(props: {
                   onPasteImages={signal => editReferences.paste(navigator.clipboard, signal)}
                   onAdd={editReferences.add} onRemove={editReferences.remove} onClear={editReferences.clear}
                   notice={referencePolicyWarning} />
+                {editSource !== undefined ? <div style={{ display: 'flex', gap: 8, marginTop: 10 }}><button type="button" onClick={() => setMaskEditorOpen(true)}>{tt(editMask === undefined ? 'mask.title' : 'mask.edit')}</button>{editMask !== undefined ? <button type="button" onClick={() => setEditMask(undefined)}>{tt('mask.remove')}</button> : null}</div> : null}
               </section>
             ) : null}
 
@@ -2749,11 +2847,11 @@ export function ImageGenPanel(props: {
               </label>
               {compareEnabled ? (
                 <div className={css.compareModelChoices} role="group" aria-label={tt('compare.models')}>
-                  {modeGroups.map(group => <div key={group.id || '__default__'} className={css.compareChannelGroup}>
+                  {modeGroups.map(group => <div key={group.id || '__default__'} className={css.compareChannelGroup} data-compare-channel={group.id}>
                     <span className={css.compareChannelName}>{group.name || tt('model.channelPlaceholder')}</span>
                     {group.models.map(option => {
                       const key = modelChoiceKey({ channelId: group.id, model: option })
-                      return <label key={key} title={option}>
+                      return <label key={key} title={option} data-compare-model={option}>
                         <input type="checkbox" checked={compareModels.includes(key)} onChange={() => { setCompareModels(previous => previous.includes(key) ? previous.filter(value => value !== key) : [...previous, key]) }} />
                         <span>{option}</span>
                       </label>
@@ -3077,7 +3175,12 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {generating && comparison === null && isGeneration ? (
+          {studioRun !== null && isGeneration ? <StudioResults key={studioRun.id} run={studioRun} tasks={tasks} groups={modeGroups} busy={studioBusy} privacyMode={privacyMode}
+            onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
+            onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
+            onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
+            onReverse={image => openReversePrompt(image)} onContextMenu={openCopyMenu} /> : null}
+          {studioRun === null && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <GenerationLoading
                 title={submitting && activeTask === undefined
@@ -3092,11 +3195,11 @@ export function ImageGenPanel(props: {
             </div>
           ) : null}
 
-          {!generating && error !== null ? (
+          {error !== null ? (
             <div className={css.canvasError} role="alert">{tt('canvas.error', { error })}</div>
           ) : null}
 
-          {isGeneration && !generating && !error && images.length === 0 ? (
+          {studioRun === null && isGeneration && !generating && !error && images.length === 0 ? (
             <InspirationGallery
               api={api}
               onUse={(text) => {
@@ -3106,7 +3209,7 @@ export function ImageGenPanel(props: {
             />
           ) : null}
 
-          {isGeneration && !generating && images.length > 0 ? (
+          {studioRun === null && isGeneration && !generating && images.length > 0 ? (
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>
@@ -3141,6 +3244,7 @@ export function ImageGenPanel(props: {
                       onContextMenu={event => openCopyMenu(event, image)}
                     />
                     <GenerationDurationBadge durationMs={image.durationMs} />
+                    <ImageResultMeta image={image} model={image.model ?? viewingEntry?.model} channel={image.channel ?? viewingEntry?.channel} />
                     {image.revisedPrompt !== undefined ? (
                       <figcaption className={css.imageCaption} title={image.revisedPrompt}>
                         {tt('revisedPrompt', { prompt: image.revisedPrompt })}
@@ -3195,6 +3299,7 @@ export function ImageGenPanel(props: {
         : null}
 
       {/* ------------------------------------------------ template library */}
+      {maskEditorOpen && editSource !== undefined ? <MaskEditor src={editSource} onClose={() => setMaskEditorOpen(false)} onApply={mask => { setEditMask(mask); setMaskEditorOpen(false) }} /> : null}
       {libraryOpen ? (
         <TemplateLibrary
           api={api}

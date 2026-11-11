@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 .test-build/
 .conversation-preview/
 lib/
@@ -42,3 +42,9 @@ Thumbs.db
 
 # Local conversation result-view fixture output
 .toolview-preview/
+
+# Studio integration browser fixture
+.studio-preview/
+
+# Local verification logs
+.qa/

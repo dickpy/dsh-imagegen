@@ -10,6 +10,7 @@
 
 import { isChatCompletionsUrl, resolveChannelProtocol, type ChannelProtocolPreference, type GeneratedImage, type GenerateRequest, type GenerateResult } from './protocol.ts'
 import { detectImageMime } from './image-format.ts'
+import { imageDimensions } from './image-dimensions.ts'
 import { modelFamily, promptCharLimit } from './model-catalog.ts'
 import { bodyByteLength, excerptOf, networkErrorFields, readResponseExcerpt, readResponseText, recordDiagnostic, type DiagnosticPhase } from './diagnostics-store.ts'
 
@@ -956,6 +957,15 @@ async function requestOneImage(
       } else {
         form.append('image', new Blob([primary.bytes], { type: primary.mime }), primary.filename)
       }
+      if (request.mask !== undefined) {
+        const mask = parseDataUrl(request.mask)
+        if (mask === undefined || mask.mime !== 'image/png') throw new ImageGenError('遮罩必须为 PNG 图片', 'mask-invalid')
+        const bytes = Buffer.from(mask.base64, 'base64')
+        if (bytes.length > MAX_EDIT_IMAGE_BYTES) throw new ImageGenError('遮罩超过 10MB 上限', 'mask-too-large')
+        const maskSize = imageDimensions(bytes), imageSize = imageDimensions(primary.bytes)
+        if (detectImageMime(bytes) !== 'image/png' || maskSize === undefined || imageSize === undefined || maskSize.width !== imageSize.width || maskSize.height !== imageSize.height) throw new ImageGenError('遮罩尺寸必须与第一张参考图片一致', 'mask-size-mismatch')
+        form.append('mask', new Blob([bytes], { type: 'image/png' }), 'mask.png')
+      }
       form.append('prompt', request.prompt)
       form.append('model', params.model)
       if (params.size !== undefined) form.append('size', params.size)
@@ -1443,6 +1453,9 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   const baseUrl = normalizeModelScopeBaseUrl(configuredBaseUrl, upstream.apiUrlFull === true)
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  if (request.mask !== undefined && (request.mode !== 'edit' || resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions' || ['grok', 'nanobanana', 'seedream', 'qwen', 'minimax', 'zhipu'].includes(modelFamily(wireModel(request))))) {
+    throw new ImageGenError('当前模型或渠道协议不支持原生遮罩，请选择支持 images/edits 遮罩的 GPT Image 等 API 模型', 'mask-unsupported')
+  }
   if (resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions') {
     return { images: await generateChatCompletionImages(upstream, baseUrl, request, options.signal) }
   }

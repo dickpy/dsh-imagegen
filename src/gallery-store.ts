@@ -9,6 +9,7 @@
  */
 
 import { promises as fs } from 'node:fs'
+import { pickImageMetadata } from './image-metadata.ts'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import type { GenerateMode, HistoryEntry, HistoryEntryInput } from './protocol.ts'
@@ -45,6 +46,12 @@ interface StoredImage {
   mime: string
   revisedPrompt?: string
   durationMs?: number
+  width?: number
+  height?: number
+  model?: string
+  channelId?: string
+  channel?: string
+  upstream?: string
 }
 
 /** One entry's on-disk record. `hash` fingerprints the first image so the
@@ -186,6 +193,7 @@ function toWire(entry: StoredEntry): HistoryEntry {
       mime: image.mime,
       ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
       ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
+      ...pickImageMetadata(image),
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.tags === undefined ? {} : { tags: entry.tags },
@@ -232,6 +240,7 @@ export async function appendGallery(input: HistoryEntryInput): Promise<GalleryAp
           mime: image.mime,
           ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
           ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
+          ...pickImageMetadata(image),
         })
       }
     } catch (error) {

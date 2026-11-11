@@ -4792,7 +4792,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       // submits pushed, so a lazy template literal would hand every response
       // the same id.
       const task = { id: `ecommerce-task-${ecommerceSubmissions.length}`, request: payload, status: 'queued', createdAt: 1 }
-      if (payload.comparisonId) comparisonTaskStates.set(task.id, 'queued')
+      if ((payload.comparisonModels?.length ?? 0) > 1) comparisonTaskStates.set(task.id, 'queued')
       return { ok: true, json: async () => ({ ok: true, task }) }
     }
     if (path.endsWith('/tasks/get')) {
@@ -6046,8 +6046,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(view.querySelector('[data-generation-animation] svg').getAttribute('aria-hidden'), 'true', 'decorative dots are hidden from assistive technology')
     assert.ok(!view.querySelector('[data-generation-animation]').textContent.includes('%'), 'indeterminate generation never invents a percentage')
     ;[...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent === '文生图').click()
-    await waitForSelector(view, '[data-generation-animation]')
-    assert.ok(await waitUntil(() => view.querySelector('[data-edit-references]') === null), 'text mode uses the same pending animation')
+    assert.ok(await waitUntil(() => view.querySelector('[data-edit-references]') === null), 'text mode leaves the edit uploader')
+    assert.equal(view.querySelector('[data-studio-mode=edit]'), null, '#70: edit results and pending cards stay in their own mode')
     ;[...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent === '图生图').click()
     await waitForSelector(view, '[data-edit-references]')
     await new Promise(resolve => setTimeout(resolve, 40))
@@ -6064,6 +6064,11 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(view.querySelectorAll('[data-edit-reference]').length, 0, 'new creation clears all edit references')
     completeGenerationTasks = true
     assert.ok(await waitUntil(() => view.querySelector('[data-generation-animation]') === null, 5000), 'the animation unmounts when host tasks complete')
+    const copyPrompt = view.querySelector('textarea')
+    nativeTextAreaSetter.call(copyPrompt, 'Copy verification')
+    copyPrompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 25))
+    view.querySelector('button[class*="generateButton"]').click()
     await waitForSelector(view, '[data-result-preview-grid] img')
     assert.match(view.querySelector('[data-result-preview-grid] [data-generation-duration]')?.textContent ?? '', /^耗时 \d+分\d+秒$/, '#66: completed single-model results retain duration')
     jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
@@ -6093,7 +6098,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(jsdomWindow.getComputedStyle(resultImage).visibility, 'hidden')
     const historyImage = jsdomDocument.querySelector('[data-dsh-imagegen-history] img')
     if (historyImage) assert.equal(jsdomWindow.getComputedStyle(historyImage).visibility, 'hidden')
-    resultImage.closest('figure').click()
+    resultImage.closest('button').click()
     await waitForSelector(jsdomDocument, '[role="dialog"][data-imagegen-private="true"] img')
     assert.equal(jsdomWindow.getComputedStyle(jsdomDocument.querySelector('[role="dialog"][data-imagegen-private="true"] img')).visibility, 'hidden')
     jsdomWindow.dispatchEvent(new jsdomWindow.KeyboardEvent('keydown', { bubbles: true, cancelable: true, code: 'KeyH', key: 'H', altKey: true, shiftKey: true }))
@@ -6152,9 +6157,9 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       assert.equal(slot(0).querySelector('[data-generation-duration]')?.textContent, firstDuration, '#66: earlier duration stays fixed while other models finish')
       assert.notEqual(slot(1).querySelector('[data-generation-duration]')?.textContent, firstDuration, '#66: models display independent durations')
       ;[...view.querySelectorAll('button')].find(button => button.textContent === '全屏对比').click()
-      await waitForSelector(jsdomDocument, '[class*="comparisonFullscreen"] [data-generation-duration]')
-      assert.equal(jsdomDocument.querySelectorAll('[class*="comparisonFullscreenGrid"] [data-generation-duration]').length, 2, '#66: fullscreen comparison retains each duration')
-      jsdomDocument.querySelector('[class*="comparisonFullscreen"] [aria-label="关闭"]').click()
+      await waitForSelector(jsdomDocument, '[data-studio-fullscreen] [data-generation-duration]')
+      assert.equal(jsdomDocument.querySelectorAll('[data-result-preview-grid] [data-generation-duration]').length, 2, '#66: fullscreen comparison retains each duration')
+      jsdomDocument.querySelector('[data-studio-fullscreen] [aria-label="关闭"]').click()
     }
 
     // Earlier native-new-session coverage closed the studio; reopen it first.

@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.16.0'
+export const PLUGIN_VERSION = '1.17.0'
 
 /** Same-origin route family, with profile-controlled host-authenticated remote access. */
 export const SETTINGS_API = {
@@ -935,10 +935,14 @@ export interface CanvasNodeMetadata {
   annotation?: { sourceNodeId: string; rect: CanvasRect }
   /** Image nodes: annotation boxes drawn on this image. */
   annotations?: CanvasAnnotation[]
+  /** Brush mask attached to an input image, used by its next edit generation. */
+  editMask?: CanvasAssetRef
   /** Generated nodes: the 标注 edit behind them. The result is composited back
    *  onto the clean original outside these boxes, so the red marker that the
    *  model may echo never reaches the finished image. */
   annotationEdit?: { sourceNodeId: string; boxes: CanvasRect[] }
+  /** Native alpha-mask edit; retained so retries keep the same editable region. */
+  maskEdit?: { sourceNodeId: string; mask: CanvasAssetRef }
   /** Image nodes: layer-split provenance (label/kind of the extracted layer). */
   layer?: CanvasLayerInfo
   /** Image nodes: the asset carries real transparency (local matting). */
@@ -1073,6 +1077,8 @@ export interface GenerateRequest extends EcommerceTaskMeta {
   detail: string
   /** Reference image as a data URL (edit mode only). */
   image?: string
+  /** PNG alpha mask matching the first reference; transparent pixels are editable. */
+  mask?: string
   /** Additional reference images as data URLs (edit mode only). The first
    *  image stays in `image`; providers that accept several references get them
    *  all, single-reference providers see `image` alone. */
@@ -1098,6 +1104,13 @@ export interface GenerateRequest extends EcommerceTaskMeta {
 /** One generated image, normalized host-side to base64 so the browser never
  *  has to fetch the upstream (no CORS, no key exposure). */
 export interface GeneratedImage {
+  /** Decoded file dimensions, never inferred from the requested quality tier. */
+  width?: number
+  height?: number
+  model?: string
+  channelId?: string
+  channel?: string
+  upstream?: string
   /** Raw base64 payload (no data: prefix). */
   b64: string
   /** MIME type of the payload, e.g. image/png. */
@@ -1241,6 +1254,12 @@ export interface UpdateInfo {
 
 /** One history image reference as the browser consumes it (a served URL). */
 export interface HistoryImageRef {
+  width?: number
+  height?: number
+  model?: string
+  channelId?: string
+  channel?: string
+  upstream?: string
   /** Same-origin URL: `${HISTORY_API.image}/<file>`. */
   url: string
   /** MIME type, e.g. image/png. */
