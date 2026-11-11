@@ -1,7 +1,7 @@
 /**
  * dsh-imagegen — host half. Mounts the plugin's settings section (channels
  * with per-channel model catalogs on the host settings seam), the
- * /api/dsh-imagegen route family (loopback-only settings bridge + presets /
+ * /api/dsh-imagegen route family (local/profile-trusted settings bridge + presets /
  * usage / image-generation proxy that keeps every API key host-side), and a
  * system-prompt announcement. The browser half (./client) renders the sidebar
  * entry and the split-pane generation studio.
@@ -27,6 +27,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { IMAGEGEN_SETTINGS_NAMESPACE, isChannelProtocolPreference, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
+import type { RemoteAccessConnection } from './remote-access.ts'
 import { SubscriptionManager } from './subscription/manager.ts'
 import { syncAllTemplates } from './templates-store.ts'
 import { setStorageSyncHandler, putObject, type StorageSyncConfig } from './storage-sync.ts'
@@ -374,6 +375,8 @@ export const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTIN
  * secrets it would clobber.
  */
 export interface Config {
+  /** Profile-only opt-in for authenticated browser-owner remote routes. */
+  remoteAccess?: 'read-only' | 'trusted-host'
   /** Master switch for the plugin (routes, prompt section). */
   enabled?: boolean
   /** Announce the plugin in every agent's system prompt. */
@@ -469,6 +472,8 @@ export interface Config {
 }
 
 const configSchema = z.object({
+  // Deliberately NONvolatile: only the host profile may grant remote authority.
+  remoteAccess: z.union([z.const('read-only'), z.const('trusted-host')]).default('read-only'),
   enabled: z.boolean().default(true).volatile(),
   announceToAgent: z.boolean().default(true).volatile(),
   allowAgentImageGeneration: z.boolean().default(true).volatile(),
@@ -1130,6 +1135,9 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
         const routes = makeRoutes({
           settings: seam,
           settingsNamespace,
+          // Do not read current()/the mutable settings namespace for this grant.
+          resolveRemoteAccess: () => config?.remoteAccess === 'trusted-host' ? 'trusted-host' : 'read-only',
+          resolveConnection: () => (sctx as unknown as { get(name: string): unknown }).get('connection') as RemoteAccessConnection | undefined,
           resolveUpdateContext: () => {
             const host = (sctx as unknown as { get(name: string): unknown }).get('profileContext') as { name?: unknown; dir?: unknown } | undefined
             const manager = (sctx as unknown as { get(name: string): unknown }).get('pluginManager') as Pick<import('./updater.ts').UpdateHostContext, 'installBundle'> | undefined

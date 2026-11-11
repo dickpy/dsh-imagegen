@@ -140,6 +140,24 @@ GPT Image 2 及以上版本会按「比例 + 清晰度」发送实际像素尺�
 
 </details>
 
+### 可信远程 WebUI
+
+默认情况下，远程浏览器只能查看经脱敏的设置，不能管理渠道或使用生图接口。管理员可在运行 DSH 的 profile 的 `cordis.patch.yml` 中添加顶层覆盖，然后重启 DSH：
+
+```yaml
+- id: imagegen
+  config:
+    remoteAccess: trusted-host
+```
+
+同时必须通过 DSH 的 `--trusted-host <你的域名>`（或 Connection 的 `trustedHosts` 配置）信任访问域名，并使用有效的 DSH 浏览器认证。`--public-url` 本身不授予信任。此开关只由宿主 profile 配置决定，不能通过远程设置接口修改。
+
+- 远程请求由官方 Connection 的 `admit()` 执行 Host、Origin、Sec-Fetch-Site 和浏览器凭证验证；仅当前宿主的浏览器 owner Peer 可管理。API Peer 不获得同等权限。
+- 反向代理应保留真实的 Host、Origin 和认证 Cookie，不要改写成 localhost，也不要清除 Origin 来规避校验。HTTPS 反向代理到本地 HTTP 端口可以正常使用。
+- 缺少所需 Connection 认证接口的旧宿主会拒绝远程访问，不会静默降级为无认证模式。
+- 开启远程管理会向受信任浏览器开放整个生图工作台，包括配置密钥、生成、上传、技能运行和插件更新等能力；请只授权可信用户，保留反向代理认证。
+- 这是源码级功能；如使用自行维护的修复版，升级到未包含此功能的上游版本会失去它，应通过审查后的版本化构建维护，而非修改安装目录里的 JS。
+
 <a id="security"></a>
 ## 数据与安全
 

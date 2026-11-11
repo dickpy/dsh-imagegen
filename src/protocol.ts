@@ -10,7 +10,7 @@ export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 /** Published package version shared by the host updater and the client UI. */
 export const PLUGIN_VERSION = '1.16.0'
 
-/** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
+/** Same-origin route family, with profile-controlled host-authenticated remote access. */
 export const SETTINGS_API = {
   describe: '/api/dsh-imagegen/settings/describe',
   mutate: '/api/dsh-imagegen/settings/mutate',
