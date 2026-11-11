@@ -49,6 +49,19 @@ export function canvasToDataUrl(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL('image/png')
 }
 
+/** Keep the clean original wherever the native alpha mask is opaque. */
+export function compositeMaskedResult(generated: HTMLCanvasElement, original: HTMLCanvasElement, mask: HTMLCanvasElement): HTMLCanvasElement {
+  const output = createCanvas(original.width, original.height)
+  const edited = createCanvas(original.width, original.height)
+  const ctx = context2d(edited)
+  ctx.drawImage(generated, 0, 0, original.width, original.height)
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.drawImage(mask, 0, 0, original.width, original.height)
+  const target = context2d(output)
+  target.drawImage(original, 0, 0); target.drawImage(edited, 0, 0)
+  return output
+}
+
 /** Letterboxed rect of an `object-fit: contain` image inside its container. */
 export function containRect(containerWidth: number, containerHeight: number, imageWidth: number, imageHeight: number): { left: number; top: number; width: number; height: number } {
   if (containerWidth <= 0 || containerHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) {

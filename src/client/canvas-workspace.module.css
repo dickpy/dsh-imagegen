@@ -1088,8 +1088,13 @@
 /* Image nodes hang their toolbar below the frame: the top edge is where the
  * resize/hover affordances of the node above live, and the picture stays clear. */
 .hoverToolbarBottom {
-  top: auto;
-  bottom: -38px;
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: 0;
+  transform: none;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 48px));
+  flex-wrap: wrap;
 }
 
 .toolbarDivider {

@@ -16,6 +16,8 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 import type { SubscriptionManager } from './subscription/manager.ts'
+import { pickImageMetadata } from './image-metadata.ts'
+import { imageDimensions } from './image-dimensions.ts'
 import { isLoopbackRequest, remoteSettingsMutationAllowed, requestAccessRejection, type RemoteAccess, type RemoteAccessConnection } from './remote-access.ts'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, polishPrompt, type PromptModelConfig } from './prompt-enhancer.ts'
@@ -335,6 +337,7 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
     n: typeof body.n === 'number' ? body.n : 1,
     detail: typeof body.detail === 'string' ? body.detail : '',
     ...typeof body.image === 'string' && body.image !== '' ? { image: body.image } : {},
+    ...typeof body.mask === 'string' && body.mask !== '' ? { mask: body.mask } : {},
     ...Array.isArray(body.images)
       ? { images: body.images.filter((item): item is string => typeof item === 'string' && item !== '').slice(0, 4) }
       : {},
@@ -383,6 +386,8 @@ function parseHistoryEntryInput(body: Record<string, unknown>): HistoryEntryInpu
     images.push({
       b64: image.b64,
       mime: image.mime,
+      ...pickImageMetadata(image),
+      ...imageDimensions(Buffer.from(image.b64, 'base64')),
       ...typeof image.revisedPrompt === 'string' ? { revisedPrompt: image.revisedPrompt } : {},
       ...typeof image.durationMs === 'number' && Number.isFinite(image.durationMs) && image.durationMs >= 0 ? { durationMs: image.durationMs } : {},
     })

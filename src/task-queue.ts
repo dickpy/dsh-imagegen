@@ -123,6 +123,7 @@ export class GenerationTaskQueue {
     const request = { ...task.request }
     delete request.image
     delete request.images
+    delete request.mask
     return {
       id: task.id,
       request,

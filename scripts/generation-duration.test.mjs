@@ -107,15 +107,17 @@ test('history and gallery round trips preserve per-image duration and original f
   const root = await mkdtemp(join(tmpdir(), 'imagegen-duration-'))
   setImageDataRoot(root)
   try {
-    const images = [62345, 0, undefined].map(durationMs => ({ b64: png, mime: 'image/png', ...(durationMs === undefined ? {} : { durationMs }) }))
+    const images = [62345, 0, undefined].map(durationMs => ({ b64: png, mime: 'image/png', width: 1, height: 1, model: 'gpt-image-2', channelId: 'one', channel: 'Provider A', ...(durationMs === undefined ? {} : { durationMs }) }))
     const input = { ...request, id: 'duration-history', createdAt: 1, images }
     await appendHistory(input)
     const history = await listHistory()
     assert.deepEqual(history[0].images.map(image => image.durationMs), [62345, 0, undefined])
+    assert.deepEqual(history[0].images.map(image => [image.width, image.height, image.model, image.channel]), [[1, 1, 'gpt-image-2', 'Provider A'], [1, 1, 'gpt-image-2', 'Provider A'], [1, 1, 'gpt-image-2', 'Provider A']])
     assert.equal(Object.hasOwn(history[0].images[2], 'durationMs'), false, 'legacy records stay untimed')
     await appendGallery({ ...input, id: 'duration-gallery' })
     const gallery = await listGallery()
     assert.deepEqual(gallery[0].images.map(image => image.durationMs), [62345, 0, undefined])
+    assert.deepEqual(gallery[0].images.map(image => [image.width, image.height, image.model, image.channel]), history[0].images.map(image => [image.width, image.height, image.model, image.channel]))
     const historyFile = await readHistoryImage('duration-history-0.png')
     const galleryFile = await readGalleryImage('duration-gallery-0.png')
     assert.deepEqual(historyFile.data, Buffer.from(png, 'base64'))

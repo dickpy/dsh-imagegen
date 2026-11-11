@@ -9,6 +9,7 @@
  */
 
 import { promises as fs } from 'node:fs'
+import { pickImageMetadata } from './image-metadata.ts'
 import path from 'node:path'
 import { HISTORY_MAX, type GenerateMode, type HistoryEntry, type HistoryEntryInput } from './protocol.ts'
 import { notifyImageSaved } from './storage-sync.ts'
@@ -34,6 +35,12 @@ interface StoredImage {
   mime: string
   revisedPrompt?: string
   durationMs?: number
+  width?: number
+  height?: number
+  model?: string
+  channelId?: string
+  channel?: string
+  upstream?: string
 }
 
 /** One entry's on-disk record. */
@@ -167,6 +174,7 @@ function toWire(entry: StoredEntry): HistoryEntry {
       mime: image.mime,
       ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
       ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
+      ...pickImageMetadata(image),
     })),
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.channel === undefined ? {} : { channel: entry.channel },
@@ -205,6 +213,7 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
           mime: image.mime,
           ...image.revisedPrompt === undefined ? {} : { revisedPrompt: image.revisedPrompt },
           ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
+          ...pickImageMetadata(image),
         })
       }
     } catch (error) {

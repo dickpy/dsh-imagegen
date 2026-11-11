@@ -17,6 +17,8 @@ import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { autoRemoveBackground, canvasToDataUrl, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, loadRaster, rectBetween, transparencyRatio } from './image-ops.ts'
 import { PosterEditor } from './PosterEditor.tsx'
+import { MaskEditor } from './MaskEditor.tsx'
+import { compositeMaskedResult } from './image-ops.ts'
 import { TemplateLibrary, TemplateLibraryButton } from './TemplateLibrary.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import type { ImageModelGroup } from './settings-scope.ts'
@@ -1162,6 +1164,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const [minimapOpen, setMinimapOpen] = useState(true)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [posterTarget, setPosterTarget] = useState<{ canvasId: string; nodeId: string } | null>(null)
+  const [maskTargetId, setMaskTargetId] = useState<string | null>(null)
   const posterOpenRef = useRef(false)
   posterOpenRef.current = posterTarget !== null
   const [backgroundMenu, setBackgroundMenu] = useState<Point | null>(null)
@@ -2567,6 +2570,9 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     if (!composerChannelConnected) { setError(tt('canvas.needApi')); onOpenSettings?.(); return }
     const inputs = target === null ? [] : upstreamNodes(current, target.id)
     const referenceImages = inputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined)
+    // Painting a mask on an image makes that image the direct edit reference;
+    // users need not create a separate config node just to edit a region.
+    if (target?.type === 'image' && nodeMetadata(target).editMask !== undefined && usableAsset(target) !== undefined && !referenceImages.some(node => node.id === target.id)) referenceImages.unshift(target)
     const upstreamText = inputs
       .filter(node => node.type === 'text' && nodeMetadata(node).annotation === undefined && (nodeMetadata(node).text ?? '').trim() !== '')
       .map(node => nodeMetadata(node).text!.trim())
@@ -2574,7 +2580,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     try {
       // Attached 标注 cards supply both the boxed reference and, when the
       // composer box is empty, the prompt itself.
-      const annotationPlan = await annotationPlanOf(current, inputs).catch(() => undefined)
+      const maskAsset = referenceImages[0] === undefined ? undefined : nodeMetadata(referenceImages[0]).editMask
+      const annotationPlan = maskAsset === undefined ? await annotationPlanOf(current, inputs).catch(() => undefined) : undefined
       const prompt = composerPrompt.trim() !== ''
         ? composerPrompt.trim()
         : (upstreamText.length > 0 ? upstreamText.join('\n') : (annotationPlan?.texts ?? []).join('\n'))
@@ -2608,6 +2615,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
+        ...(maskAsset === undefined ? {} : { mask: await assetToDataUrl(maskAsset) }),
         canvas: {
           canvasId: current.id,
           ...(target === null ? {} : {
@@ -2635,6 +2643,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
               status: 'generating', taskId: task.id,
               ...(anchor !== undefined ? { sourceNodeId: anchor.id } : {}),
               ...(annotationPlan === undefined ? {} : { annotationEdit: { sourceNodeId: annotationPlan.sourceNodeId, boxes: annotationPlan.boxes } }),
+              ...(maskAsset === undefined || referenceImages[0] === undefined ? {} : { maskEdit: { sourceNodeId: referenceImages[0].id, mask: maskAsset } }),
               prompt: finalPrompt, model,
               ...(composerChoice.channelId === '' ? {} : { channelId: composerChoice.channelId }),
             },
@@ -2681,7 +2690,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         const text = (textNode === undefined ? '' : nodeMetadata(textNode).text ?? '').trim()
         return text === '' ? [] : [{ rect: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height }, text }]
       })
-      const annotated = sourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
+      const annotated = metadata.maskEdit === undefined && sourceNode !== undefined && baseAsset !== undefined && boxes.length > 0
         ? await annotatedReference(sourceNode, boxes).catch(() => undefined)
         : undefined
       if (annotated !== undefined) {
@@ -2703,6 +2712,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ...(retryChoice.channelId === '' ? {} : { channelId: retryChoice.channelId }),
         ...(image === undefined ? {} : { image, refName }),
         ...(images === undefined ? {} : { images }),
+        ...(metadata.maskEdit === undefined ? {} : { mask: await assetToDataUrl(metadata.maskEdit.mask) }),
         canvas: { canvasId: current.id, sourceNodeId: sourceId ?? references[0]?.id, parentNodeId: node.id, placement: 'right' as const },
       }
       const task = await api.taskSubmit(request)
@@ -2769,6 +2779,14 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           : usableAsset(document.nodes.find(node => node.id === annotationEdit.sourceNodeId) ?? targets[0]!)
         for (const image of task.result!.images) {
           let dataUrl = imageDataUrl(image)
+          const maskEdit = nodeMetadata(targets[0]!).maskEdit
+          if (maskEdit !== undefined) {
+            const source = document.nodes.find(node => node.id === maskEdit.sourceNodeId)
+            const asset = source === undefined ? undefined : usableAsset(source)
+            if (asset === undefined) throw new Error(tt('mask.loadFailed'))
+            const [result, original, mask] = await Promise.all([loadRaster(dataUrl, 0), loadRaster(asset.url, 0), loadRaster(maskEdit.mask.url, 0)])
+            dataUrl = canvasToDataUrl(compositeMaskedResult(result, original, mask))
+          }
           // A 标注 edit: keep the generated pixels only inside the boxes and
           // restore the clean original everywhere else, so the red marker the
           // model may have echoed never reaches the finished image.
@@ -2922,10 +2940,12 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
   const composerTarget = useMemo(() => {
     const selected = (document?.nodes ?? []).filter(node => selectedIds.has(node.id))
     const configs = selected.filter(node => node.type === 'config')
-    return configs.length === 1 ? configs[0]! : null
+    if (configs.length === 1) return configs[0]!
+    const masked = selected.filter(node => node.type === 'image' && nodeMetadata(node).editMask !== undefined)
+    return configs.length === 0 && selected.length === 1 && masked.length === 1 ? masked[0]! : null
   }, [document, selectedIds])
   const composerInputs = useMemo(
-    () => composerTarget === null || document === null ? [] : upstreamNodes(document, composerTarget.id),
+    () => composerTarget === null || document === null ? [] : [...(composerTarget.type === 'image' && nodeMetadata(composerTarget).editMask !== undefined ? [composerTarget] : []), ...upstreamNodes(document, composerTarget.id)],
     [composerTarget, document, upstreamNodes],
   )
   const composerReferenceCount = composerInputs.filter(node => node.type === 'image' && usableAsset(node) !== undefined).length
@@ -3737,6 +3757,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
           </>}      <div className={`${css.hoverToolbar} ${node.type === 'image' && hasImage ? css.hoverToolbarBottom : ''}`} data-toolbar={node.type === 'image' && hasImage ? 'bottom' : 'top'} onPointerDown={event => event.stopPropagation()}>
         {node.type === 'image' && hasImage ? <>
           <IconButton name="annotate" label={tt('canvas.annotate')} active={annotating} onClick={() => toggleAnnotate(node)} />
+          <IconButton name="sketch" label={tt('mask.title')} active={metadata.editMask !== undefined} disabled={busyLabel !== undefined} onClick={() => setMaskTargetId(node.id)} />
+          {metadata.editMask !== undefined ? <IconButton name="eraser" label={tt('mask.remove')} onClick={() => patchNode(node.id, { editMask: undefined })} /> : null}
           <IconButton name="removeBg" label={tt('canvas.removeBackground')} disabled={busyLabel !== undefined} onClick={() => { void removeNodeBackground(node) }} />
           <IconButton name="text" label={tt('poster.title')} disabled={busyLabel !== undefined} onClick={() => { if (document !== null) setPosterTarget({ canvasId: document.id, nodeId: node.id }) }} />
           <IconButton name="layers" label={tt('canvas.splitLayers')} disabled={busyLabel !== undefined} onClick={() => { void splitLayers(node) }} />
@@ -3919,7 +3941,7 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const topOffset = viewportRef.current?.offsetTop ?? 0
     const centerX = topOffset * 0 + document.viewport.x + (composerTarget.x + composerTarget.width / 2) * k
     const clampedX = Math.min(Math.max(centerX, 292), Math.max(292, viewportSize.width - 292))
-    const belowY = topOffset + document.viewport.y + (composerTarget.y + composerTarget.height) * k + 14
+    const belowY = topOffset + document.viewport.y + (composerTarget.y + composerTarget.height) * k + (composerTarget.type === 'image' ? 110 : 14)
     const top = belowY > viewportSize.height + topOffset - 170
       ? Math.max(64, topOffset + document.viewport.y + composerTarget.y * k - 158)
       : belowY
@@ -4355,6 +4377,17 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }}
       onClose={() => setPendingSkill(null)}
     /> : null}
+    {maskTargetId !== null && document !== null ? (() => {
+      const source = document.nodes.find(node => node.id === maskTargetId)
+      const asset = source === undefined ? undefined : usableAsset(source)
+      return asset === undefined ? null : <MaskEditor src={asset.url} onClose={() => setMaskTargetId(null)} onApply={mask => {
+        const nodeId = maskTargetId, canvasId = document.id
+        setMaskTargetId(null)
+        void api.canvasUpload(mask, asset.width, asset.height, { origin: 'upload', originId: `mask-${nodeId}` }).then(uploaded => {
+          if (documentRef.current?.id === canvasId) { patchNode(nodeId, { editMask: uploaded }); setSelectedIds(new Set([nodeId])); setNotice(tt('mask.apply')) }
+        }).catch(caught => setError(errorMessage(caught)))
+      }} />
+    })() : null}
     {polishNode !== null ? <PolishMenu
       anchor={polishNode.screen}
       batchCount={(document?.nodes ?? []).filter(node => node.type === 'text' && selectedIds.has(node.id)).length || 1}
