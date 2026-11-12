@@ -92,6 +92,22 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   background: var(--dsw-alias-bg-base);
 }
 
+/* 0.2.x wraps the keyed 'main' anchor in the center column's own 'mainPanel'
+   element, so the grid item that has to land in the chat track is that wrapper,
+   not the Conversation root inside it. Both are covered: the marker written at
+   mount time (any future wrapper), and the class the current shell uses (so the
+   wrapper is placed correctly even before the observer re-marks it). */
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > [data-dsh-imagegen-chat-column],
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > [data-dsh-imagegen-chat-column],
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > [class*='mainPanel'] {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+}
+
 html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-chat-resizer] {
   grid-column: 2;
   grid-row: 1;
@@ -136,8 +152,14 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
 /* Hide unrelated center-column plugin children on the `>` direct-child axis.
    The keyed `main` anchor is deliberately let through: the Conversation lives
    inside it, and the rule below then hides whichever entry is NOT the chat. */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]),
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]) {
+/* The Conversation's carrier is let through: it is the element the chat track
+   places (a 'conversation' slot root on legacy shells, the keyed 'main' anchor
+   on 0.1.5+, and the center column's own mainPanel wrapper from 0.2.x on).
+   mount.tsx marks whichever one is the column's direct child with
+   data-dsh-imagegen-chat-column; the class escape keeps the shell's wrapper
+   alive for the frames before that marker is re-applied. */
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]):not([data-dsh-imagegen-chat-column]):not([class*='mainPanel']),
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]):not([data-dsh-imagegen-chat-column]):not([class*='mainPanel']) {
   display: none !important;
 }
 
@@ -167,7 +189,18 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 /* Keep the Session/Image switcher and the native New Session action visible,
    including shells that wrap the action in a container. Other plugin entries
    between the switcher and workspace region stay hidden in the studio. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh-imagegen-session-tabs]):not([data-dsh-imagegen-new-session]):not(:has([data-dsh-imagegen-new-session])):not([class*='logoRow']):not([class*='regionArea']):not([class*='footArea']):not([class*='topStrip']) {
+/* 0.2.x nests the workspace/session region inside its own scroll wrappers
+   (scrollRegion > scrollArea > regionArea), so those wrappers are marked with
+   data-dsh-imagegen-sidebar-keep at mount time instead of being named here:
+   the allow-list must not hide the ancestor chain that carries the history
+   surface, or the sidebar goes blank (the 0.2.x regression this guards). */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh-imagegen-session-tabs]):not([data-dsh-imagegen-new-session]):not(:has([data-dsh-imagegen-new-session])):not([data-dsh-imagegen-sidebar-keep]):not([class*='logoRow']):not([class*='regionArea']):not([class*='footArea']):not([class*='topStrip']) {
+  display: none !important;
+}
+
+/* Other panels' sidebar navigation rows (插件 / 素材 / 自动化 ...) step aside in
+   the studio: the workspace region underneath them is the history surface. */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] nav[class*='panelList'] {
   display: none !important;
 }
 
@@ -180,7 +213,9 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh
   }
 
   html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'],
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase],
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > [data-dsh-imagegen-chat-column],
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > [class*='mainPanel'] {
     grid-column: 1;
     grid-row: 2;
   }
@@ -188,6 +223,31 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh
   html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
     display: none !important;
   }
+}
+
+/* --- frame chrome on 0.2.x --------------------------------------------------- */
+
+/* The studio is a full-column surface at z-index 60, above the frame's chrome
+   layers (drag handles 10-ish, the leading seat 15). 0.2.x keeps the collapsed
+   sidebar's only opener in that leading seat — with the sidebar collapsed (a
+   macOS window, or any viewport under 1024) the studio used to paint over it,
+   which left no way back to the session list while the studio was open. Raise
+   the seat above the studio; it only exists while the sidebar is collapsed. */
+html[data-dsh-imagegen-active] [data-shell-leading] {
+  z-index: 70;
+}
+
+/* Same cause, different symptom: with no sidebar column the studio starts at the
+   window's top-left corner, where macOS keeps the traffic lights. The frame
+   publishes the band they occupy, so reserve it — the panel header then starts
+   clear of the window chrome instead of underneath it (0.2.x regression). */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-panel-header] {
+  padding-left: max(0px, calc(var(--dsh-frame-leading-clearance, 0px) - 16px));
+}
+
+html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-collapsed] [data-dsh-imagegen-panel-header],
+html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-imagegen-panel-header] {
+  padding-top: max(0px, calc(var(--dsh-frame-top-clearance, 0px) - 14px));
 }
 
 /* --- sidebar entry row ------------------------------------------------------- */
@@ -757,6 +817,9 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   gap: 12px;
   flex: 1;
   min-height: 0;
+  /* A config column that is dragged narrow must reflow, never scroll sideways:
+     horizontal scroll here silently cut the leading edge of wide cards. */
+  overflow-x: hidden;
   overflow-y: auto;
   padding-right: 2px;
   scrollbar-width: thin;
@@ -1244,6 +1307,12 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  /* A config column can be dragged down to the 240px clamp floor: the workspace
+     is a flex item inside the scroll port, so it needs min-width:0 to actually
+     take that width instead of overflowing at its min-content size (which cut
+     the left edge of every card once the port scrolled). */
+  width: 100%;
+  min-width: 0;
   max-width: 760px;
   margin: 0 auto;
   padding: 10px 8px 18px;
@@ -1251,11 +1320,16 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   line-height: 1.5;
 }
 
+.ecommerceWorkspace > * {
+  min-width: 0;
+}
+
 /* Config cards in the 参考布局 style: elevated white cards, head row with a
  * count chip, hint line under the title. */
 .ecommerceSection {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 10px;
   padding: 14px 16px 16px;
   border: 1px solid var(--dsw-alias-border-l1);
@@ -1331,7 +1405,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 
 .ecommerceParamGrid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 10px;
 }
 
@@ -1374,7 +1448,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 
 .ecommerceStructureGrid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -1470,7 +1544,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 
 .ecommerceAssets {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -2082,7 +2156,9 @@ html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-t
    pair's Conversation root (its `display: contents` anchors draw nothing on
    their own). This must out-specify the base chat-track placement. */
 html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'],
-html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase],
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > [data-dsh-imagegen-chat-column],
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > [class*='mainPanel'] {
   display: none !important;
 }
 
