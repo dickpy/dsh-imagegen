@@ -15,9 +15,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: web-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   chromium:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -50,4 +54,5 @@ jobs:
             .test-artifacts/
             /tmp/dsh-117-qa/
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 14
