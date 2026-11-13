@@ -17,8 +17,6 @@ jobs:
   chromium:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      CODEX_PRIMARY_RUNTIME_NODE_MODULES: ${{ runner.temp }}/browser-tools/node_modules
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,6 +30,7 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/browser-tools" --no-save playwright@1.56.1
           node "$RUNNER_TEMP/browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "CODEX_PRIMARY_RUNTIME_NODE_MODULES=$RUNNER_TEMP/browser-tools/node_modules" >> "$GITHUB_ENV"
       - name: Type check and build
         run: |
           pnpm run typecheck
