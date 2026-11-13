@@ -48,3 +48,4 @@ Thumbs.db
 
 # Local verification logs
 .qa/
+.test-artifacts/

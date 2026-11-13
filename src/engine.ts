@@ -11,7 +11,7 @@
 import { isChatCompletionsUrl, resolveChannelProtocol, type ChannelProtocolPreference, type GeneratedImage, type GenerateRequest, type GenerateResult } from './protocol.ts'
 import { detectImageMime } from './image-format.ts'
 import { imageDimensions } from './image-dimensions.ts'
-import { modelFamily, promptCharLimit } from './model-catalog.ts'
+import { describeModel, modelFamily, promptCharLimit } from './model-catalog.ts'
 import { bodyByteLength, excerptOf, networkErrorFields, readResponseExcerpt, readResponseText, recordDiagnostic, type DiagnosticPhase } from './diagnostics-store.ts'
 
 /** The upstream credentials the panel's settings card configures. */
@@ -22,8 +22,10 @@ export interface UpstreamConfig {
   apiKey: string
   /** Use apiUrl verbatim as the generation endpoint instead of appending /images/*. */
   apiUrlFull?: boolean
-  /** Channel opt-out for Seedream's platform watermark; absent means on. */
+  /** Watermark preference for models that advertise the capability. */
   watermark?: boolean
+  /** Prompt expansion preference for models that advertise the capability. */
+  promptExtend?: boolean
   /** Request protocol; auto infers chat-completions from an exact chat URL. */
   protocol?: ChannelProtocolPreference
   /** Channel display name, recorded in diagnostics so a failure maps to a settings row. */
@@ -160,27 +162,6 @@ function isGlmImage(model: string): boolean {
 /** Whether this is the official Volcengine Ark model naming convention. */
 function isVolcSeedream(model: string): boolean {
   return /^doubao-seedream(?:-|$)/i.test(model.trim())
-}
-
-/** Whether the channel points at an official ByteDance image host (Volcengine
- *  Ark or BytePlus). Only these document Seedream's `watermark` field, so the
- *  opt-out stays off third-party relays, which may reject unknown body fields
- *  with a 400. */
-function isByteDanceImageHost(apiUrl: string): boolean {
-  try {
-    const host = new URL(apiUrl).hostname.toLowerCase()
-    return host.endsWith('volces.com') || host.endsWith('byteplus.com') || host.endsWith('bytepluses.com')
-  } catch {
-    return false
-  }
-}
-
-/** Whether Seedream's watermark switch may travel to this upstream: the
- *  official model id (`doubao-seedream-…`) or any model on an official
- *  ByteDance host. Model-name matching alone would miss the bundled Ark preset
- *  (`seedream-5.0-pro`) and inference-endpoint aliases (#56). */
-function supportsSeedreamWatermark(model: string, upstream: UpstreamConfig): boolean {
-  return isVolcSeedream(model) || isByteDanceImageHost(upstream.apiUrl)
 }
 
 /** Volcengine uses `size` for the output tier, not the panel's aspect ratio. */
@@ -385,8 +366,21 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
   resolution?: string
   response_format?: string
   watermark?: boolean
+  prompt_extend?: boolean
 } {
   const model = wireModel(request)
+  const capabilities = describeModel(model)
+  const preferences = {
+    ...capabilities.supportsWatermarkToggle && typeof upstream.watermark === 'boolean' ? { watermark: upstream.watermark } : {},
+    ...capabilities.supportsPromptExtend && typeof upstream.promptExtend === 'boolean' ? { prompt_extend: upstream.promptExtend } : {},
+  }
+  // SenseNova accepts JSON for both generation and edits; it has no OpenAI
+  // quality/detail dials. Use aligned pixels and let the host retain base64.
+  if (capabilities.family === 'sensenova') {
+    const pixels = openaiSizeFor('gpt-image-2', request.size, request.quality)
+    const size = pixels?.split('x').map(value => Math.round(Number(value) / 32) * 32).join('x')
+    return { model, ...size === undefined ? {} : { size }, response_format: 'b64_json', ...preferences }
+  }
   // dall-e-3 has no quality/detail knobs and only produces one image.
   if (model === 'dall-e-3') {
     const pixel = OPENAI_SIZE_BY_RATIO[request.size]
@@ -431,14 +425,14 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
   // resolution tier (1K / 2K), not the panel's aspect-ratio value. It returns
   // temporary URLs, so ask Ark for URL output and let the host download it.
   // Other compatible gateways retain the base64 response fallback. The
-  // platform watermark is on by default upstream; a channel may opt out, and
-  // the field is only ever sent on hosts that document it (#56).
+  // platform watermark is on by default upstream; explicit preferences follow
+  // the resolved model's capability, including compatible relays (#73).
   if (isSeedream(model)) {
     return {
       model,
       size: seedreamSize(request.quality),
       response_format: isVolcSeedream(model) ? 'url' : 'b64_json',
-      ...upstream.watermark === false && supportsSeedreamWatermark(model, upstream) ? { watermark: false } : {},
+      ...preferences,
     }
   }
   // Zhipu's official image API accepts OpenAI-style JSON but uses its own
@@ -464,6 +458,7 @@ function effectiveParams(request: GenerateRequest, upstream: UpstreamConfig): {
     ...request.quality === '2k' ? { quality: 'medium' } : {},
     ...request.quality === '4k' ? { quality: 'high' } : {},
     ...request.detail !== '' ? { detail: request.detail } : {},
+    ...preferences,
   }
 }
 
@@ -930,6 +925,14 @@ async function requestOneImage(
       if (params.aspect_ratio !== undefined) form.append('aspect_ratio', params.aspect_ratio)
       if (params.image_size !== undefined) form.append('image_size', params.image_size)
       body = form
+    } else if (modelFamily(params.model) === 'sensenova') {
+      headers['content-type'] = 'application/json'
+      body = JSON.stringify({
+        prompt: request.prompt,
+        ...params,
+        images: [request.image, ...(request.images ?? []).filter(img => typeof img === 'string' && img !== '').slice(0, 4)]
+          .map(image_url => ({ image_url })),
+      })
     } else if (isSeedream(params.model)) {
       // Seedream unifies generation and editing on /images/generations; the
       // reference image is a JSON URL / data-URL array, never multipart, and
@@ -971,6 +974,8 @@ async function requestOneImage(
       if (params.size !== undefined) form.append('size', params.size)
       if (params.quality !== undefined) form.append('quality', params.quality)
       if (params.detail !== undefined) form.append('detail', params.detail)
+      if (params.watermark !== undefined) form.append('watermark', String(params.watermark))
+      if (params.prompt_extend !== undefined) form.append('prompt_extend', String(params.prompt_extend))
       body = form
     }
   } else {
@@ -1453,7 +1458,7 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   const baseUrl = normalizeModelScopeBaseUrl(configuredBaseUrl, upstream.apiUrlFull === true)
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
-  if (request.mask !== undefined && (request.mode !== 'edit' || resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions' || ['grok', 'nanobanana', 'seedream', 'qwen', 'minimax', 'zhipu'].includes(modelFamily(wireModel(request))))) {
+  if (request.mask !== undefined && (request.mode !== 'edit' || resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions' || ['grok', 'nanobanana', 'seedream', 'sensenova', 'qwen', 'minimax', 'zhipu'].includes(modelFamily(wireModel(request))))) {
     throw new ImageGenError('当前模型或渠道协议不支持原生遮罩，请选择支持 images/edits 遮罩的 GPT Image 等 API 模型', 'mask-unsupported')
   }
   if (resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions') {

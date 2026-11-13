@@ -23,8 +23,9 @@ export interface ChannelDraft {
   name: string
   apiUrl: string
   apiUrlFull: boolean
-  /** Seedream 水印开关：缺省/true 表示开启，只有 false 会写入并透传给上游（#56）。 */
+  /** Model capability gates whether this preference travels upstream. */
   watermark?: boolean
+  promptExtend?: boolean
   protocol?: ChannelProtocolPreference
   auth?: 'api-key' | 'subscription'
   subscription?: SubscriptionProvider
@@ -98,6 +99,7 @@ function stripChannel(channel: ChannelDraft): ChannelDraft {
     apiUrlFull: channel.apiUrlFull === true,
     // 与设置 schema 的默认值保持一致，避免读到旧渠道时出现假的「有改动」状态。
     watermark: channel.watermark !== false,
+    promptExtend: channel.promptExtend !== false,
     ...channel.protocol === undefined ? {} : { protocol: channel.protocol },
     ...channel.auth === undefined ? {} : { auth: channel.auth },
     ...channel.subscription === undefined ? {} : { subscription: channel.subscription },
@@ -296,7 +298,7 @@ export class ChannelsForm {
 
 /** Project a stored channel into a draft (secrets never travel in channels). */
 function toDraft(channel: ChannelConfig): ChannelDraft {
-  return { id: channel.id, preset: channel.preset, name: channel.name, apiUrl: channel.apiUrl, apiUrlFull: channel.apiUrlFull === true, watermark: channel.watermark !== false, ...channel.protocol === undefined ? {} : { protocol: channel.protocol }, ...channel.auth === undefined ? {} : { auth: channel.auth }, ...channel.subscription === undefined ? {} : { subscription: channel.subscription }, models: channel.models.map(model => ({ ...model })) }
+  return { id: channel.id, preset: channel.preset, name: channel.name, apiUrl: channel.apiUrl, apiUrlFull: channel.apiUrlFull === true, watermark: channel.watermark !== false, promptExtend: channel.promptExtend !== false, ...channel.protocol === undefined ? {} : { protocol: channel.protocol }, ...channel.auth === undefined ? {} : { auth: channel.auth }, ...channel.subscription === undefined ? {} : { subscription: channel.subscription }, models: channel.models.map(model => ({ ...model })) }
 }
 
 /** The scope's current channels value (a plain array), for change detection. */

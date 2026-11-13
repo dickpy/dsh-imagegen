@@ -146,7 +146,7 @@ GPT Image 2 及以上版本会按「比例 + 清晰度」发送实际像素尺�
 - One-API、New API、LiteLLM 等只暴露 `/chat/completions` 的网关，可填写完整接口地址并选择对应模型。
 - API 密钥保存在 DSH 宿主设置中；未被自动识别的兼容模型可手动添加。
 - 不同服务商的图生图、尺寸与返回格式可能不同，请确认所选模型实际支持的能力。
-- 火山方舟 / BytePlus 的 Seedream 默认在图片右下角叠加「AI 生成」角标；渠道编辑里的「图片添加「AI 生成」水印」可关闭，关闭后请求体透传 `watermark: false`。该角标属于生成合成内容标识，关闭后的对外发布标注义务由使用者承担。
+- Seedream 与 SenseNova U 系列支持渠道水印开关，按模型能力发送 `watermark: false`（包括兼容中转渠道），其他模型不发送该扩展字段。SenseNova 还支持「上游自动优化提示词」开关，关闭时发送 `prompt_extend: false`；图生图按官方 JSON `images: [{ image_url }]` 协议发送。
 
 </details>
 
