@@ -1,6 +1,8 @@
 name: Web regression
 
 on:
+  push:
+    branches: ['fix/**']
   pull_request:
     paths:
       - 'src/**'
