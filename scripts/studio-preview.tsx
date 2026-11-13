@@ -4,6 +4,8 @@ import { ImageGenPanel } from '../src/client/ImageGenPanel.tsx'
 import { ImageGenApi } from '../src/client/api.ts'
 import type { ImageGenScope } from '../src/client/settings-scope.ts'
 import { compositeMaskedResult, loadRaster } from '../src/client/image-ops.ts'
+import { mountSidebarEntry } from '../src/client/sidebar-entry.ts'
+import { ImageGenController } from '../src/client/controller.ts'
 
 const value = { enabled: true, defaultChannelId: 'one', defaultModel: 'gpt-image-2', channels: [
   { id: 'one', name: 'Provider A', apiUrl: 'https://one.test/v1', models: [{ id: 'gpt-image-2', alias: 'gpt-image-2' }, { id: 'gpt-image-2.5-flare', alias: 'gpt-image-2.5-flare' }] },
@@ -15,5 +17,5 @@ function Fixture(): React.JSX.Element {
   const [key, setKey] = useState(0), [visible, setVisible] = useState(true)
   return <><nav className="fixture-controls"><button onClick={() => setKey(key + 1)}>Remount studio</button><button onClick={() => setVisible(!visible)}>Toggle workspace</button></nav><div style={{ height: 'calc(100% - 36px)', display: visible ? 'block' : 'none' }}><ImageGenPanel key={key} api={api} scope={scope} /></div></>
 }
-Object.assign(window, { studioRaster: { compositeMaskedResult, loadRaster } })
+Object.assign(window, { studioRaster: { compositeMaskedResult, loadRaster }, studioSidebar: { mount: mountSidebarEntry, Controller: ImageGenController } })
 createRoot(document.getElementById('root')!).render(<Fixture />)

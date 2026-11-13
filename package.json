@@ -82,14 +82,16 @@
     "build": "tsdown",
     "test": "pnpm run test:unit && pnpm run test:remote && pnpm run test:e2e",
     "test:remote": "pnpm run build && pnpm exec tsdown --config scripts/remote-settings.config.ts && node --test scripts/remote-access.test.mjs scripts/remote-access-routes.test.mjs scripts/remote-settings-client.test.mjs",
-    "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs scripts/image-clipboard.test.mjs scripts/engine-openai-size.test.mjs scripts/reference-clipboard.test.mjs scripts/generation-duration.test.mjs scripts/generation-settings.test.mjs scripts/studio-state.test.mjs",
+    "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs scripts/image-clipboard.test.mjs scripts/engine-openai-size.test.mjs scripts/reference-clipboard.test.mjs scripts/generation-duration.test.mjs scripts/generation-settings.test.mjs scripts/studio-state.test.mjs scripts/engine-capabilities.test.mjs",
     "test:duration:browser": "pnpm exec tsdown --config scripts/generation-preview.config.ts && pnpm exec tsdown --config scripts/result-preview.config.ts && node scripts/generation-duration-browser-test.mjs",
-    "test:e2e": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-dom-e2e.mjs && pnpm exec tsdown --config scripts/toolview-preview.config.ts && node scripts/toolview-dom-e2e.mjs && pnpm run test:references",
+    "test:e2e": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-dom-e2e.mjs && pnpm exec tsdown --config scripts/toolview-preview.config.ts && node scripts/toolview-dom-e2e.mjs && pnpm run test:references && pnpm run test:history",
     "test:references": "pnpm exec tsdown --config scripts/references-preview.config.ts && node scripts/references-dom-e2e.mjs",
     "test:browser": "pnpm exec tsdown --config scripts/conversation-preview.config.ts && node scripts/conversation-browser-test.mjs",
     "watch": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "fetch-templates": "node scripts/fetch-templates.mjs",
-    "test:studio:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/studio-browser-test.mjs"
+    "test:studio:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/studio-browser-test.mjs",
+    "test:history:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-browser-test.mjs",
+    "test:history": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-dom-e2e.mjs"
   }
 }

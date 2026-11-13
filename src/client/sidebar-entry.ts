@@ -123,10 +123,18 @@ function placeTabs(
   const button = newSessionButton(root)
   if (button === undefined) return undefined
 
+  // The action can live in a fixed-height horizontal row (DSH 0.2.2+),
+  // possibly inside more shell wrappers. Keep the switcher in the sidebar
+  // column, before the entire action carrier, so it cannot shrink the button.
+  let anchor: HTMLElement = button
+  while (anchor.parentElement !== null && anchor.parentElement !== root) anchor = anchor.parentElement
+  if (anchor.parentElement !== root) return undefined
   const existing = root.querySelector<HTMLDivElement>(ENTRY_SELECTOR)
-  if (existing !== null && existing.parentElement === button.parentElement) return existing
+  if (existing !== null) {
+    if (existing.parentElement !== root || existing.nextElementSibling !== anchor) root.insertBefore(existing, anchor)
+    return existing
+  }
 
-  existing?.remove()
   const tabs = document.createElement('div')
   tabs.dataset.dshImagegenSessionTabs = ''
   tabs.className = css.sessionTabs
@@ -144,7 +152,7 @@ function placeTabs(
   tabs.append(sessionTab, imageTab)
 
   // The shell button keeps its own slot below the switcher, untouched.
-  button.parentElement?.insertBefore(tabs, button)
+  root.insertBefore(tabs, anchor)
   return tabs
 }
 

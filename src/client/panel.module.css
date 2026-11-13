@@ -1186,6 +1186,13 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   text-overflow: ellipsis;
 }
 
+.historyTime {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
 .historyActions {
   display: flex;
   gap: 4px;

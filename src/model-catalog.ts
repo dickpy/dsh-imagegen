@@ -8,7 +8,7 @@
  * Framework-free (pure data + regex), safe for the client bundle to inline.
  */
 
-export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'zhipu' | 'qwen' | 'minimax' | 'unknown'
+export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'sensenova' | 'zhipu' | 'qwen' | 'minimax' | 'unknown'
 
 /** Capability/identity annotation for one model id. */
 export interface ModelCatalogEntry {
@@ -24,11 +24,18 @@ export interface ModelCatalogEntry {
   supportsEdit: boolean
   /** Whether the family natively takes aspect-ratio dials. */
   supportsAspectRatio: boolean
+  /** Whether the image protocol accepts an explicit watermark preference. */
+  supportsWatermarkToggle: boolean
+  /** Whether the image protocol accepts prompt_extend. */
+  supportsPromptExtend: boolean
   /** Quality tiers the family interprets natively. */
   qualityTiers: string[]
 }
 
-const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, 'family'>> = {
+type OptionalCapabilities = 'supportsWatermarkToggle' | 'supportsPromptExtend'
+type FamilyDescription = Omit<ModelCatalogEntry, OptionalCapabilities> & Partial<Pick<ModelCatalogEntry, OptionalCapabilities>>
+
+const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<FamilyDescription, 'family'>> = {
   'gpt-image': {
     label: 'gpt-image',
     labelZh: 'GPT 图像',
@@ -67,7 +74,18 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<ModelCatalogEntry, '
     known: true,
     supportsEdit: true,
     supportsAspectRatio: true,
+    supportsWatermarkToggle: true,
     qualityTiers: ['1K', '2K'],
+  },
+  sensenova: {
+    label: 'SenseNova',
+    labelZh: '日日新图像',
+    known: true,
+    supportsEdit: true,
+    supportsAspectRatio: false,
+    supportsWatermarkToggle: true,
+    supportsPromptExtend: true,
+    qualityTiers: ['1K', '2K', '4K'],
   },
   zhipu: {
     label: 'GLM-Image',
@@ -122,17 +140,23 @@ const NANOBANANA_GEMINI_IDS = new Set([
 ])
 
 /** Classify one upstream model id into its request-shaping family. */
-export function describeModel(model: string): ModelCatalogEntry {
+function describeFamily(model: string): FamilyDescription {
   const id = model.trim()
   if (/^gpt-image/i.test(id)) return { family: 'gpt-image', ...ENTRIES['gpt-image'] }
   if (/^dall-e/i.test(id)) return { family: 'dall-e', ...ENTRIES['dall-e'] }
   if (/^grok-imagine(?:-|$)/.test(id)) return { family: 'grok', ...ENTRIES.grok }
   if (/^nanobanana/i.test(id) || NANOBANANA_GEMINI_IDS.has(id)) return { family: 'nanobanana', ...ENTRIES.nanobanana }
   if (/^(?:doubao-)?seedream/i.test(id)) return { family: 'seedream', ...ENTRIES.seedream }
+  if (/^(?:sensenova[/:])?sensenova-u(?:\d|[-_.]|$)/i.test(id)) return { family: 'sensenova', ...ENTRIES.sensenova }
   if (/^(?:glm-image|cogview(?:-|$))/i.test(id)) return { family: 'zhipu', ...ENTRIES.zhipu }
   if (/^qwen-image(?:[-_.]|$)/i.test(id)) return { family: 'qwen', ...ENTRIES.qwen }
   if (/^(?:minimax[-_/])?image-\d+/i.test(id)) return { family: 'minimax', ...ENTRIES.minimax }
   return { family: 'unknown', label: 'unknown', labelZh: '未知协议', known: false, supportsEdit: true, supportsAspectRatio: false, qualityTiers: [] }
+}
+
+/** Shared capability source for request shaping and channel controls. */
+export function describeModel(model: string): ModelCatalogEntry {
+  return { supportsWatermarkToggle: false, supportsPromptExtend: false, ...describeFamily(model) }
 }
 
 /** Conservative fallback for providers whose /models response only has ids.
@@ -140,6 +164,7 @@ export function describeModel(model: string): ModelCatalogEntry {
  *  image model naming conventions without treating every unknown model as an
  *  image model. */
 export function isLikelyImageModelId(model: string): boolean {
+  if (describeModel(model).family === 'sensenova') return true
   return /(?:^|[-_.])(?:image|img|diffusion|flux|cogview|imagen|seedream|nanobanana|grok-imagine|dall-e|stable-diffusion|sdxl|pixart|kolors|ideogram|midjourney|recraft|hunyuan|jimeng|wanx|hidream|playground)(?:$|[-_.])/i.test(model.trim())
 }
 

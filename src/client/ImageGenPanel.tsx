@@ -13,6 +13,7 @@ import { GenerationLoading } from './GenerationLoading'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { pickImageMetadata } from '../image-metadata.ts'
 import { StudioResults, ImageResultMeta } from './StudioResults.tsx'
+import { readHistorySelection, writeHistorySelection } from './history-selection.ts'
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
@@ -612,8 +613,18 @@ export function ImageGenPanel(props: {
     && promptEndpointConfigured
     && promptKeyConfigured
 
-  const [tab, setTab] = useState<PanelTab>('text')
+  const [initialHistorySelection] = useState(() => readHistorySelection(settingsStorage()))
+  const [tab, setTab] = useState<PanelTab>(initialHistorySelection.mode)
   const generationMode: GenerateMode = tab === 'edit' ? 'edit' : 'text'
+  const [historyIds, setHistoryIds] = useState(initialHistorySelection.ids)
+  const viewingHistoryId = historyIds[generationMode]
+  const setHistoryIdForMode = (mode: GenerateMode, id: string | null): void => { setHistoryIds(previous => ({ ...previous, [mode]: id })) }
+  const setViewingHistoryId = (id: string | null): void => { setHistoryIdForMode(generationMode, id) }
+  const [galleryIds, setGalleryIds] = useState<Record<GenerateMode, string | null>>({ text: null, edit: null })
+  const galleryViewingId = galleryIds[generationMode]
+  const setGalleryViewingId = (id: string | null): void => { setGalleryIds(previous => ({ ...previous, [generationMode]: id })) }
+  const pendingHistoryRestores = useRef(new Set<GenerateMode>(['text', 'edit']))
+  useEffect(() => { writeHistorySelection(settingsStorage(), { mode: generationMode, ids: historyIds }) }, [generationMode, historyIds])
   const [studioRuns, setStudioRuns] = useState<StudioRuns>(() => {
     try { return readStudioRuns(window.sessionStorage) } catch { return { text: null, edit: null } }
   })
@@ -734,10 +745,18 @@ export function ImageGenPanel(props: {
   const [enhancing, setEnhancing] = useState(false)
   const [configGuide, setConfigGuide] = useState<'generation' | 'enhancement' | 'disabled' | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
+  const [historyReady, setHistoryReady] = useState(false)
+  const [historyLoadingMode, setHistoryLoadingMode] = useState<GenerateMode | null>(null)
+  const historyLoading = historyLoadingMode === generationMode
   const historyViewRequestRef = useRef(0)
+  const beginResultNavigation = (mode: GenerateMode): number => {
+    // If another tab's hydration is superseded, restore it when that tab is
+    // visited again instead of leaving a selected record with an empty canvas.
+    if (historyLoadingMode !== null && historyLoadingMode !== mode) pendingHistoryRestores.current.add(historyLoadingMode)
+    setHistoryLoadingMode(null)
+    return ++historyViewRequestRef.current
+  }
   const [gallery, setGallery] = useState<HistoryEntry[]>([])
-  const [galleryViewingId, setGalleryViewingId] = useState<string | null>(null)
   const [galleryAdding, setGalleryAdding] = useState(false)
   const [galleryMessage, setGalleryMessage] = useState<string | null>(null)
   const [galleryFilter, setGalleryFilter] = useState<GalleryFilter>('all')
@@ -833,7 +852,7 @@ export function ImageGenPanel(props: {
     ? activeTasks.filter(task => task.request.mode === generationMode && task.request.canvas === undefined && task.request.workflow === undefined)
     : workspace === 'ecommerce' ? activeTasks.filter(task => task.request.workflow === 'ecommerce') : activeTasks
   const activeTask = viewActiveTasks.find(task => task.status === 'running') ?? viewActiveTasks[0]
-  const generating = submitting || viewActiveTasks.length > 0
+  const generating = viewingHistoryId === null && galleryViewingId === null && (submitting || viewActiveTasks.length > 0)
   const generationStartedAt = activeTask?.startedAt ?? activeTask?.createdAt ?? null
   const elapsed = useElapsed(generating, generationStartedAt)
 
@@ -959,6 +978,23 @@ export function ImageGenPanel(props: {
       && (historyRatioFilter === 'all' || normalizeSize(entry.size) === historyRatioFilter)
   }))
 
+  const syncHistory = (entries: HistoryEntry[]): void => {
+    setHistory(entries)
+    // A completed live board also needs a durable fallback when a full app
+    // restart discards sessionStorage. Keep its current board in memory while
+    // remembering the corresponding history identity for that mode.
+    setHistoryIds(previous => {
+      const next = { ...previous }
+      for (const mode of ['text', 'edit'] as const) {
+        const run = studioRunsRef.current[mode]
+        if (run === null) continue
+        const entry = entries.find(entry => entry.mode === mode && entry.comparisonId === run.id)
+        if (entry !== undefined) next[mode] = entry.id
+      }
+      return next.text === previous.text && next.edit === previous.edit ? previous : next
+    })
+  }
+
   // Load the host-persisted history and gallery once, when the panel first
   // becomes visible. Keeping this out of boot prevents eager full-size image
   // requests while image generation is closed.
@@ -966,12 +1002,23 @@ export function ImageGenPanel(props: {
     if (!active || initialDataRequestedRef.current) return
     initialDataRequestedRef.current = true
     api.historyList()
-      .then(entries => { setHistory(entries) })
+      .then(entries => { syncHistory(entries); setHistoryReady(true) })
       .catch(() => { /* history unavailable — leave the list empty */ })
     api.galleryList()
       .then(entries => { setGallery(entries) })
       .catch(() => { /* gallery unavailable — leave the list empty */ })
   }, [api, active])
+
+  // A restart restores each tab by durable history identity. Hydrate the
+  // selected tab lazily; never reuse the other tab's last visible images.
+  useEffect(() => {
+    if (!historyReady || !pendingHistoryRestores.current.delete(generationMode)) return
+    const id = historyIds[generationMode]
+    if (id === null) return
+    const group = groupHistoryEntries(history).find(group => group.entries.some(entry => entry.id === id))
+    if (group === undefined) setHistoryIdForMode(generationMode, null)
+    else if (!group.entries.some(entry => entry.comparisonId !== undefined && entry.comparisonId === studioRunsRef.current[generationMode]?.id)) void viewHistoryGroup(group)
+  }, [historyReady, history, generationMode])
 
   // Chat toolviews publish durable refs after they finish loading. Decode the
   // refs through the same host-authorized route and make them the current
@@ -980,14 +1027,16 @@ export function ImageGenPanel(props: {
     const onChatImages = (event: Event): void => {
       const detail = (event as CustomEvent<ChatImageEventDetail>).detail
       if (detail === undefined || currentSessionId === undefined || detail.sessionId !== currentSessionId) return
+      const requestId = beginResultNavigation('text')
       void Promise.all(detail.refs.map(attachmentToGenerated))
         .then(next => {
+          if (requestId !== historyViewRequestRef.current) return
           openTab('text')
           setImagesForMode('text', next)
           setStudioRuns(previous => ({ ...previous, text: null }))
           setComparison(null)
-          setViewingHistoryId(null)
-          setGalleryViewingId(null)
+          setHistoryIdForMode('text', null)
+          setGalleryIds(previous => ({ ...previous, text: null }))
           setError(null)
         })
         .catch(caught => { setError(errorMessage(caught)) })
@@ -1097,7 +1146,7 @@ export function ImageGenPanel(props: {
           })
           if (hydratedCompleted.length > 0) {
             void api.historyList().then(entries => {
-              if (!disposed) setHistory(entries)
+              if (!disposed) syncHistory(entries)
             }).catch(() => {})
           }
         } catch {
@@ -1334,6 +1383,10 @@ export function ImageGenPanel(props: {
       }
       const comparisonId = newComparisonId()
       const comparisonFields = { comparisonId, comparisonModels: targetChoices.map(choice => choice.model) }
+      const viewRequestId = beginResultNavigation(baseRequest.mode)
+      pendingHistoryRestores.current.delete(baseRequest.mode)
+      setHistoryIdForMode(baseRequest.mode, null)
+      setGalleryIds(previous => ({ ...previous, [baseRequest.mode]: null }))
       const submitted = await Promise.all(targetChoices.map(choice => api.taskSubmit({
         ...baseRequest,
         model: choice.model,
@@ -1342,9 +1395,10 @@ export function ImageGenPanel(props: {
       })))
       for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
-      setComparison(null)
-      setStudioRuns(previous => ({ ...previous, [baseRequest.mode]: newStudioRun(comparisonId, baseRequest.mode, promptText, submitted) }))
-      setViewingHistoryId(null)
+      if (viewRequestId === historyViewRequestRef.current) {
+        setComparison(null)
+        setStudioRuns(previous => ({ ...previous, [baseRequest.mode]: newStudioRun(comparisonId, baseRequest.mode, promptText, submitted) }))
+      }
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -1471,7 +1525,7 @@ export function ImageGenPanel(props: {
   /** Open one persisted product set from history: rebuild the grouped results
    *  canvas from its entries. Reference images are not persisted, so restored
    *  edit-mode slots regenerate as text-to-image. */
-  const viewEcommerceProject = async (group: HistoryGroup): Promise<void> => {
+  const viewEcommerceProject = async (group: HistoryGroup, requestId: number): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined || entry.projectId === undefined) return
     try {
@@ -1499,6 +1553,7 @@ export function ImageGenPanel(props: {
           slotLabel: item.slotLabel ?? '',
         },
       })))
+      if (requestId !== historyViewRequestRef.current) return
       setWorkspace('ecommerce')
       setEcommerceRestored({ projectId: entry.projectId, projectName: entry.projectName ?? '', items })
       setEcommerceProjectId(entry.projectId)
@@ -1507,7 +1562,7 @@ export function ImageGenPanel(props: {
       setViewingHistoryId(entry.id)
       setGalleryViewingId(null)
     } catch (caught) {
-      setError(errorMessage(caught))
+      if (requestId === historyViewRequestRef.current) setError(errorMessage(caught))
     }
   }
 
@@ -1642,28 +1697,35 @@ export function ImageGenPanel(props: {
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined) return
+    const requestId = beginResultNavigation(entry.mode)
+    pendingHistoryRestores.current.delete(entry.mode)
     // Product sets rebuild their grouped results canvas instead of the
     // generic image workspace.
     if (entry.workflow === 'ecommerce' && entry.projectId !== undefined) {
-      await viewEcommerceProject(group)
+      await viewEcommerceProject(group, requestId)
       return
     }
     // History is also the bridge out of the gallery: show the image workspace
     // immediately, then hydrate the selected result into its canvas. The
     // record's prompt and parameters come back with it (#68).
     applyHistorySettings(group)
-    const requestId = ++historyViewRequestRef.current
-    setViewingHistoryId(entry.id)
-    setGalleryViewingId(null)
+    setHistoryIdForMode(entry.mode, entry.id)
+    setGalleryIds(previous => ({ ...previous, [entry.mode]: null }))
+    setHistoryLoadingMode(entry.mode)
+    // Remove the old board before fetching. A highlighted history row must
+    // never label an unrelated live or previously loaded result.
+    setImagesForMode(entry.mode, [])
+    setStudioRuns(previous => ({ ...previous, [entry.mode]: null }))
+    setComparison(null)
+    setModeErrors(previous => ({ ...previous, [entry.mode]: null }))
     try {
       const restoredImages = await loadHistoryGroup(group)
       if (requestId !== historyViewRequestRef.current) return
       setImagesForMode(entry.mode, restoredImages)
-      setStudioRuns(previous => ({ ...previous, [entry.mode]: null }))
-      setComparison(null)
-      setError(null)
     } catch (caught) {
-      if (requestId === historyViewRequestRef.current) setError(errorMessage(caught))
+      if (requestId === historyViewRequestRef.current) setModeErrors(previous => ({ ...previous, [entry.mode]: errorMessage(caught) }))
+    } finally {
+      if (requestId === historyViewRequestRef.current) setHistoryLoadingMode(null)
     }
   }
 
@@ -1671,7 +1733,12 @@ export function ImageGenPanel(props: {
   const deleteHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const ids = new Set(group.entries.map(entry => entry.id))
     setHistory(previous => previous.filter(entry => !ids.has(entry.id)))
-    if (viewingHistoryId !== null && ids.has(viewingHistoryId)) setViewingHistoryId(null)
+    if (Object.values(historyIds).some(id => id !== null && ids.has(id))) {
+      historyViewRequestRef.current += 1
+      setHistoryLoadingMode(null)
+      setHistoryIds(previous => ({ text: previous.text !== null && ids.has(previous.text) ? null : previous.text, edit: previous.edit !== null && ids.has(previous.edit) ? null : previous.edit }))
+      setModeImages(previous => ({ text: historyIds.text !== null && ids.has(historyIds.text) ? [] : previous.text, edit: historyIds.edit !== null && ids.has(historyIds.edit) ? [] : previous.edit }))
+    }
     if (ecommerceRestored !== null && group.entries.some(entry => entry.projectId === ecommerceRestored.projectId)) {
       setEcommerceRestored(null)
       setEcommerceProjectId(null)
@@ -1689,6 +1756,8 @@ export function ImageGenPanel(props: {
   /** Reset the workspace for a fresh image-generation run. */
   const startNewCreation = (): void => {
     historyViewRequestRef.current += 1
+    pendingHistoryRestores.current.clear()
+    setHistoryLoadingMode(null)
     openTab('text')
     setPrompt('')
     editReferences.clear()
@@ -1696,8 +1765,8 @@ export function ImageGenPanel(props: {
     setPreview(null)
     setPreviewScale(1)
     setPromptCopied(false)
-    setViewingHistoryId(null)
-    setGalleryViewingId(null)
+    setHistoryIds({ text: null, edit: null })
+    setGalleryIds({ text: null, edit: null })
     setGallerySelecting(false)
     setSelectedGalleryIds(new Set())
     setComparison(null)
@@ -1713,8 +1782,12 @@ export function ImageGenPanel(props: {
   /** Remove all history entries. */
   const clearHistory = async (): Promise<void> => {
     if (!window.confirm(tt('history.clearConfirm'))) return
+    historyViewRequestRef.current += 1
+    pendingHistoryRestores.current.clear()
+    setHistoryLoadingMode(null)
+    setModeImages(previous => ({ text: historyIds.text === null ? previous.text : [], edit: historyIds.edit === null ? previous.edit : [] }))
     setHistory([])
-    setViewingHistoryId(null)
+    setHistoryIds({ text: null, edit: null })
     try {
       setHistory(await api.historyClear())
     } catch {
@@ -1853,8 +1926,10 @@ export function ImageGenPanel(props: {
 
   /** View a gallery image in the canvas. */
   const viewGalleryEntry = async (entry: HistoryEntry): Promise<void> => {
+    const requestId = beginResultNavigation(generationMode)
     try {
       const restored = await historyImagesToGenerated(entry.images)
+      if (requestId !== historyViewRequestRef.current) return
       setImages(restored)
       setError(null)
       setViewingHistoryId(null)
@@ -2195,9 +2270,11 @@ export function ImageGenPanel(props: {
                           ? `${tt('ecommerce.short')}${entry.projectName !== undefined && entry.projectName !== '' ? ` · ${entry.projectName}` : ''}`
                           : tt(`mode.${entry.mode === 'edit' ? 'edit' : 'text'}` as const)}
                       {' · '}{isComparison ? group.models.join(' · ') : entry.model}
-                      {' · '}{formatTime(entry.createdAt)}
                       {' · '}{imageCount} {tt('history.images')}
                     </span>
+                    <time className={css.historyTime} data-history-started-at="" dateTime={new Date(Math.min(...group.entries.map(item => item.createdAt))).toISOString()}>
+                      {tt('history.createdAt', { time: formatTime(Math.min(...group.entries.map(item => item.createdAt))) })}
+                    </time>
                   </span>
                 </button>
                 <span className={css.historyActions}>
@@ -3180,7 +3257,8 @@ export function ImageGenPanel(props: {
             onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
             onReverse={image => openReversePrompt(image)} onContextMenu={openCopyMenu} /> : null}
-          {studioRun === null && generating && comparison === null && isGeneration ? (
+          {historyLoading && isGeneration ? <div className={css.canvasState} data-history-loading="" role="status">{tt('canvas.loading')}</div> : null}
+          {studioRun === null && !historyLoading && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <GenerationLoading
                 title={submitting && activeTask === undefined
@@ -3199,7 +3277,7 @@ export function ImageGenPanel(props: {
             <div className={css.canvasError} role="alert">{tt('canvas.error', { error })}</div>
           ) : null}
 
-          {studioRun === null && isGeneration && !generating && !error && images.length === 0 ? (
+          {studioRun === null && isGeneration && !historyLoading && !generating && !error && images.length === 0 ? (
             <InspirationGallery
               api={api}
               onUse={(text) => {
@@ -3209,7 +3287,7 @@ export function ImageGenPanel(props: {
             />
           ) : null}
 
-          {studioRun === null && isGeneration && !generating && images.length > 0 ? (
+          {studioRun === null && isGeneration && !historyLoading && !generating && images.length > 0 ? (
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>

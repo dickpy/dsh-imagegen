@@ -56,9 +56,10 @@ export class ImageGenerationRuntime {
       throw new ImageGenError('尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥', 'no-channels')
     }
     const started = performance.now()
+    const createdAt = Date.now()
     const generated = channel.auth === 'subscription' && channel.subscription !== undefined
       ? { images: await this.generateSubscription(channel.subscription, request, signal) }
-      : await generateImage({ apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, channelName: channel.name, ...channel.watermark === false ? { watermark: false } : {} } satisfies UpstreamConfig, request, { signal })
+      : await generateImage({ apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, channelName: channel.name, ...channel.watermark === false ? { watermark: false } : {}, ...channel.promptExtend === false ? { promptExtend: false } : {} } satisfies UpstreamConfig, request, { signal })
     const durationMs = Math.max(0, Math.round(performance.now() - started))
     const result: GenerateResult = {
       ...generated,
@@ -67,7 +68,7 @@ export class ImageGenerationRuntime {
     try {
       const history = await this.history.append({
         id: randomUUID(),
-        createdAt: Date.now(),
+        createdAt,
         mode: request.mode,
         model: request.model,
         prompt: request.prompt,

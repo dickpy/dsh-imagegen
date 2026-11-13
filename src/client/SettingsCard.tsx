@@ -19,7 +19,7 @@ import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client
 import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
-import { describeModel, modelFamily } from '../model-catalog.ts'
+import { describeModel } from '../model-catalog.ts'
 import { IMAGE_MODEL_API, PLUGIN_VERSION, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isChatCompletionsUrl, isSubscriptionProvider, resolveChannelProtocol, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
@@ -1282,16 +1282,11 @@ function newChannelDraft(preset: PresetProviderView | undefined): ChannelDraft {
     apiUrl: preset?.apiUrl ?? '',
     apiUrlFull: false,
     watermark: true,
+    promptExtend: true,
     protocol: 'auto',
     ...preset?.subscription === undefined ? {} : { auth: 'subscription' as const, subscription: preset.subscription },
     models: (preset?.models ?? []).map(model => ({ ...model })),
   }
-}
-
-/** Whether a channel's catalog targets Seedream, the only family whose platform
- *  watermark the panel can switch off (#56). */
-function catalogHasSeedream(models: ModelMapping[]): boolean {
-  return models.some(model => modelFamily(model.id.trim() === '' ? model.alias : model.id) === 'seedream')
 }
 
 function addCustomChannel(channels: ChannelDraft[], form: ChannelsFormActions, openEditor: (id: string) => void): void {
@@ -1411,6 +1406,9 @@ function ChannelEditor(props: {
   const { t, channel } = props
   const subscription = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
   const subscriptionMode = channel.auth === 'subscription' && subscription !== undefined
+  const imageProtocol = resolveChannelProtocol(channel.apiUrl, channel.protocol) !== 'chat-completions'
+  const watermarkModels = imageProtocol ? channel.models.filter(model => describeModel(model.id.trim() || model.alias).supportsWatermarkToggle) : []
+  const promptExtendModels = imageProtocol ? channel.models.filter(model => describeModel(model.id.trim() || model.alias).supportsPromptExtend) : []
   const [keyDraft, setKeyDraft] = useState('')
   const [candidates, setCandidates] = useState<string[] | null>(null)
   const [detecting, setDetecting] = useState(false)
@@ -1598,12 +1596,19 @@ function ChannelEditor(props: {
           <span>{t('channels.apiUrlFull')}</span>
         </label>
         {channel.apiUrlFull ? <p className={css.fieldHint}>{t('channels.apiUrlFullHint')}</p> : null}
-        {catalogHasSeedream(channel.models) ? <>
+        {watermarkModels.length > 0 ? <>
           <label className={css.checkboxRow}>
             <input type="checkbox" checked={channel.watermark !== false} disabled={!props.writable} onChange={event => { props.onPatch({ watermark: event.target.checked }) }} />
             <span>{t('channels.watermark')}</span>
           </label>
-          <p className={css.fieldHint}>{t('channels.watermarkHint')}</p>
+          <p className={css.fieldHint} data-watermark-hint="">{t('channels.watermarkHint', { models: watermarkModels.map(model => model.alias || model.id).join('、') })}</p>
+        </> : null}
+        {promptExtendModels.length > 0 ? <>
+          <label className={css.checkboxRow}>
+            <input type="checkbox" checked={channel.promptExtend !== false} disabled={!props.writable} onChange={event => { props.onPatch({ promptExtend: event.target.checked }) }} />
+            <span>{t('channels.promptExtend')}</span>
+          </label>
+          <p className={css.fieldHint}>{t('channels.promptExtendHint', { models: promptExtendModels.map(model => model.alias || model.id).join('、') })}</p>
         </> : null}
         <div className={css.editorField}>
           <div className={css.head}>

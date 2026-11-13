@@ -1159,12 +1159,12 @@ export interface ChannelConfig {
   /** Use apiUrl verbatim instead of appending /images/generations or /images/edits. */
   apiUrlFull: boolean
   /**
-   * Ask Seedream to stamp its「AI 生成」corner badge into the result. The official
-   * Volcengine Ark / BytePlus API defaults this to `true`, so absent means on;
-   * only an explicit `false` is sent upstream, and only to channels that
-   * document the field (#56).
+   * Watermark preference for image models advertising supportsWatermarkToggle.
+   * Absent means the provider default (on for Seedream and SenseNova).
    */
   watermark?: boolean
+  /** SenseNova prompt expansion; absent means the provider default (on). */
+  promptExtend?: boolean
   /** Request protocol; 'auto' infers chat-completions from an exact chat URL. */
   protocol?: ChannelProtocolPreference
   /** Authentication source; absent means the legacy API-key path. */

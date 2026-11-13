@@ -820,7 +820,7 @@ await check('B7 Volcengine Seedream uses Ark size and URL response fields', asyn
   }
 })
 
-await check('B7b Seedream watermark opt-out only reaches official hosts (#56)', async () => {
+await check('B7b Seedream watermark opt-out follows model capability, including relays (#56, #73)', async () => {
   const seen = []
   const seedream = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -855,9 +855,9 @@ await check('B7b Seedream watermark opt-out only reaches official hosts (#56)', 
     await host.generateImage({ ...base, watermark: false }, { ...generation, mode: 'edit', image: reference })
     assert.equal(seen.at(-1).watermark, false, 'edit body repeats watermark=false')
     assert.deepEqual(seen.at(-1).image, [reference], 'edit keeps its reference array intact')
-    // A third-party relay serving short Seedream ids keeps its original body.
+    // Model capability applies to compatible relays as well as official hosts.
     await host.generateImage({ ...base, watermark: false }, { ...generation, model: 'seedream-5.0-pro' })
-    assert.equal(seen.at(-1).watermark, undefined, 'relays without the documented field never see watermark')
+    assert.equal(seen.at(-1).watermark, false, 'compatible Seedream relays receive the explicit preference')
   } finally {
     await new Promise(resolve => seedream.close(resolve))
   }
@@ -4268,7 +4268,8 @@ await check('D3 sidebar entry mounts inside desktop and unknown sidebar shells, 
   actionWrapper.append(unknownButton)
   await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(jsdomDocument.querySelectorAll('[data-dsh-imagegen-session-tabs]').length, 1, 'repairing a wrapped action never duplicates the switcher')
-  assert.equal(unknownButton.previousElementSibling?.hasAttribute('data-dsh-imagegen-session-tabs'), true, 'the switcher follows the wrapped action')
+  assert.equal(actionWrapper.previousElementSibling?.hasAttribute('data-dsh-imagegen-session-tabs'), true, 'the switcher stays in the sidebar column before the whole action wrapper (#75)')
+  assert.equal(unknownTabs.parentElement, unknownRoot, 'the switcher never shares the action row flex track')
   jsdomDocument.documentElement.setAttribute('data-dsh-imagegen-active', '')
   assert.notEqual(jsdomWindow.getComputedStyle(actionWrapper).display, 'none', 'a wrapper around the native action stays visible')
   assert.notEqual(jsdomWindow.getComputedStyle(unknownButton).display, 'none', 'an action found only by its accessible name stays visible')
@@ -5478,12 +5479,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(initialSettings.channels.channels[0].apiUrlFull, false, 'existing channels default to base-URL mode')
     // #56: the Seedream watermark opt-out has to survive the settings round trip.
     assert.notEqual(initialSettings.channels.channels[0].watermark, false, 'existing channels keep the Seedream watermark on')
-    face.channels.setChannels(initialSettings.channels.channels.map(channel => ({ ...channel, watermark: false })))
+    assert.notEqual(initialSettings.channels.channels[0].promptExtend, false, 'existing channels keep upstream prompt expansion on')
+    face.channels.setChannels(initialSettings.channels.channels.map(channel => ({ ...channel, watermark: false, promptExtend: false })))
     await face.channels.commit()
     assert.ok(
       mutateCalls.some(m => m.ops.some(o => o.path[0] === 'channels' && o.op === 'set' && o.value[0]?.watermark === false)),
       'watermark opt-out reaches the channel settings document (#56)',
     )
+    assert.ok(mutateCalls.some(m => m.ops.some(o => o.path[0] === 'channels' && o.op === 'set' && o.value[0]?.promptExtend === false)), 'prompt expansion opt-out survives the settings round trip (#73)')
     face.channels.setChannels(initialSettings.channels.channels.map(channel => ({ ...channel, apiUrlFull: true })))
     await face.channels.commit()
     assert.ok(
