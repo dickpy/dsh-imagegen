@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import { JSDOM, VirtualConsole } from 'jsdom'
 import { startHistoryFixture } from './history-fixture.mjs'
 
-const { server, base, assets, entries, delays } = await startHistoryFixture()
+const { server, base, assets, entries, delays, settingsMutations } = await startHistoryFixture()
 let page
-async function openPage(savedSelection, seedLive = false) {
+async function openPage(savedSelection, seedLive = false, settings = false) {
   const errors = [], console = new VirtualConsole()
   console.on('jsdomError', error => errors.push(error.message))
-  const dom = await JSDOM.fromURL(base, {
+  const dom = await JSDOM.fromURL(settings ? `${base}/?settings` : base, {
     resources: 'usable', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: console,
     beforeParse(window) {
       window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
@@ -116,4 +116,19 @@ try {
   assert.equal(page.document.querySelector('[data-dsh-imagegen-history-main][aria-current=true]'), null)
   assert.deepEqual(page.errors, [])
   console.log('PASS history DOM E2E: exact record pixels, independent mode selection, async races, fresh-document recovery, failures, reset, timestamps and native sidebar wrapper repair')
+  page.dom.window.close()
+  page = await openPage(undefined, false, true)
+  const senseButton = () => [...page.document.querySelectorAll('button')].find(button => button.textContent.includes('SenseNova relay'))
+  await page.waitFor(senseButton, 'real settings card loads through the settings bridge')
+  page.click(senseButton())
+  await page.waitFor(() => page.document.querySelector('[data-watermark-hint]'), 'SenseNova capability controls appear')
+  assert.match(page.document.querySelector('[data-watermark-hint]').textContent, /SenseNova image/)
+  const checkbox = text => [...page.document.querySelectorAll('label')].find(label => label.textContent === text)?.querySelector('input')
+  page.click(checkbox('图片添加「AI 生成」水印'))
+  page.click(checkbox('上游自动优化提示词'))
+  page.click(page.document.querySelector('[role=dialog] button[aria-label="关闭"]'))
+  page.click(page.button('保存'))
+  await page.waitFor(() => settingsMutations.some(batch => batch.ops.some(op => op.path[0] === 'channels' && op.value[0].watermark === false && op.value[0].promptExtend === false)), 'channel preferences persist through the actual controller and HTTP bridge')
+  assert.deepEqual(page.errors, [])
+  console.log('PASS channel settings DOM E2E: SenseNova capability controls and both preferences persist through the settings bridge')
 } finally { page?.dom.window.close(); await new Promise(resolve => server.close(resolve)) }

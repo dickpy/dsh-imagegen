@@ -86,9 +86,30 @@ function newSessionButton(root: HTMLElement, allowLooseFallback = true): HTMLBut
   )
 }
 
+/** Marks the sidebar wrapper chain the studio keeps visible. */
+export const SIDEBAR_KEEP_ATTR = 'data-dsh-imagegen-sidebar-keep'
+
 /** Locate the shell region that normally contains workspaces and sessions. */
 function regionArea(root: HTMLElement): HTMLElement | undefined {
   return root.querySelector<HTMLElement>('[class*="regionArea"]') ?? undefined
+}
+
+/**
+ * Mark every wrapper between the sidebar root and the workspace region.
+ *
+ * The studio keeps only a few sidebar children (brand row, switcher, New
+ * Session, the workspace region, the foot); everything else is hidden by an
+ * allow-list. A shell is free to wrap that region in extra scroll containers —
+ * 0.2.x added scrollRegion > scrollArea around it — and then the allow-list
+ * hid the wrapper that carries the image history, blanking the sidebar. Marking
+ * the chain keeps the history surface mounted without naming shell classes.
+ * @param root - the sidebar root element.
+ * @param region - the workspace/session region inside it.
+ */
+function markKeepChain(root: HTMLElement, region: HTMLElement): void {
+  for (let node: HTMLElement | null = region; node !== null && node !== root; node = node.parentElement) {
+    if (!node.hasAttribute(SIDEBAR_KEEP_ATTR)) node.setAttribute(SIDEBAR_KEEP_ATTR, '')
+  }
 }
 
 function makeTab(
@@ -249,6 +270,8 @@ export function mountSidebarEntry(
     }
     tabs = placeTabs(root, controller, sessionLabel, sessionTooltip, imageLabel, imageTooltip)
     historyHost = placeHistoryHost(root)
+    const region = regionArea(root)
+    if (region !== undefined) markKeepChain(root, region)
     syncActive()
   }
 
@@ -264,6 +287,9 @@ export function mountSidebarEntry(
     tabs?.remove()
     historyHost?.remove()
     markedButton?.removeAttribute('data-dsh-imagegen-new-session')
+    for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_KEEP_ATTR}]`)) {
+      element.removeAttribute(SIDEBAR_KEEP_ATTR)
+    }
     if (root !== undefined) delete root.dataset.dshImagegenSidebarRoot
   }
 }

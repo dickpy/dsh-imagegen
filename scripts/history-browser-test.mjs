@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url)
 const runtime = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES ? createRequire(`${process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES}/.history-test.cjs`) : require
 const { chromium } = runtime('playwright')
 
-const { server, base, assets, entries, task, delays } = await startHistoryFixture()
+const { server, base, assets, entries, task, delays, settingsMutations } = await startHistoryFixture()
 if (process.argv.includes('--serve')) {
   delays.set('text-a', 700)
   console.log(base)
@@ -120,6 +120,35 @@ try {
   await expectImage('text-b')
   await page.screenshot({ path: new URL('../.test-artifacts/history-sidebar.png', import.meta.url).pathname })
   console.log('PASS history/sidebar Chromium: independent mode results, exact selection, async races, restart, load failure, reset, timestamps, DSH 0.2.2 flex geometry and wrapper repair')
+
+  // #73: exercise the actual settings controller, staging and HTTP save path.
+  await page.goto(`${base}/?settings`)
+  await page.getByRole('button', { name: /SenseNova relay/ }).click()
+  let dialog = page.getByRole('dialog', { name: '渠道 · SenseNova relay', exact: true })
+  await dialog.waitFor()
+  const hint = await dialog.locator('[data-watermark-hint]').innerText()
+  assert.ok(hint.includes('SenseNova image') && !hint.includes('GPT fallback'))
+  await dialog.getByLabel('图片添加「AI 生成」水印', { exact: true }).uncheck()
+  await dialog.getByLabel('上游自动优化提示词', { exact: true }).uncheck()
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  const save = page.waitForResponse(response => response.url().endsWith('/settings/mutate'))
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await save
+  const written = settingsMutations.flatMap(batch => batch.ops ?? []).find(op => op.path[0] === 'channels')?.value
+  assert.equal(written.find(channel => channel.id === 'sense').watermark, false)
+  assert.equal(written.find(channel => channel.id === 'sense').promptExtend, false)
+  await page.reload()
+  await page.getByRole('button', { name: /SenseNova relay/ }).click()
+  dialog = page.getByRole('dialog', { name: '渠道 · SenseNova relay', exact: true })
+  assert.equal(await dialog.getByLabel('图片添加「AI 生成」水印', { exact: true }).isChecked(), false)
+  assert.equal(await dialog.getByLabel('上游自动优化提示词', { exact: true }).isChecked(), false)
+  await page.screenshot({ path: new URL('../.test-artifacts/sensenova-settings.png', import.meta.url).pathname })
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await page.getByRole('button', { name: /OpenAI channel/ }).click()
+  dialog = page.getByRole('dialog', { name: '渠道 · OpenAI channel', exact: true })
+  assert.equal(await dialog.locator('[data-watermark-hint]').count(), 0, 'unrelated models do not advertise unsupported switches')
+  assert.deepEqual(errors, [])
+  console.log('PASS channel settings Chromium: capability-aware hints, SenseNova switches, saved HTTP payload, reload persistence and unrelated model isolation')
 } catch (error) {
   if (page) { mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true }); await page.screenshot({ path: new URL('../.test-artifacts/history-failure.png', import.meta.url).pathname }) }
   throw error

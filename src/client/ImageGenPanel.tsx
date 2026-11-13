@@ -2339,8 +2339,8 @@ export function ImageGenPanel(props: {
   const isGeneration = workspace === 'normal' && tab !== 'gallery'
 
   return (
-    <div className={css.panel} data-imagegen-private={privacyMode ? 'true' : undefined}>
-      <header className={css.panelHeader}>
+    <div className={css.panel} data-dsh-imagegen-panel data-imagegen-private={privacyMode ? 'true' : undefined}>
+      <header className={css.panelHeader} data-dsh-imagegen-panel-header>
         <span className={css.panelHeading}>
           <h2 className={css.panelTitle}>{tt('panel.title')}</h2>
           <a
