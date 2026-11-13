@@ -39,12 +39,16 @@ try {
     await page.locator('.host_sidebarCol').evaluate((element, value) => { element.style.width = `${value}px` }, width)
     const geometry = await page.evaluate(() => {
       const tabs = document.querySelector('[data-dsh-imagegen-session-tabs]'), row = document.querySelector('.host_newSessionRow'), button = document.querySelector('.host_newSession')
-      return { directChild: tabs.parentElement.classList.contains('host_root'), above: tabs.getBoundingClientRect().bottom <= row.getBoundingClientRect().top, width: button.getBoundingClientRect().width, contentWidth: button.firstElementChild.getBoundingClientRect().width }
+      const style = getComputedStyle(button), rect = button.getBoundingClientRect(), label = button.firstElementChild.lastElementChild.getBoundingClientRect()
+      const horizontalChrome = ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth'].reduce((total, name) => total + parseFloat(style[name]), 0)
+      return { directChild: tabs.parentElement.classList.contains('host_root'), above: tabs.getBoundingClientRect().bottom <= row.getBoundingClientRect().top, width: rect.width, innerWidth: rect.width - horizontalChrome, contentWidth: button.firstElementChild.getBoundingClientRect().width, labelFits: label.left >= rect.left && label.right <= rect.right }
     })
+    console.log('Sidebar geometry:', JSON.stringify({ sidebarWidth: width, ...geometry }))
     assert.equal(geometry.directChild, true)
     assert.equal(geometry.above, true)
     assert.ok(geometry.width >= width - 60, JSON.stringify(geometry))
-    assert.ok(Math.abs(geometry.width - geometry.contentWidth) < 6)
+    assert.ok(Math.abs(geometry.innerWidth - geometry.contentWidth) < 1, 'container-query content fills the button content box')
+    assert.equal(geometry.labelFits, true, 'the full native action label stays inside the button')
   }
   await page.getByRole('button', { name: '新建会话', exact: true }).click()
   assert.equal(await page.evaluate(() => window.nativeSessions), 1)
