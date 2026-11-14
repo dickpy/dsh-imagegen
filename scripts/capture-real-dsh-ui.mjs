@@ -30,6 +30,9 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   await page.goto(url, { waitUntil: 'domcontentloaded' })
   await page.locator('[data-dsh-imagegen-tab="image"]').waitFor({ state: 'attached', timeout: 90000 })
+  // The official first-run preview notice is a presentation surface, not a dialog.
+  const previewNotice = page.getByText('预览版说明', { exact: true })
+  if (await previewNotice.isVisible()) await page.getByRole('button', { name: '继续', exact: true }).click()
   for (const label of ['我知道了', '关闭', 'Got it', 'Close', 'Dismiss']) {
     const dismiss = page.getByRole('dialog').getByRole('button', { name: label, exact: true })
     if (await dismiss.count() === 1 && await dismiss.isVisible()) await dismiss.click()
