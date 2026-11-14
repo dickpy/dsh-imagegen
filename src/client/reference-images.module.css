@@ -20,6 +20,8 @@
 .limits { margin-top: 3px; }
 .notice { color: var(--dsw-alias-label-secondary); border-left: 2px solid var(--dsw-alias-border-l2); padding-left: 8px; }
 .file { display: none; }
+.tools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.reverseTarget { width: 100%; min-width: 0; }
 .overlay, .overlay * { box-sizing: border-box; }
 .overlay { position: fixed; inset: 0; z-index: 150; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--dsw-alias-bg-mask-1, #0008); color: var(--dsw-alias-label-primary); font-family: var(--dsw-font-family); }
 .preview { display: flex; flex-direction: column; min-width: 0; max-width: min(960px, 100%); max-height: 100%; border: 1px solid var(--dsw-alias-border-l1); border-radius: 14px; overflow: hidden; background: var(--dsw-alias-bg-base); outline: none; box-shadow: 0 12px 60px #0003; }

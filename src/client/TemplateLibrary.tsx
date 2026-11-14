@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { BookOpen, Maximize2, Minimize2 } from 'lucide-react'
+import { StudioActionButton } from './StudioActionButton.tsx'
 import { createPortal } from 'react-dom'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ImageGenApi } from './api.ts'
@@ -83,7 +84,8 @@ function FavoriteStar(props: { active: boolean; title: string; onToggle: () => v
 }
 
 /** Shared floating entry, positioned inside the active creation workspace. */
-export function TemplateLibraryButton(props: { onClick: () => void; expanded: boolean }): React.JSX.Element {
+export function TemplateLibraryButton(props: { onClick: () => void; expanded: boolean; placement?: 'floating' | 'toolbar' }): React.JSX.Element {
+  if (props.placement === 'toolbar') return <StudioActionButton icon={<BookOpen />} data-template-library-trigger="" aria-label={tt('templates.open')} aria-haspopup="dialog" aria-expanded={props.expanded} onClick={props.onClick}>{tt('templates.shortLabel')}</StudioActionButton>
   return <button type="button" className={css.floatingEntry} data-template-library-trigger="" aria-label={tt('templates.open')} aria-haspopup="dialog" aria-expanded={props.expanded} onPointerDown={event => event.stopPropagation()} onClick={props.onClick}>
     <BookOpen size={18} aria-hidden="true" /><span>{tt('templates.shortLabel')}</span>
   </button>

@@ -2690,6 +2690,17 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   width: 100%;
 }
 
+.studioActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.studioActions > button { flex: 1 1 auto; }
+.referenceActions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.config[data-gallery='true'] .footer { order: 3; }
+
 .generateInner {
   display: inline-flex;
   align-items: center;
