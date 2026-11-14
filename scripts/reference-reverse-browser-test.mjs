@@ -94,6 +94,9 @@ try {
   const previous = fixture.reversals.length
   await reverse().click()
   await waitFor(() => fixture.reversals.length === previous + 1, 'vision is pending')
+  await page.keyboard.press('Shift+Tab')
+  assert.equal(await page.evaluate(() => document.activeElement?.closest('[data-reverse-dialog]') !== null), true, 'keyboard focus stays in the running dialog')
+  await page.keyboard.press('Tab')
   await page.keyboard.press('Escape')
   await page.waitForTimeout(350)
   assert.equal(await prompt().inputValue(), 'Keep after Escape')
