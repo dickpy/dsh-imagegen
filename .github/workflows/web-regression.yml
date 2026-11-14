@@ -1,26 +1,14 @@
-name: Web regression
+name: Real DSH UI screenshots
 
 on:
   push:
-    branches: ['fix/**']
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'scripts/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - '.github/workflows/web-regression.yml'
-  workflow_dispatch:
+    branches: ['fix/issue-76-real-interface']
 
 permissions:
   contents: read
 
-concurrency:
-  group: web-${{ github.event.pull_request.head.ref || github.ref_name }}
-  cancel-in-progress: true
-
 jobs:
-  chromium:
+  screenshots:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -28,33 +16,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Install locked project dependencies
+      - name: Install official DSH and Chromium
         run: |
           npm install --global pnpm@11.25.0
-          pnpm install --frozen-lockfile
-      - name: Install Chromium test runner
+          npm install --prefix "$RUNNER_TEMP/dsh-ui" --no-audit --no-fund @deepseek-ai/dsh@0.2.2-rc.1 playwright@1.56.1
+          node "$RUNNER_TEMP/dsh-ui/node_modules/playwright/cli.js" install --with-deps chromium
+          sudo apt-get install -y fonts-noto-cjk
+          echo "CODEX_PRIMARY_RUNTIME_NODE_MODULES=$RUNNER_TEMP/dsh-ui/node_modules" >> "$GITHUB_ENV"
+          echo "DSH_UI_BINARY=$RUNNER_TEMP/dsh-ui/node_modules/.bin/dsh" >> "$GITHUB_ENV"
+          echo "DSH_HOME=$RUNNER_TEMP/dsh-ui-home" >> "$GITHUB_ENV"
+      - name: Install published plugin and reference photographs
         run: |
-          npm install --prefix "$RUNNER_TEMP/browser-tools" --no-save playwright@1.56.1
-          node "$RUNNER_TEMP/browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
-          echo "CODEX_PRIMARY_RUNTIME_NODE_MODULES=$RUNNER_TEMP/browser-tools/node_modules" >> "$GITHUB_ENV"
-      - name: Type check and build
-        run: |
-          pnpm run typecheck
-          pnpm run build
-      - name: History, sidebar and channel settings in Chromium
-        run: pnpm run test:history:browser
-      - name: Studio workflows in Chromium
-        run: pnpm run test:studio:browser
-      - name: Reference prompt reverse and action toolbar in Chromium
-        run: pnpm run test:reference-reverse:browser
-      - name: Upload browser evidence
+          "$DSH_UI_BINARY" plugin --profile web add @dickpy/dsh-imagegen@1.17.2
+          curl --fail --silent --show-error --location --max-time 60 --output "$RUNNER_TEMP/forest-reference.jpg" 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=1200&q=85'
+          curl --fail --silent --show-error --location --max-time 60 --output "$RUNNER_TEMP/lake-reference.jpg" 'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?w=1200&q=85'
+          echo "DSH_UI_FOREST_IMAGE=$RUNNER_TEMP/forest-reference.jpg" >> "$GITHUB_ENV"
+          echo "DSH_UI_LAKE_IMAGE=$RUNNER_TEMP/lake-reference.jpg" >> "$GITHUB_ENV"
+      - name: Capture the real DSH application
+        run: node scripts/capture-real-dsh-ui.mjs
+      - name: Upload actual application screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: web-regression-evidence
-          path: |
-            .test-artifacts/
-            /tmp/dsh-117-qa/
-          if-no-files-found: ignore
+          name: real-dsh-ui-screenshots
+          path: .test-artifacts/real-dsh-ui/
           include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
