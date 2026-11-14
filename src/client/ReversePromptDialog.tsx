@@ -1,5 +1,5 @@
 /**
- * "Reverse prompt" dialog: read one generated image back into a reusable
+ * "Reverse prompt" dialog: read one reference or generated image into a reusable
  * generation prompt.
  *
  * The host owns the vision model, the detail shaping and the output-language
@@ -10,6 +10,8 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
+import { ScanText, Copy, ArrowDownToLine, X } from 'lucide-react'
+import { StudioActionButton } from './StudioActionButton.tsx'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -50,16 +52,16 @@ const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10
 const labelStyle: CSSProperties = { flex: '0 0 auto', fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)' }
 const controlStyle: CSSProperties = { flex: 1, minWidth: 0, padding: '6px 8px', font: 'inherit', fontSize: 13, color: 'inherit', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }
 const footerStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }
-const actionStyle: CSSProperties = { padding: '6px 14px', font: 'inherit', fontSize: 12.5, color: 'inherit', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 999, cursor: 'pointer' }
-const primaryStyle: CSSProperties = { ...actionStyle, color: 'var(--dsw-alias-brand-primary)', borderColor: 'var(--dsw-alias-brand-primary)' }
 
-export function ReversePromptDialog({ api, file, onUse, close }: {
+export function ReversePromptDialog({ api, file, onUse, close, autoApply = false }: {
   api: ImageGenApi
-  /** The image to read, already decoded from the generated result. */
+  /** The image to read, decoded from a reference or generated result. */
   file: File
   /** Hand the returned prompt to the studio composer. */
   onUse: (prompt: string) => void
   close: () => void
+  /** Reference-image entry: run once on open, then fill the composer and close. */
+  autoApply?: boolean
 }): React.JSX.Element {
   // Re-render on locale change, matching the rest of the panel.
   useImageGenLanguageTick()
@@ -72,6 +74,8 @@ export function ReversePromptDialog({ api, file, onUse, close }: {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const mounted = useRef(true)
+  const inFlight = useRef(false)
+  const autoStarted = useRef(false)
 
   useEffect(() => {
     mounted.current = true
@@ -82,7 +86,8 @@ export function ReversePromptDialog({ api, file, onUse, close }: {
   // opened it — the same contract the PPT dialog had.
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
-    root.current?.querySelector<HTMLElement>('select, input, button')?.focus()
+    if (autoApply) root.current?.focus()
+    else root.current?.querySelector<HTMLElement>('select, input, button')?.focus()
     const onKey = (event: KeyboardEvent): void => {
       event.stopPropagation()
       if (event.key === 'Escape') { event.preventDefault(); close() }
@@ -102,12 +107,14 @@ export function ReversePromptDialog({ api, file, onUse, close }: {
   }, [])
 
   const run = useCallback(async () => {
-    if (running) return
+    if (inFlight.current) return
+    inFlight.current = true
     setRunning(true)
     setError('')
     setCopied(false)
     try {
       const asset = await api.canvasFileUpload(file)
+      if (!mounted.current) return
       const prompt = await api.reversePrompt({
         images: [asset],
         detail,
@@ -116,12 +123,20 @@ export function ReversePromptDialog({ api, file, onUse, close }: {
       })
       if (!mounted.current) return
       setResult(prompt)
+      if (autoApply) { onUse(prompt); close() }
     } catch (caught) {
       if (mounted.current) setError(tt('prompt.reverse.failed', { message: errorMessage(caught) }))
     } finally {
+      inFlight.current = false
       if (mounted.current) setRunning(false)
     }
-  }, [api, file, detail, output, extra, running])
+  }, [api, file, detail, output, extra, autoApply, onUse, close])
+
+  useEffect(() => {
+    if (!autoApply || autoStarted.current) return
+    autoStarted.current = true
+    void run()
+  }, [autoApply, run])
 
   const copy = useCallback(async () => {
     try {
@@ -140,10 +155,11 @@ export function ReversePromptDialog({ api, file, onUse, close }: {
       data-reverse-dialog=""
       onClick={event => { if (event.target === event.currentTarget) close() }}
     >
-      <div ref={root} role="dialog" aria-modal="true" aria-label={tt('prompt.reverse.title')} style={cardStyle}>
+      <div ref={root} tabIndex={-1} role="dialog" aria-modal="true" aria-label={tt('prompt.reverse.title')} style={cardStyle}>
         <header>
           <strong style={{ fontSize: 14 }}>{tt('prompt.reverse.title')}</strong>
           <p style={{ margin: '4px 0 0', fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)' }}>{tt('prompt.reverse.hint')}</p>
+          <p data-reverse-source="" style={{ margin: '6px 0 0', fontSize: 12, overflowWrap: 'anywhere' }}>{file.name}</p>
         </header>
 
         <div style={rowStyle}>
@@ -199,12 +215,12 @@ export function ReversePromptDialog({ api, file, onUse, close }: {
         {error === '' && !running && result === '' ? <p role="status" style={{ margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }}>{tt('prompt.reverse.empty')}</p> : null}
 
         <footer style={footerStyle}>
-          <button type="button" style={actionStyle} onClick={close}>{tt('preview.close')}</button>
-          <button type="button" style={actionStyle} disabled={result === ''} onClick={() => { void copy() }}>{copied ? tt('prompt.reverse.copied') : tt('prompt.reverse.copy')}</button>
-          <button type="button" style={actionStyle} disabled={result === ''} onClick={() => { onUse(result); close() }}>{tt('prompt.reverse.use')}</button>
-          <button type="button" data-reverse-run="" style={primaryStyle} disabled={running} onClick={() => { void run() }}>
+          <StudioActionButton icon={<X />} onClick={close}>{tt('preview.close')}</StudioActionButton>
+          <StudioActionButton icon={<Copy />} disabled={result === ''} onClick={() => { void copy() }}>{copied ? tt('prompt.reverse.copied') : tt('prompt.reverse.copy')}</StudioActionButton>
+          <StudioActionButton icon={<ArrowDownToLine />} disabled={result === ''} onClick={() => { onUse(result); close() }}>{tt('prompt.reverse.use')}</StudioActionButton>
+          <StudioActionButton icon={<ScanText />} variant="primary" data-reverse-run="" disabled={running} onClick={() => { void run() }}>
             {running ? tt('prompt.reverse.running') : tt('prompt.reverse.run')}
-          </button>
+          </StudioActionButton>
         </footer>
       </div>
     </div>,

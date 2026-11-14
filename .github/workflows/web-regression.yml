@@ -45,6 +45,8 @@ jobs:
         run: pnpm run test:history:browser
       - name: Studio workflows in Chromium
         run: pnpm run test:studio:browser
+      - name: Reference prompt reverse and action toolbar in Chromium
+        run: pnpm run test:reference-reverse:browser
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v4

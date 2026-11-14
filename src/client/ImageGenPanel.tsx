@@ -17,7 +17,8 @@ import { readHistorySelection, writeHistorySelection } from './history-selection
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
-import { Maximize2 } from 'lucide-react'
+import { Maximize2, ScanText, Images, Sparkles, Paintbrush, X } from 'lucide-react'
+import { StudioActionButton } from './StudioActionButton.tsx'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -29,7 +30,7 @@ import { renderMarkdown } from './markdown.tsx'
 import { openImageGenConfig } from './config-entry.tsx'
 import { TemplateLibrary, TemplateLibraryButton } from './TemplateLibrary.tsx'
 import { ReferenceImages } from './ReferenceImages.tsx'
-import { clipboardImageFiles, EDIT_REFERENCE_LIMIT, editReferenceLimit, useEditReferences } from './reference-images.ts'
+import { clipboardImageFiles, EDIT_REFERENCE_LIMIT, editReferenceLimit, useEditReferences, type EditReference } from './reference-images.ts'
 import { copyGeneratedImage } from './image-clipboard.ts'
 import { mergeTemplatePrompt } from './template-library-state.ts'
 import { GooeyNav } from './GooeyNav.tsx'
@@ -637,10 +638,10 @@ export function ImageGenPanel(props: {
   useEffect(() => { try { writeStudioRuns(window.sessionStorage, studioRuns) } catch { /* optional */ } }, [studioRuns])
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
   /** The image handed to the prompt-reverse dialog, already decoded to a File. */
-  const [reverseTarget, setReverseTarget] = useState<{ file: File } | null>(null)
+  const [reverseTarget, setReverseTarget] = useState<{ id: string; file: File; reference: boolean } | null>(null)
   const openReversePrompt = (image: GeneratedImage, index = 0): void => {
     try {
-      setReverseTarget({ file: generatedImageToFile(image, index) })
+      setReverseTarget({ id: newComparisonId(), file: generatedImageToFile(image, index), reference: false })
       setError(null)
     } catch (error) {
       setError(errorMessage(error))
@@ -738,6 +739,9 @@ export function ImageGenPanel(props: {
   })
   const editReferences = useEditReferences(setError)
   const editSource = editReferences.images[0]?.dataUrl
+  const [reverseReferenceId, setReverseReferenceId] = useState('')
+  const reverseReference = editReferences.images.find(image => image.id === reverseReferenceId) ?? editReferences.images[0]
+  const referenceSection = useRef<HTMLElement>(null)
   useEffect(() => { setEditMask(undefined); setMaskEditorOpen(false) }, [editSource])
   // Submission is brief; actual generation stays visible until the host
   // queue reports that every queued/running task has finished.
@@ -1222,6 +1226,24 @@ export function ImageGenPanel(props: {
   const openSettingsGuide = (kind: 'generation' | 'enhancement' | 'disabled'): void => {
     setConfigGuide(kind)
     openImageGenConfig()
+  }
+
+  const reverseReferencePrompt = (image: EditReference): void => {
+    if (!promptReady) { openSettingsGuide('enhancement'); return }
+    try {
+      setReverseTarget({ id: newComparisonId(), file: dataUrlToFile(image.dataUrl, image.name), reference: true })
+      setError(null)
+    } catch (caught) { setError(errorMessage(caught)) }
+  }
+
+  const openReferenceReverse = (): void => {
+    openTab('edit')
+    setConfigCollapsed(false)
+    if (reverseReference) { reverseReferencePrompt(reverseReference); return }
+    requestAnimationFrame(() => {
+      referenceSection.current?.scrollIntoView({ block: 'nearest' })
+      referenceSection.current?.querySelector<HTMLElement>('[data-edit-references]')?.focus()
+    })
   }
 
   const enhanceCurrentPrompt = async (): Promise<void> => {
@@ -2445,7 +2467,6 @@ export function ImageGenPanel(props: {
           const files = clipboardImageFiles(event.clipboardData)
           if (files.length > 0) { event.preventDefault(); event.stopPropagation(); editReferences.add(files) }
         }}>
-          {workspace !== 'canvas' ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
           {/* ------------------------------------------------ config sidebar */}
           <aside
             ref={configAsideRef}
@@ -2754,12 +2775,13 @@ export function ImageGenPanel(props: {
             ) : null}
 
             {isGeneration && tab === 'edit' ? (
-              <section className={css.card}>
+              <section ref={referenceSection} className={css.card}>
                 <ReferenceImages images={editReferences.images} reading={editReferences.reading}
                   onPasteImages={signal => editReferences.paste(navigator.clipboard, signal)}
                   onAdd={editReferences.add} onRemove={editReferences.remove} onClear={editReferences.clear}
-                  notice={referencePolicyWarning} />
-                {editSource !== undefined ? <div style={{ display: 'flex', gap: 8, marginTop: 10 }}><button type="button" onClick={() => setMaskEditorOpen(true)}>{tt(editMask === undefined ? 'mask.title' : 'mask.edit')}</button>{editMask !== undefined ? <button type="button" onClick={() => setEditMask(undefined)}>{tt('mask.remove')}</button> : null}</div> : null}
+                  notice={referencePolicyWarning}
+                  reverse={{ selectedId: reverseReference?.id ?? '', onSelect: setReverseReferenceId, onRun: reverseReferencePrompt }} />
+                {editSource !== undefined ? <div className={css.referenceActions}><StudioActionButton icon={<Paintbrush />} onClick={() => setMaskEditorOpen(true)}>{tt(editMask === undefined ? 'mask.title' : 'mask.edit')}</StudioActionButton>{editMask !== undefined ? <StudioActionButton icon={<X />} onClick={() => setEditMask(undefined)}>{tt('mask.remove')}</StudioActionButton> : null}</div> : null}
               </section>
             ) : null}
 
@@ -2937,9 +2959,14 @@ export function ImageGenPanel(props: {
                 </div>
               ) : null}
             </div> : null}
-            {isGeneration ? <Button
+            {workspace !== 'canvas' ? <div className={css.studioActions} data-studio-actions="" role="group" aria-label={tt('studio.actions')}>
+              {workspace === 'normal' ? <StudioActionButton icon={<ScanText />} data-studio-reverse="" disabled={editReferences.reading} title={tt(reverseReference ? 'edit.reverseHint' : 'edit.reverseEmpty')} onClick={openReferenceReverse}>{tt('prompt.reverse.action')}</StudioActionButton> : null}
+              <TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => setLibraryOpen(true)} />
+              <StudioActionButton icon={<Images />} data-studio-gallery="" aria-pressed={isGallery} onClick={() => openTab('gallery')}>{tt('gallery.title')}</StudioActionButton>
+            </div> : null}
+            {isGeneration ? <StudioActionButton
               variant="primary"
-              size="md"
+              icon={<Sparkles />}
               className={css.generateButton}
               disabled={generateDisabled}
               onClick={() => { void handleGenerate() }}
@@ -2950,7 +2977,7 @@ export function ImageGenPanel(props: {
                   {tt('generating')}
                 </span>
               ) : tt('generate')}
-              </Button> : null}
+              </StudioActionButton> : null}
             </section>
           </aside>
 
@@ -3569,11 +3596,17 @@ export function ImageGenPanel(props: {
       {/* ---------------------------------------------- prompt reverse dialog */}
       {reverseTarget !== null ? (
         <ReversePromptDialog
+          key={reverseTarget.id}
           api={api}
           file={reverseTarget.file}
+          autoApply={reverseTarget.reference}
           onUse={text => {
             // Same path the template library uses to hand text to the composer.
-            if (workspace === 'ecommerce') {
+            if (reverseTarget.reference) {
+              openTab('edit')
+              setPrompt(current => mergeTemplatePrompt(current, text, 'replace'))
+              requestAnimationFrame(() => { promptInput.current?.focus() })
+            } else if (workspace === 'ecommerce') {
               setEcommerce(current => ({ ...current, promptInfo: mergeTemplatePrompt(current.promptInfo, text, 'replace') }))
               setEcommercePreview(false)
             } else {

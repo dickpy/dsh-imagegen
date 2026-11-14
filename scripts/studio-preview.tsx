@@ -10,7 +10,7 @@ import { ImageGenSettingsCardController, ImageGenSettingsSurface, type ImageGenS
 import { bindImageGenScope } from '../src/client/settings-scope.ts'
 import { tt } from '../src/client/helpers.ts'
 
-const value = { enabled: true, defaultChannelId: 'one', defaultModel: 'gpt-image-2', channels: [
+const value = { enabled: true, ...new URLSearchParams(location.search).has('reverse') ? { promptModel: 'fixture-vision' } : {}, defaultChannelId: 'one', defaultModel: 'gpt-image-2', channels: [
   { id: 'one', name: 'Provider A', apiUrl: 'https://one.test/v1', models: [{ id: 'gpt-image-2', alias: 'gpt-image-2' }, { id: 'gpt-image-2.5-flare', alias: 'gpt-image-2.5-flare' }] },
   { id: 'two', name: 'Provider B', apiUrl: 'https://two.test/v1', models: [{ id: 'gpt-image-2', alias: 'gpt-image-2' }] },
 ] }

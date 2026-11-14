@@ -1,7 +1,9 @@
 /** Compact edit-reference thumbnails; the generation form owns the images. */
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, X, ChevronLeft, ChevronRight, ImagePlus, ClipboardPaste } from 'lucide-react'
+import { Plus, X, ChevronLeft, ChevronRight, ImagePlus, ClipboardPaste, ScanText } from 'lucide-react'
+import { StudioActionButton } from './StudioActionButton.tsx'
+import { Select } from './Select.tsx'
 import { tt } from './helpers.ts'
 import { clipboardImageFiles, EDIT_REFERENCE_LIMIT, type EditReference, type ReferencePasteResult } from './reference-images.ts'
 import css from './reference-images.module.css'
@@ -14,6 +16,7 @@ export function ReferenceImages(props: {
   onRemove: (id: string) => void
   onClear: () => void
   notice?: string | null
+  reverse?: { selectedId: string; onSelect: (id: string) => void; onRun: (image: EditReference) => void }
 }) {
   const input = useRef<HTMLInputElement>(null)
   const dialog = useRef<HTMLElement>(null)
@@ -47,6 +50,7 @@ export function ReferenceImages(props: {
   }
   const index = props.images.findIndex(image => image.id === previewId)
   const preview = props.images[index]
+  const reverseImage = props.images.find(image => image.id === props.reverse?.selectedId) ?? props.images[0]
   const close = (): void => { setPreviewId(null) }
   const move = (delta: number): void => { const next = props.images[(index + delta + props.images.length) % props.images.length]; if (next) setPreviewId(next.id) }
 
@@ -99,6 +103,12 @@ export function ReferenceImages(props: {
         </div>)}
         {props.images.length < EDIT_REFERENCE_LIMIT ? <button type="button" className={css.add} aria-label={tt('edit.addMore')} onClick={() => input.current?.click()}><Plus size={19} aria-hidden="true" /><span>{tt('edit.add')}</span></button> : null}
       </div>}
+      {props.reverse ? <div className={css.tools} role="group" aria-label={tt('edit.reverseTools')}>
+        {props.images.length > 1 ? <Select className={css.reverseTarget} value={reverseImage?.id ?? ''} aria-label={tt('edit.reverseTarget')} disabled={props.reading} onChange={props.reverse.onSelect}>
+          {props.images.map((image, index) => <option key={image.id} value={image.id}>{index + 1} · {image.name}</option>)}
+        </Select> : null}
+        <StudioActionButton icon={<ScanText />} data-reference-reverse="" disabled={props.reading || reverseImage === undefined} title={tt(reverseImage === undefined ? 'edit.reverseEmpty' : 'edit.reverseHint')} onClick={() => { if (reverseImage) props.reverse?.onRun(reverseImage) }}>{tt('prompt.reverse.action')}</StudioActionButton>
+      </div> : null}
       <p className={css.hint} role={props.reading ? 'status' : undefined}>{props.reading ? tt('edit.reading') : tt('edit.multiHint')}</p>
       <p className={css.limits}>{tt('edit.limits', { count: EDIT_REFERENCE_LIMIT })}</p>
       {props.notice ? <p className={css.notice} role="status">{props.notice}</p> : null}
