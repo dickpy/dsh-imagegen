@@ -48,6 +48,8 @@ try {
 
   const measure = async label => {
     await toolbar().scrollIntoViewIfNeeded()
+    // Compare the same idle state; the last clicked action is otherwise hovered.
+    await page.mouse.move(1, 1)
     const result = await toolbar().evaluate(element => {
       const rect = element.getBoundingClientRect()
       return { width: rect.width, buttons: [...element.querySelectorAll('button')].map(button => {
@@ -55,12 +57,13 @@ try {
         return { text: button.textContent, height: b.height, radius: style.borderRadius, font: style.fontSize, background: style.backgroundColor, icon: icon?.width, fits: b.left >= rect.left - 1 && b.right <= rect.right + 1 && button.scrollWidth <= button.clientWidth + 1 }
       }) }
     })
+    geometry.push({ label, ...result })
+    writeFileSync(`${evidence}/geometry.json`, JSON.stringify(geometry, null, 2))
     assert.equal(result.buttons.length, 3)
     for (const button of result.buttons) { assert.equal(button.fits, true, `${label}: ${JSON.stringify(button)}`); assert.equal(button.icon, 14); assert.ok(button.height >= 32) }
     assert.equal(new Set(result.buttons.map(button => button.radius)).size, 1)
     assert.equal(new Set(result.buttons.map(button => button.font)).size, 1)
     assert.equal(new Set(result.buttons.map(button => button.background)).size, 1)
-    geometry.push({ label, ...result })
   }
   await measure('desktop')
   const before = await toolbar().boundingBox()
