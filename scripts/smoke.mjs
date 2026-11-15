@@ -5219,7 +5219,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Gallery keeps the sidebar history visible, and selecting one history
     // group returns the center workspace to text-to-image.
     const tablistButtons = [...view.querySelectorAll('[role="tablist"] button')]
-    assert.equal(tablistButtons.length, 6, 'top nav has four entries and the normal workspace shows two generation modes')
+    assert.equal(tablistButtons.length, 7, 'top nav has five entries and the normal workspace shows two generation modes')
     const ecommerceSwitch = tablistButtons.find(button => button.textContent?.includes('电商模式'))
     assert.ok(ecommerceSwitch !== undefined, 'ecommerce top-nav entry is present')
     const normalSwitch = tablistButtons.find(button => button.textContent?.includes('普通生图'))
@@ -5231,7 +5231,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const ecommerceWorkspace = view.querySelector('[data-ecommerce-workspace]')
     assert.ok(ecommerceWorkspace !== null, 'ecommerce workspace is rendered')
     assert.equal(jsdomWindow.getComputedStyle(ecommerceWorkspace).fontSize, '12px', 'ecommerce UI inherits the compact panel type scale')
-    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 4, 'generation sub-modes hide in the ecommerce workspace')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 5, 'generation sub-modes hide in the ecommerce workspace')
     assert.equal([...view.querySelectorAll('textarea')].some(textarea => (textarea.getAttribute('placeholder') ?? '').includes('描述你想要的画面')), false, 'normal prompt card is hidden in ecommerce workspace')
     const ecommerceName = view.querySelector('input[placeholder="商品名称（必填）"]')
     assert.ok(ecommerceName !== null, 'ecommerce product form is rendered')
@@ -5309,7 +5309,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // Back to the normal workspace via the top nav: gallery works as before.
     normalSwitch.click()
     await new Promise(resolve => setTimeout(resolve, 50))
-    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 6, 'generation sub-modes return in the normal workspace')
+    assert.equal(view.querySelectorAll('[role="tablist"] button').length, 7, 'generation sub-modes return in the normal workspace')
     const galleryPill = [...view.querySelectorAll('[role="tablist"] button')].find(button => button.textContent?.includes('素材库'))
     assert.ok(galleryPill !== undefined, '素材库入口存在')
     galleryPill.click()
@@ -6072,7 +6072,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     copyPrompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 25))
     view.querySelector('button[class*="generateButton"]').click()
-    await waitForSelector(view, '[data-result-preview-grid] img')
+    await waitForSelector(view, '[data-result-preview-grid] img', 5000)
     assert.match(view.querySelector('[data-result-preview-grid] [data-generation-duration]')?.textContent ?? '', /^耗时 \d+分\d+秒$/, '#66: completed single-model results retain duration')
     jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
     assert.ok(await waitUntil(() => jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-active')))
@@ -6172,8 +6172,8 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // it opens the dialog with that image, stages it as a canvas asset, posts
     // the reverse request and hands the answer back to the composer.
     view.querySelector('[data-comparison-task] [data-reverse-prompt]').click()
-    await waitForSelector(jsdomDocument, '[data-reverse-dialog]')
-    const reverseDialog = jsdomDocument.querySelector('[data-reverse-dialog]')
+    await waitForSelector(jsdomDocument, '[data-workspace=reverse] [data-reverse-workspace]')
+    const reverseDialog = jsdomDocument.querySelector('[data-reverse-workspace]')
     const reverseResult = reverseDialog.querySelector('[data-reverse-result]')
     assert.equal(reverseResult.value, '', 'the result field starts empty')
     assert.equal(uploadedAssets.length, 0, 'opening the dialog uploads nothing')
@@ -6189,7 +6189,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const useReverse = [...reverseDialog.querySelectorAll('button')].find(button => button.textContent === '填入提示词')
     assert.ok(useReverse !== undefined, 'the dialog offers the prompt to the composer')
     useReverse.click()
-    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-reverse-dialog]') === null), 'using the prompt closes the dialog')
+    assert.ok(await waitUntil(() => jsdomDocument.querySelector('[data-workspace=normal]') !== null), 'using the prompt returns to generation')
     assert.equal(view.querySelector('textarea[placeholder*="描述你想要的画面"]').value, 'a cinematic portrait, 85mm, f/1.8', 'the prompt lands in the generation composer')
     const retainedReferenceCount = view.querySelectorAll('[data-edit-reference]').length
     const clearPrompt = view.querySelector('[data-clear-prompt]')

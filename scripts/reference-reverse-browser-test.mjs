@@ -1,143 +1,58 @@
-/** #76 through actual Chromium, including CSS geometry and existing result reverse. */
+/** Browser regression: inline workspace, manual run/apply, themes and responsive layout. */
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { startReverseFixture, referencePng } from './reference-reverse-fixture.mjs'
 const require = createRequire(import.meta.url)
-const runtime = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES ? createRequire(`${process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES}/.reference-reverse-test.cjs`) : require
+const runtime = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES ? createRequire(`${process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES}/.reverse-test.cjs`) : require
 const { chromium } = runtime('playwright')
 const fixture = await startReverseFixture(), evidence = '.test-artifacts/reference-reverse'
 mkdirSync(evidence, { recursive: true })
-let browser, page
+if (process.argv.includes('--serve')) { console.log(fixture.base); await new Promise(() => {}) }
+let browser
 try {
-  browser = await chromium.launch({ headless: true, ...(process.env.GENERATION_CHROMIUM_PATH ? { executablePath: process.env.GENERATION_CHROMIUM_PATH, args: ['--no-sandbox', '--disable-dev-shm-usage'] } : {}) })
-  page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-  const errors = [], geometry = []
-  page.on('pageerror', error => errors.push(error.message))
-  page.setDefaultTimeout(10000)
-  const waitFor = async (predicate, label) => { for (let i = 0; i < 80; i++) { if (await predicate()) return; await page.waitForTimeout(50) } assert.fail(label) }
-  const prompt = () => page.locator('textarea').first()
-  const references = () => page.locator('[data-edit-reference]')
-  const reverse = () => page.locator('[data-reference-reverse]')
-  const toolbar = () => page.locator('[data-studio-actions]')
+  browser = await chromium.launch({ headless: true, ...(process.env.GENERATION_CHROMIUM_PATH ? { executablePath: process.env.GENERATION_CHROMIUM_PATH } : {}), args: ['--no-sandbox'] })
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  const errors = []; page.on('pageerror', error => errors.push(error.message))
   await page.goto(`${fixture.base}/?reverse`)
-  await page.locator('[data-studio-reverse]').click()
-  await page.locator('[data-edit-references]').waitFor()
-  assert.equal(await reverse().isDisabled(), true)
-  await page.locator('[data-edit-references] input[type=file]').setInputFiles({ name: 'first.png', mimeType: 'image/png', buffer: referencePng })
-  await waitFor(async () => await references().count() === 1 && await reverse().isEnabled(), 'reference upload is ready')
-  await reverse().click()
-  await waitFor(async () => await prompt().inputValue() === 'Reusable prompt from first.png', 'one click auto-fills the prompt')
+  await page.getByRole('tab', { name: '反推提示词', exact: true }).click()
+  await page.locator('[data-reverse-upload]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: referencePng })
+  await page.locator('[data-reverse-source]').waitFor()
+  assert.equal(fixture.reversals.length, 0)
+  await page.locator('[data-reverse-detail]').selectOption('detailed')
+  await page.locator('[data-reverse-output]').selectOption('en')
+  await page.locator('[data-reverse-extra]').fill('Focus on composition and lighting')
+  await page.locator('[data-reverse-run]').click()
+  await page.waitForFunction(() => document.querySelector('[data-reverse-result]').value.includes('reference.png'))
+  assert.equal(fixture.reversals[0].detail, 'detailed'); assert.equal(fixture.reversals[0].output, 'en')
+  assert.equal(fixture.reversals[0].instruction, 'Focus on composition and lighting')
   assert.equal(await page.locator('[data-reverse-dialog]').count(), 0)
-  assert.equal(fixture.reversals.length, 1)
-  assert.deepEqual(fixture.uploads[0].bytes, referencePng)
-  assert.equal(fixture.generations.length, 0)
-
-  // Keyboard paste uses the same uploader and keeps the selected target explicit.
-  await page.locator('[data-edit-references]').evaluate((element, b64) => {
-    const transfer = new DataTransfer(), bytes = Uint8Array.from(atob(b64), char => char.charCodeAt(0))
-    transfer.items.add(new File([bytes], 'second.png', { type: 'image/png' }))
-    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }))
-  }, referencePng.toString('base64'))
-  await waitFor(async () => await references().count() === 2 && await reverse().isEnabled(), 'pasted reference is ready')
-  await page.getByRole('button', { name: '选择要反推的参考图', exact: true }).click()
-  await page.getByRole('option', { name: '2 · second.png', exact: true }).click()
-  await page.locator('[data-studio-reverse]').click()
-  await waitFor(async () => await prompt().inputValue() === 'Reusable prompt from second.png', 'toolbar reverses the selected reference')
-  assert.equal(fixture.reversals.at(-1).images[0].name, 'second.png')
-
-  const measure = async label => {
-    await toolbar().scrollIntoViewIfNeeded()
-    // Compare the same idle state; the last clicked action is otherwise hovered.
-    await page.mouse.move(1, 1)
-    const result = await toolbar().evaluate(element => {
-      const rect = element.getBoundingClientRect()
-      return { width: rect.width, buttons: [...element.querySelectorAll('button')].map(button => {
-        const b = button.getBoundingClientRect(), style = getComputedStyle(button), icon = button.querySelector('svg')?.getBoundingClientRect()
-        return { text: button.textContent, height: b.height, radius: style.borderRadius, font: style.fontSize, background: style.backgroundColor, icon: icon?.width, fits: b.left >= rect.left - 1 && b.right <= rect.right + 1 && button.scrollWidth <= button.clientWidth + 1 }
-      }) }
-    })
-    geometry.push({ label, ...result })
-    writeFileSync(`${evidence}/geometry.json`, JSON.stringify(geometry, null, 2))
-    assert.equal(result.buttons.length, 3)
-    for (const button of result.buttons) { assert.equal(button.fits, true, `${label}: ${JSON.stringify(button)}`); assert.equal(button.icon, 14); assert.ok(button.height >= 32) }
-    assert.equal(new Set(result.buttons.map(button => button.radius)).size, 1)
-    assert.equal(new Set(result.buttons.map(button => button.font)).size, 1)
-    assert.equal(new Set(result.buttons.map(button => button.background)).size, 1)
+  await page.locator('[data-reverse-result]').fill('Reviewed prompt')
+  await page.screenshot({ path: `${evidence}/light.png`, fullPage: true })
+  await page.addStyleTag({ content: ':root{color-scheme:dark;--dsw-alias-bg-base:#141414;--dsw-alias-bg-layer-1:#1c1c1f;--dsw-alias-bg-layer-2:#28282b;--dsw-alias-bg-layer-3:#323235;--dsw-alias-border-l1:#37373c;--dsw-alias-border-l2:#4b4b53;--dsw-alias-label-primary:#f4f4f5;--dsw-alias-label-secondary:#b4b4bd;--dsw-alias-label-tertiary:#9696a0;--dsw-alias-brand-primary:#f8fafc}body{background:#141414}' })
+  const contrast = async selector => {
+    const colors = await page.locator(selector).evaluate(element => { const s = getComputedStyle(element); return [s.color, s.backgroundColor] })
+    const luminance = color => { const c = color.match(/[\d.]+/g).slice(0,3).map(Number).map(x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }); return c[0]*.2126+c[1]*.7152+c[2]*.0722 }
+    const [a,b] = colors.map(luminance); assert.ok((Math.max(a,b)+.05)/(Math.min(a,b)+.05)>=4.5, JSON.stringify(colors))
   }
-  await measure('desktop')
-  const before = await toolbar().boundingBox()
-  await page.locator('[class*=configScroll]').evaluate(element => { element.scrollTop = element.scrollHeight })
-  const after = await toolbar().boundingBox()
-  assert.ok(Math.abs(before.y - after.y) < 1, 'toolbar stays fixed while the parameter cards scroll')
-  await page.screenshot({ path: `${evidence}/desktop.png`, fullPage: true })
-  await page.locator('[data-template-library-trigger]').click()
-  await page.getByRole('dialog').waitFor()
-  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
-  await page.locator('[data-studio-gallery]').click()
-  await waitFor(async () => await page.locator('[data-studio-gallery]').getAttribute('aria-pressed') === 'true', 'asset library shortcut opens gallery')
-  await page.locator('[data-studio-reverse]').click()
-  await waitFor(async () => await prompt().inputValue() === 'Reusable prompt from second.png' && await page.locator('[data-reverse-dialog]').count() === 0, 'gallery shortcut reverses retained reference and returns to edit')
-
-  await prompt().fill('Keep my edits')
-  fixture.control.fail = true
-  await reverse().click()
-  await page.locator('[data-reverse-dialog] [role=alert]').waitFor()
-  assert.equal(await prompt().inputValue(), 'Keep my edits')
-  assert.equal(await references().count(), 2)
-  await page.screenshot({ path: `${evidence}/failure.png`, fullPage: true })
-  fixture.control.fail = false
-  await page.locator('[data-reverse-run]').click()
-  await waitFor(async () => await page.locator('[data-reverse-dialog]').count() === 0, 'retry fills and closes')
+  await contrast('[data-reverse-run]'); await contrast('[data-reverse-use]')
+  await page.screenshot({ path: `${evidence}/dark.png`, fullPage: true })
+  await page.locator('[data-reverse-use]').click()
+  await page.waitForFunction(() => document.querySelector('[data-workspace=normal]'))
+  assert.equal(await page.locator('textarea').first().inputValue(), 'Reviewed prompt')
+  await contrast('[class*=generateButton]')
+  await page.screenshot({ path: `${evidence}/dark-generation.png`, fullPage: true })
+  await page.getByRole('tab', { name: '反推提示词', exact: true }).click()
+  assert.equal(await page.locator('[data-reverse-result]').inputValue(), 'Reviewed prompt')
   fixture.control.delay = 250
-  await prompt().fill('Keep after Escape')
-  const previous = fixture.reversals.length
-  await reverse().click()
-  await waitFor(() => fixture.reversals.length === previous + 1, 'vision is pending')
-  await page.keyboard.press('Shift+Tab')
-  assert.equal(await page.evaluate(() => document.activeElement?.closest('[data-reverse-dialog]') !== null), true, 'keyboard focus stays in the running dialog')
-  await page.keyboard.press('Tab')
-  await page.keyboard.press('Escape')
-  await page.waitForTimeout(350)
-  assert.equal(await prompt().inputValue(), 'Keep after Escape')
-  assert.equal(await page.locator('[data-reverse-dialog]').count(), 0)
-  fixture.control.delay = 0
-  assert.equal(fixture.generations.length, 0)
-
-  // The resizable minimum column and a narrow viewport must keep every action usable.
-  await page.evaluate(() => localStorage.setItem('dsh-imagegen:config-width', '260'))
-  await page.reload()
-  await measure('260px-column')
-  await page.setViewportSize({ width: 390, height: 844 })
-  await measure('390px-mobile')
-  await page.screenshot({ path: `${evidence}/mobile.png`, fullPage: true })
-  await page.close()
-
-  // Existing generated-image reverse remains configurable and requires explicit Use.
-  page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-  page.on('pageerror', error => errors.push(error.message))
-  await page.addInitScript(() => {
-    sessionStorage.setItem('dsh-imagegen:studio-runs:v1', JSON.stringify({ text: { id: 'source-run', mode: 'text', prompt: 'Existing result', sourceTaskId: 'source', slots: [{ id: 'source:0', taskId: 'source', imageIndex: 0, model: 'gpt-image-2', channelId: 'one', status: 'completed' }] }, edit: null }))
-  })
-  await page.goto(`${fixture.base}/?reverse`)
-  await page.locator('[data-studio-slot] [data-reverse-prompt]').click()
-  await page.locator('[data-reverse-dialog]').waitFor()
-  const calls = fixture.reversals.length
-  await page.waitForTimeout(150)
-  assert.equal(fixture.reversals.length, calls, 'generated-image entry does not auto-run')
-  await page.locator('#dsh-imagegen-reverse-detail').selectOption('detailed')
-  await page.locator('#dsh-imagegen-reverse-output').selectOption('en')
   await page.locator('[data-reverse-run]').click()
-  await waitFor(async () => (await page.locator('[data-reverse-result]').inputValue()).startsWith('Reusable prompt from '), 'manual reverse returns a prompt')
-  assert.equal(fixture.reversals.at(-1).detail, 'detailed')
-  assert.equal(fixture.reversals.at(-1).output, 'en')
-  await page.getByRole('dialog').getByRole('button', { name: '填入提示词', exact: true }).click()
-  await waitFor(async () => await page.locator('[data-reverse-dialog]').count() === 0, 'explicit Use closes the existing result flow')
-  assert.ok((await prompt().inputValue()).startsWith('Reusable prompt from '))
-  assert.deepEqual(errors, [])
-  writeFileSync(`${evidence}/geometry.json`, JSON.stringify(geometry, null, 2))
-  console.log('PASS #76 Chromium: upload/paste, selected-reference auto-fill, no generation, failure/retry/Escape, template/gallery shortcuts, fixed toolbar, minimum column/mobile geometry, and existing configurable result reverse')
-} catch (error) {
-  if (page && !page.isClosed()) await page.screenshot({ path: `${evidence}/failed.png`, fullPage: true }).catch(() => {})
-  throw error
+  await page.waitForFunction(() => document.querySelector('[data-reverse-run]').disabled)
+  await page.locator('[data-reverse-upload]').setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: referencePng })
+  await page.waitForTimeout(350)
+  assert.equal(await page.locator('[data-reverse-result]').inputValue(), '', 'old response cannot replace the newly selected source')
+  await page.setViewportSize({ width: 760, height: 900 })
+  await page.screenshot({ path: `${evidence}/narrow.png`, fullPage: true })
+  assert.ok(await page.locator('[data-reverse-workspace]').evaluate(element => element.scrollWidth <= element.clientWidth + 1))
+  assert.equal(fixture.generations.length, 0); assert.deepEqual(errors, [])
+  console.log('PASS browser: manual run/apply, parameters, editable retained result, stale response isolation, light/dark contrast >=4.5, and narrow layout')
 } finally { await browser?.close(); await new Promise(resolve => fixture.server.close(resolve)) }

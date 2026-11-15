@@ -90,14 +90,18 @@ function modelRecordsOf(body: unknown): ModelRecord[] | undefined {
       ? (body as { data: unknown[] }).data
       : body !== null && typeof body === 'object' && Array.isArray((body as { models?: unknown }).models)
         ? (body as { models: unknown[] }).models
-        : undefined
+        : body !== null && typeof body === 'object' && Array.isArray((body as { output?: { models?: unknown } }).output?.models)
+          ? (body as { output: { models: unknown[] } }).output.models
+          : undefined
   if (candidate === undefined) return undefined
   return candidate.flatMap(item => {
     const id = typeof item === 'string'
       ? item.trim()
       : item !== null && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string'
         ? (item as { id: string }).id.trim()
-        : ''
+        : item !== null && typeof item === 'object' && typeof (item as { model?: unknown }).model === 'string'
+          ? (item as { model: string }).model.trim()
+          : ''
     return id === '' ? [] : [{ ...(typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}), id }]
   })
 }

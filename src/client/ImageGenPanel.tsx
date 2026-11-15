@@ -17,7 +17,7 @@ import { readHistorySelection, writeHistorySelection } from './history-selection
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
-import { Maximize2, ScanText, Images, Sparkles, Paintbrush, X } from 'lucide-react'
+import { Maximize2, Sparkles, Paintbrush, X } from 'lucide-react'
 import { StudioActionButton } from './StudioActionButton.tsx'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
@@ -36,7 +36,7 @@ import { mergeTemplatePrompt } from './template-library-state.ts'
 import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
 import { CanvasWorkspace } from './CanvasWorkspace.tsx'
-import { ReversePromptDialog } from './ReversePromptDialog.tsx'
+import { ReversePromptWorkspace } from './ReversePromptWorkspace.tsx'
 import { PromptEditorDialog } from './PromptEditorDialog.tsx'
 import { ModelPicker, resolveModelChoice, type ModelPickerValue } from './ModelPicker.tsx'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -444,7 +444,7 @@ type PanelTab = GenerateMode | 'gallery'
 
 /** Top-level workspaces inside the panel. 'normal' is the classic studio;
  *  more task-oriented modes (prototype, …) can join alongside 'ecommerce'. */
-type PanelWorkspace = 'normal' | 'ecommerce' | 'canvas'
+type PanelWorkspace = 'normal' | 'ecommerce' | 'canvas' | 'reverse'
 
 type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
@@ -637,11 +637,13 @@ export function ImageGenPanel(props: {
   const [editMask, setEditMask] = useState<string | undefined>()
   useEffect(() => { try { writeStudioRuns(window.sessionStorage, studioRuns) } catch { /* optional */ } }, [studioRuns])
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
-  /** The image handed to the prompt-reverse dialog, already decoded to a File. */
-  const [reverseTarget, setReverseTarget] = useState<{ id: string; file: File; reference: boolean } | null>(null)
+  /** The source retained by the inline prompt-reverse workspace. */
+  const [reverseTarget, setReverseTarget] = useState<{ id: string; file: File; reference: boolean; destination?: 'text' | 'edit' | 'ecommerce' } | null>(null)
   const openReversePrompt = (image: GeneratedImage, index = 0): void => {
     try {
-      setReverseTarget({ id: newComparisonId(), file: generatedImageToFile(image, index), reference: false })
+      setReverseTarget({ id: newComparisonId(), file: generatedImageToFile(image, index), reference: false, destination: workspace === 'ecommerce' ? 'ecommerce' : tab === 'edit' ? 'edit' : 'text' })
+      setWorkspace('reverse')
+      setPreview(null)
       setError(null)
     } catch (error) {
       setError(errorMessage(error))
@@ -1229,22 +1231,13 @@ export function ImageGenPanel(props: {
   }
 
   const reverseReferencePrompt = (image: EditReference): void => {
-    if (!promptReady) { openSettingsGuide('enhancement'); return }
     try {
+      setWorkspace('reverse')
       setReverseTarget({ id: newComparisonId(), file: dataUrlToFile(image.dataUrl, image.name), reference: true })
       setError(null)
     } catch (caught) { setError(errorMessage(caught)) }
   }
 
-  const openReferenceReverse = (): void => {
-    openTab('edit')
-    setConfigCollapsed(false)
-    if (reverseReference) { reverseReferencePrompt(reverseReference); return }
-    requestAnimationFrame(() => {
-      referenceSection.current?.scrollIntoView({ block: 'nearest' })
-      referenceSection.current?.querySelector<HTMLElement>('[data-edit-references]')?.focus()
-    })
-  }
 
   const enhanceCurrentPrompt = async (): Promise<void> => {
     if (prompt.trim() === '' || enhancing) return
@@ -2258,7 +2251,7 @@ export function ImageGenPanel(props: {
       {filteredHistory.length === 0 ? (
         <div className={css.historyEmpty}>{tt('history.empty')}</div>
       ) : (
-        <div className={css.historyList}>
+        <div className={css.historyList} data-history-list="" onWheel={event => { event.stopPropagation() }}>
           {filteredHistory.map(group => {
             const entry = group.entries[0]!
             const isComparison = group.models.length > 1
@@ -2417,12 +2410,13 @@ export function ImageGenPanel(props: {
         </span>
         <GooeyNav
           ariaLabel={tt('workspace.label')}
-          activeIndex={workspace === 'normal' ? (tab === 'gallery' ? 1 : 0) : workspace === 'canvas' ? 2 : 3}
+          activeIndex={workspace === 'normal' ? (tab === 'gallery' ? 1 : 0) : workspace === 'canvas' ? 2 : workspace === 'ecommerce' ? 3 : 4}
           onSelect={index => {
             if (index === 0) openTab('text')
             else if (index === 1) openTab('gallery')
             else if (index === 2) setWorkspace('canvas')
-            else setWorkspace('ecommerce')
+            else if (index === 3) setWorkspace('ecommerce')
+            else setWorkspace('reverse')
           }}
           items={[
             { key: 'normal', label: tt('workspace.normal') },
@@ -2430,6 +2424,7 @@ export function ImageGenPanel(props: {
             { key: 'canvas', label: tt('workspace.canvas') },
 
             { key: 'ecommerce', label: <>{tt('workspace.ecommerce')}<span className={css.previewBadge}>{tt('ecommerce.badge')}</span></> },
+            { key: 'reverse', label: tt('prompt.reverse.action') },
           ]}
         />
         <span className={css.panelHeaderActions}>
@@ -2959,11 +2954,6 @@ export function ImageGenPanel(props: {
                 </div>
               ) : null}
             </div> : null}
-            {workspace !== 'canvas' ? <div className={css.studioActions} data-studio-actions="" role="group" aria-label={tt('studio.actions')}>
-              {workspace === 'normal' ? <StudioActionButton icon={<ScanText />} data-studio-reverse="" disabled={editReferences.reading} title={tt(reverseReference ? 'edit.reverseHint' : 'edit.reverseEmpty')} onClick={openReferenceReverse}>{tt('prompt.reverse.action')}</StudioActionButton> : null}
-              <TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => setLibraryOpen(true)} />
-              <StudioActionButton icon={<Images />} data-studio-gallery="" aria-pressed={isGallery} onClick={() => openTab('gallery')}>{tt('gallery.title')}</StudioActionButton>
-            </div> : null}
             {isGeneration ? <StudioActionButton
               variant="primary"
               icon={<Sparkles />}
@@ -2980,6 +2970,25 @@ export function ImageGenPanel(props: {
               </StudioActionButton> : null}
             </section>
           </aside>
+
+          <div className={css.reverseWorkspaceHost} hidden={workspace !== 'reverse'}>
+            <ReversePromptWorkspace api={api} active={workspace === 'reverse'} file={reverseTarget?.file ?? null}
+              onFile={file => setReverseTarget({ id: newComparisonId(), file, reference: false })}
+              ready={promptReady} onSettings={() => openSettingsGuide('enhancement')}
+              onUse={text => {
+                setConfigCollapsed(false)
+                if (reverseTarget?.destination === 'ecommerce') {
+                  setWorkspace('ecommerce')
+                  setEcommerce(current => ({ ...current, promptInfo: text }))
+                  setEcommercePreview(false)
+                } else {
+                  openTab(reverseTarget?.reference ? 'edit' : reverseTarget?.destination ?? 'text')
+                  setPrompt(text)
+                }
+                setError(null)
+                requestAnimationFrame(() => { promptInput.current?.focus() })
+              }} />
+          </div>
 
           {workspace === 'canvas' ? (
             <CanvasWorkspace
@@ -3394,6 +3403,7 @@ export function ImageGenPanel(props: {
               </div>
             </div>
           ) : null}
+          {(isGeneration || workspace === 'ecommerce') ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
           </section>
         </div>
 
@@ -3592,31 +3602,6 @@ export function ImageGenPanel(props: {
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
           {conversationMessage}
         </div>
-      ) : null}
-      {/* ---------------------------------------------- prompt reverse dialog */}
-      {reverseTarget !== null ? (
-        <ReversePromptDialog
-          key={reverseTarget.id}
-          api={api}
-          file={reverseTarget.file}
-          autoApply={reverseTarget.reference}
-          onUse={text => {
-            // Same path the template library uses to hand text to the composer.
-            if (reverseTarget.reference) {
-              openTab('edit')
-              setPrompt(current => mergeTemplatePrompt(current, text, 'replace'))
-              requestAnimationFrame(() => { promptInput.current?.focus() })
-            } else if (workspace === 'ecommerce') {
-              setEcommerce(current => ({ ...current, promptInfo: mergeTemplatePrompt(current.promptInfo, text, 'replace') }))
-              setEcommercePreview(false)
-            } else {
-              if (tab === 'gallery') openTab('text')
-              setPrompt(current => mergeTemplatePrompt(current, text, 'replace'))
-            }
-            setError(null)
-          }}
-          close={() => { setReverseTarget(null) }}
-        />
       ) : null}
       {/* ------------------------------------------- full-window prompt editor */}
       {promptEditorOpen ? (

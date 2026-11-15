@@ -34,6 +34,26 @@ try {
   }
   await expectImage('live')
 
+  // #79: the native tree can have a small intrinsic/max height and an outer
+  // wheel interceptor. History must fill the sidebar and own scroll gestures.
+  await page.setViewportSize({ width: 1440, height: 720 })
+  await page.locator('.host_regionArea').evaluate(element => {
+    element.style.maxHeight = '220px'; element.style.flex = '0 0 auto'
+    window.fixtureWheelBlocker = event => event.preventDefault()
+    element.parentElement.addEventListener('wheel', window.fixtureWheelBlocker)
+  })
+  const historyList = page.locator('[data-history-list]')
+  assert.ok((await historyList.boundingBox()).height > 250, 'history uses the remaining sidebar height')
+  await historyList.hover()
+  await page.mouse.wheel(0, 500)
+  await page.waitForFunction(() => document.querySelector('[data-history-list]').scrollTop > 0)
+  await page.locator('.host_regionArea').evaluate(element => {
+    element.style.maxHeight = ''; element.style.flex = ''
+    element.parentElement.removeEventListener('wheel', window.fixtureWheelBlocker)
+  })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await historyList.evaluate(element => { element.scrollTop = 0 })
+
   // #75: use real flex and container-query geometry, not DOM shape alone.
   for (const width of [260, 220]) {
     await page.locator('.host_sidebarCol').evaluate((element, value) => { element.style.width = `${value}px` }, width)
