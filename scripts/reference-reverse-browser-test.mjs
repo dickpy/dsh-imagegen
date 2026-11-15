@@ -15,7 +15,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   const errors = []; page.on('pageerror', error => errors.push(error.message))
   await page.goto(`${fixture.base}/?reverse`)
-  await page.getByRole('button', { name: '反推提示词', exact: true }).click()
+  await page.getByRole('tab', { name: '反推提示词', exact: true }).click()
   await page.locator('[data-reverse-upload]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: referencePng })
   await page.locator('[data-reverse-source]').waitFor()
   assert.equal(fixture.reversals.length, 0)
@@ -42,7 +42,7 @@ try {
   assert.equal(await page.locator('textarea').first().inputValue(), 'Reviewed prompt')
   await contrast('[class*=generateButton]')
   await page.screenshot({ path: `${evidence}/dark-generation.png`, fullPage: true })
-  await page.getByRole('button', { name: '反推提示词', exact: true }).click()
+  await page.getByRole('tab', { name: '反推提示词', exact: true }).click()
   assert.equal(await page.locator('[data-reverse-result]').inputValue(), 'Reviewed prompt')
   fixture.control.delay = 250
   await page.locator('[data-reverse-run]').click()
