@@ -39,7 +39,7 @@ async function openPage(configured = true) {
     await waitFor(() => [...doc.querySelectorAll('[data-edit-reference] img')].some(image => image.alt === name), `read ${name}`)
     await waitFor(() => !doc.querySelector('[data-reference-reverse]').disabled, 'reference read settled')
   }
-  await waitFor(() => doc.querySelector('[data-studio-actions]'), 'fixed actions mount')
+  await waitFor(() => doc.querySelector('[data-dsh-imagegen-panel]'), 'studio mounts')
   return { window, doc, waitFor, click, button, prompt, change, add, errors }
 }
 try {

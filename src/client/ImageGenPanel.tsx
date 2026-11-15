@@ -17,7 +17,7 @@ import { readHistorySelection, writeHistorySelection } from './history-selection
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
-import { Maximize2, Images, Sparkles, Paintbrush, X } from 'lucide-react'
+import { Maximize2, Sparkles, Paintbrush, X } from 'lucide-react'
 import { StudioActionButton } from './StudioActionButton.tsx'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
@@ -2954,10 +2954,6 @@ export function ImageGenPanel(props: {
                 </div>
               ) : null}
             </div> : null}
-            {workspace !== 'canvas' ? <div className={css.studioActions} data-studio-actions="" role="group" aria-label={tt('studio.actions')}>
-              <TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => setLibraryOpen(true)} />
-              <StudioActionButton icon={<Images />} data-studio-gallery="" aria-pressed={isGallery} onClick={() => openTab('gallery')}>{tt('gallery.title')}</StudioActionButton>
-            </div> : null}
             {isGeneration ? <StudioActionButton
               variant="primary"
               icon={<Sparkles />}
@@ -3407,6 +3403,7 @@ export function ImageGenPanel(props: {
               </div>
             </div>
           ) : null}
+          {(isGeneration || workspace === 'ecommerce') ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
           </section>
         </div>
 
