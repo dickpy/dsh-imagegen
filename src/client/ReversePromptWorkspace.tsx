@@ -7,8 +7,9 @@ import { errorMessage, tt } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
 import css from './reverse-workspace.module.css'
 
-export function ReversePromptWorkspace({ api, file, onFile, ready, onSettings, onUse }: {
+export function ReversePromptWorkspace({ api, file, onFile, ready, onSettings, onUse, active }: {
   api: ImageGenApi
+  active: boolean
   file: File | null
   onFile: (file: File) => void
   ready: boolean
@@ -25,6 +26,8 @@ export function ReversePromptWorkspace({ api, file, onFile, ready, onSettings, o
   const [copied, setCopied] = useState(false)
   const [preview, setPreview] = useState('')
   const input = useRef<HTMLInputElement>(null)
+  const root = useRef<HTMLElement>(null)
+  useEffect(() => { if (active) root.current?.focus() }, [active])
   const epoch = useRef(0)
   const busy = useRef(false)
   const currentFile = useRef(file)
@@ -63,7 +66,7 @@ export function ReversePromptWorkspace({ api, file, onFile, ready, onSettings, o
       if (valid()) { busy.current = false; setRunning(false) }
     }
   }
-  return <section className={css.workspace} data-reverse-workspace="" aria-label={tt('prompt.reverse.title')}
+  return <section ref={root} tabIndex={-1} className={css.workspace} data-reverse-workspace="" aria-label={tt('prompt.reverse.title')}
     onDragOver={event => { event.preventDefault() }}
     onDrop={event => { event.preventDefault(); event.stopPropagation(); select(event.dataTransfer.files) }}
     onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); event.stopPropagation(); select(event.clipboardData.files) } }}>
@@ -98,7 +101,7 @@ export function ReversePromptWorkspace({ api, file, onFile, ready, onSettings, o
         <p className={css.status} role={error ? 'alert' : 'status'}>{error || (running ? tt('prompt.reverse.running') : tt('prompt.reverse.review'))}</p>
         <footer>
           <StudioActionButton icon={<Copy />} disabled={!result.trim() || running} onClick={() => {
-            void navigator.clipboard.writeText(result).then(() => setCopied(true)).catch(() => setCopied(false))
+            void (async () => { try { await navigator.clipboard.writeText(result); setCopied(true) } catch { setCopied(false) } })()
           }}>{copied ? tt('prompt.reverse.copied') : tt('prompt.reverse.copy')}</StudioActionButton>
           <StudioActionButton variant="primary" icon={<ArrowDownToLine />} data-reverse-use="" disabled={!result.trim() || running} onClick={() => onUse(result)}>{tt('prompt.reverse.use')}</StudioActionButton>
         </footer>

@@ -638,10 +638,10 @@ export function ImageGenPanel(props: {
   useEffect(() => { try { writeStudioRuns(window.sessionStorage, studioRuns) } catch { /* optional */ } }, [studioRuns])
   const [workspace, setWorkspace] = useState<PanelWorkspace>('normal')
   /** The source retained by the inline prompt-reverse workspace. */
-  const [reverseTarget, setReverseTarget] = useState<{ id: string; file: File; reference: boolean } | null>(null)
+  const [reverseTarget, setReverseTarget] = useState<{ id: string; file: File; reference: boolean; destination?: 'text' | 'edit' | 'ecommerce' } | null>(null)
   const openReversePrompt = (image: GeneratedImage, index = 0): void => {
     try {
-      setReverseTarget({ id: newComparisonId(), file: generatedImageToFile(image, index), reference: false })
+      setReverseTarget({ id: newComparisonId(), file: generatedImageToFile(image, index), reference: false, destination: workspace === 'ecommerce' ? 'ecommerce' : tab === 'edit' ? 'edit' : 'text' })
       setWorkspace('reverse')
       setPreview(null)
       setError(null)
@@ -2976,13 +2976,19 @@ export function ImageGenPanel(props: {
           </aside>
 
           <div className={css.reverseWorkspaceHost} hidden={workspace !== 'reverse'}>
-            <ReversePromptWorkspace api={api} file={reverseTarget?.file ?? null}
+            <ReversePromptWorkspace api={api} active={workspace === 'reverse'} file={reverseTarget?.file ?? null}
               onFile={file => setReverseTarget({ id: newComparisonId(), file, reference: false })}
               ready={promptReady} onSettings={() => openSettingsGuide('enhancement')}
               onUse={text => {
                 setConfigCollapsed(false)
-                openTab(reverseTarget?.reference ? 'edit' : 'text')
-                setPrompt(text)
+                if (reverseTarget?.destination === 'ecommerce') {
+                  setWorkspace('ecommerce')
+                  setEcommerce(current => ({ ...current, promptInfo: text }))
+                  setEcommercePreview(false)
+                } else {
+                  openTab(reverseTarget?.reference ? 'edit' : reverseTarget?.destination ?? 'text')
+                  setPrompt(text)
+                }
                 setError(null)
                 requestAnimationFrame(() => { promptInput.current?.focus() })
               }} />

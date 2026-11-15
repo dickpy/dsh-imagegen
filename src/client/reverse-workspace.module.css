@@ -1,4 +1,4 @@
-.workspace { max-width: 1280px; margin: 0 auto; padding: clamp(16px, 3vw, 40px); color: var(--dsw-alias-label-primary); }
+.workspace { outline: none; max-width: 1280px; margin: 0 auto; padding: clamp(16px, 3vw, 40px); color: var(--dsw-alias-label-primary); }
 .header { margin-bottom: 24px; }
 .eyebrow { font-size: 11px; letter-spacing: .16em; color: var(--dsw-alias-label-secondary); }
 .header h2 { margin: 10px 0; font-size: 24px; font-weight: 650; }
