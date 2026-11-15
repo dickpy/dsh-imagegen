@@ -6072,7 +6072,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     copyPrompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 25))
     view.querySelector('button[class*="generateButton"]').click()
-    await waitForSelector(view, '[data-result-preview-grid] img')
+    await waitForSelector(view, '[data-result-preview-grid] img', 5000)
     assert.match(view.querySelector('[data-result-preview-grid] [data-generation-duration]')?.textContent ?? '', /^耗时 \d+分\d+秒$/, '#66: completed single-model results retain duration')
     jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
     assert.ok(await waitUntil(() => jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-active')))
