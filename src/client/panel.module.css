@@ -3520,3 +3520,27 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 .imageCopyMenu button:hover, .imageCopyMenu button:focus-visible { background: var(--dsw-alias-interactive-bg-hover); }
 .imageCopyToast { position: fixed; z-index: 2100; right: 20px; bottom: 20px; max-width: min(360px, 90vw); padding: 10px 14px; border-radius: 8px; color: white; background: rgb(20 24 30 / 92%); font-size: 13px; }
 @media (hover: none) { .imageCopyAction { opacity: 1; } }
+
+/* A dedicated page, retaining its draft when switching workspaces. */
+.generation[data-workspace='reverse'] > .config,
+.generation[data-workspace='reverse'] > .canvas { display: none; }
+.reverseWorkspaceHost { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.reverseWorkspaceHost[hidden] { display: none; }
+/* Contain scroll gestures before the host sidebar's wheel handlers see them. */
+.historyList { overscroll-behavior-y: contain; touch-action: pan-y; }
+.sidebarHistoryHost .history { min-height: 0; }
+.sidebarHistoryHost .historyItem { gap: 4px; padding: 6px; }
+.sidebarHistoryHost .historyThumb, .sidebarHistoryHost .historyThumbPlaceholder { width: 44px; height: 44px; }
+.sidebarHistoryHost .historyPrompt { -webkit-line-clamp: 1; }
+
+/* The native session region may have an intrinsic content height or its own
+   scrolling wrappers. Fill the remaining sidebar instead of that short tree. */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep] {
+  display: flex !important;
+  flex: 1 1 0% !important;
+  flex-direction: column;
+  min-height: 0 !important;
+  height: auto;
+  max-height: none !important;
+  overflow: hidden !important;
+}

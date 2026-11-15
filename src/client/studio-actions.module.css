@@ -22,9 +22,11 @@
 .action:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .action:disabled { opacity: .45; cursor: default; }
 .secondary { color: var(--dsw-alias-label-primary); }
-.primary { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-brand-primary); color: #fff; font-weight: 600; }
-.primary:hover:not(:disabled) { background: var(--dsw-alias-brand-primary); filter: brightness(1.06); }
+.action.primary { border-color: #4f46e5; background: #4f46e5; color: #fff; font-weight: 600; }
+.action.primary:hover:not(:disabled) { background: #4338ca; filter: brightness(1.06); }
 .quiet { background: transparent; border-color: transparent; color: var(--dsw-alias-label-secondary); }
 .icon { display: inline-flex; flex: none; align-items: center; justify-content: center; }
 .icon svg { width: 14px; height: 14px; stroke-width: 1.7; }
 .label { min-width: 0; overflow-wrap: anywhere; }
+
+.action.primary:disabled { opacity: 1; background: #45405f; border-color: #45405f; color: #e4e1f4; }
