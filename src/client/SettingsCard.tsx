@@ -32,6 +32,8 @@ import css from './settings-card.module.css'
 interface PromptProbeSource {
   origin: 'custom' | 'channel' | 'none'
   apiUrl: string
+  /** Which layer supplied the credential; `none` means the request carried none. */
+  keySource?: 'draft' | 'custom' | 'channel' | 'none'
   channelId?: string
   channelName?: string
 }
@@ -129,6 +131,8 @@ export interface StorageTestOutcome {
 export interface ImageGenSettingsCardFace extends CardActions {
   /** Channel staging actions (committed together with the card's save). */
   channels: ChannelsFormActions
+  /** Whether a stored secret exists for one field (`promptApiKey`, …). */
+  secretSet: (field: string) => boolean
   /** Save staged edits, then upload a probe object to the configured store. */
   storageTest: () => Promise<StorageTestOutcome>
   hooks: {
@@ -224,6 +228,7 @@ export class ImageGenSettingsCardController {
         imageGenSettingsCard: cardStore,
       },
       channels: this.channelsForm.actions(),
+      secretSet: (field: string): boolean => this.scope.getSecretSetSnapshot(field),
       // The probe needs the values the user is looking at, so staged edits are
       // committed first; the host route then resolves the saved config itself.
       storageTest: async (): Promise<StorageTestOutcome> => {
@@ -662,6 +667,9 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
   const promptChannelNeedsKey = !promptCustomMode
     && selectedPromptChannel !== undefined
     && state.channels.keySet[selectedPromptChannel.id] !== true
+  /** Whether the custom endpoint has a credential (typed now or already stored). */
+  const promptCustomKeySet = state.promptApiKey.text.trim() !== '' || props.secretSet('promptApiKey')
+  const promptCustomNeedsKey = promptCustomMode && customPromptUrl !== '' && !promptCustomKeySet
   const promptModelNeedle = promptModelFilter.trim().toLowerCase()
   const visiblePromptModels = (promptModelNeedle === ''
     ? promptModels
@@ -671,6 +679,15 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
     : promptProbeSource.origin === 'channel'
       ? t('settings.promptSourceValueChannel', { name: promptProbeSource.channelName ?? '', url: promptProbeSource.apiUrl })
       : t('settings.promptSourceValueCustom', { url: promptProbeSource.apiUrl })
+  const promptKeyLabel = promptProbeSource === null || promptProbeSource.keySource === undefined
+    ? ''
+    : promptProbeSource.keySource === 'channel'
+      ? t('settings.promptKeyChannel', { name: promptProbeSource.channelName ?? '' })
+      : promptProbeSource.keySource === 'custom'
+        ? t('settings.promptKeyCustom')
+        : promptProbeSource.keySource === 'draft'
+          ? t('settings.promptKeyDraft')
+          : t('settings.promptKeyNone')
   const promptProbeError = (code: string | undefined, message: string | undefined, status: number): string => {
     if (code === 'prompt-url-missing') return t('settings.promptErrNoUrl')
     if (code === 'prompt-channel-unsupported') return t('settings.promptErrChannel')
@@ -702,7 +719,14 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         source?: PromptProbeSource
       }
       if (!response.ok || payload.ok !== true) {
-        setPromptModelsError(promptProbeError(payload.code, payload.message, response.status))
+        const failure = promptProbeError(payload.code, payload.message, response.status)
+        const echo = payload.source ?? null
+        setPromptProbeSource(echo)
+        // #84: a request that went out without a credential must say so; the
+        // upstream's "invalid key" text only describes its own view.
+        setPromptModelsError(echo?.keySource === 'none'
+          ? t('settings.promptErrNoKey', { url: echo.apiUrl, message: failure })
+          : failure)
         return
       }
       setPromptModels(payload.models ?? [])
@@ -1014,6 +1038,7 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         {promptEffective}
         {promptChannelNeedsKey ? ` · ${t('settings.promptChannelNoKey')}` : ''}
       </p>
+      {promptCustomNeedsKey ? <p className={css.invalid} data-prompt-missing-key="">{t('settings.promptNoKeyHint')}</p> : null}
       <div className={css.modelSummary}>
         {state.promptModel.text.trim() !== '' ? (
           <span className={css.modelChip}>
@@ -1064,7 +1089,12 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         </div>
       ) : null}
       {promptModels.length > 0 && visiblePromptModels.length === 0 ? <p className={css.hint}>{t('settings.promptFilterEmpty')}</p> : null}
-      {promptProbeSource !== null ? <p className={css.hint}>{t('settings.promptDetectedFrom', { source: promptSourceLabel })}</p> : null}
+      {promptProbeSource !== null ? (
+        <p className={css.hint} data-prompt-source-line="">
+          {t('settings.promptDetectedFrom', { source: promptSourceLabel })}
+          {promptKeyLabel === '' ? '' : ` · ${promptKeyLabel}`}
+        </p>
+      ) : null}
       {promptModelsError !== null ? <p className={css.failed} role="status">{promptModelsError}</p> : null}
       {state.dirty || state.failed ? (
         <div className={css.promptSaveRow}>

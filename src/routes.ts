@@ -279,6 +279,7 @@ function promptSourceOf(endpoint: PromptEndpoint): Record<string, unknown> {
   return {
     origin: endpoint.origin,
     apiUrl: endpoint.apiUrl,
+    ...endpoint.keySource === undefined ? {} : { keySource: endpoint.keySource },
     ...endpoint.channelId === undefined ? {} : { channelId: endpoint.channelId },
     ...endpoint.channelName === undefined ? {} : { channelName: endpoint.channelName },
   }
@@ -780,21 +781,24 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         // for endpoints and credentials chosen outside the local profile.
         const override = isLoopbackRequest(req) ? promptOverrideOf(await readJsonBody(req)) : undefined
         const endpoint = resolvePrompt(override)
+        const source = promptSourceOf(endpoint)
         if (endpoint.apiUrl.trim() === '') {
           writeJson(res, 200, {
             ok: false,
             code: endpoint.issue === undefined ? 'prompt-url-missing' : 'prompt-channel-unsupported',
             issue: endpoint.issue ?? null,
+            source,
             message: 'API URL is required',
           })
           return
         }
         try {
-          writeJson(res, 200, { ok: true, models: await listPromptModels(endpoint), source: promptSourceOf(endpoint) })
+          writeJson(res, 200, { ok: true, models: await listPromptModels(endpoint), source })
         } catch (error) {
           writeJson(res, 200, {
             ok: false,
             code: error instanceof PromptConfigError ? error.code : 'prompt-models-failed',
+            source,
             message: messageOf(error),
           })
         }

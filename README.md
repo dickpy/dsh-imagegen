@@ -143,6 +143,9 @@ GPT Image 2 及以上版本会按「比例 + 清晰度」发送实际像素尺�
 <summary><b>接口与渠道补充说明</b></summary>
 
 - 通用渠道默认自动判断 Images API 与 Chat Completions；也可在设置中手动指定。
+- 检测模型时会同时探测 `<base>/models` 与 `<base>/models?kind=image`：magpie 一类网关只在过滤列表里暴露生图模型（普通列表剥掉了能力元数据），而 OpenAI 兼容网关会忽略该查询参数，因此这是纯增量探测。识别时兼容 `kind`、`supported_endpoint_types` 与嵌套 `modalities.output` 三种能力标记。
+- 「对话模型」不会跨地址复用图像渠道的密钥：填了独立对话地址而没填密钥时，请求不带 `Authorization`，界面会提示「未配置对话 API 密钥」，不会把 A 服务的密钥发给 B 服务。复用渠道时会回显「密钥来自渠道 X」。
+- 只有经设置卡或宿主设置接口写入的改动会实时生效；第三方工具直接改写 profile 的 `cordis.patch.yml` 不会推送给已经实例化的插件（`.volatile()` 字段由宿主设置服务维护）。这种情况下请在设置页再保存一次，或重启 DSH。
 - One-API、New API、LiteLLM 等只暴露 `/chat/completions` 的网关，可填写完整接口地址并选择对应模型。
 - API 密钥保存在 DSH 宿主设置中；未被自动识别的兼容模型可手动添加。
 - 不同服务商的图生图、尺寸与返回格式可能不同，请确认所选模型实际支持的能力。

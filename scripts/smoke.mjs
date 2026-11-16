@@ -205,6 +205,7 @@ await check('A2d prompt endpoint honors a chosen channel and the settings-card d
     origin: 'channel',
     channelId: 'second',
     channelName: 'Second',
+    keySource: 'channel',
   })
   // A subscription channel cannot serve chat calls: the resolver says so instead of guessing.
   assert.deepEqual(host.resolvePromptEndpoint({ ...base, promptChannelId: 'sub' }), {
@@ -215,8 +216,10 @@ await check('A2d prompt endpoint honors a chosen channel and the settings-card d
     channelId: 'sub',
     channelName: 'Subscription',
     issue: 'subscription',
+    keySource: 'none',
   })
-  // A custom URL from the card takes precedence; a blank draft key falls back to the stored one.
+  // A custom URL from the card takes precedence; a blank draft key falls back
+  // to the stored custom key — never to an image channel's key (#84).
   assert.deepEqual(host.resolvePromptEndpoint({ ...base, promptChannelId: 'second' }, {
     apiUrl: 'https://draft.example.test/v1',
   }), {
@@ -224,6 +227,15 @@ await check('A2d prompt endpoint honors a chosen channel and the settings-card d
     apiKey: '',
     model: 'gpt-4.1-mini',
     origin: 'custom',
+    keySource: 'none',
+  })
+  // Stored custom values with no key echo the same "no credential" state.
+  assert.deepEqual(host.resolvePromptEndpoint({ ...base, promptApiUrl: 'https://chat.example.test/v1' }), {
+    apiUrl: 'https://chat.example.test/v1',
+    apiKey: '',
+    model: 'gpt-4.1-mini',
+    origin: 'custom',
+    keySource: 'none',
   })
 })
 await check('A3 updater parses stable Releases and caches checks', async () => {

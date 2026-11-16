@@ -690,17 +690,21 @@ export function resolvePromptEndpoint(value: EffectiveConfig, override?: PromptE
   if (draftUrl !== '' || value.promptApiUrl !== '') {
     const apiUrl = draftUrl !== '' ? draftUrl : value.promptApiUrl
     const draftKey = (override?.apiKey ?? '').trim()
-    return { apiUrl, apiKey: draftKey !== '' ? draftKey : value.promptApiKey, model, origin: 'custom' }
+    // A custom endpoint only ever uses its own key. Falling back to an image
+    // channel's key here would send one service's credential to another (#84).
+    if (draftKey !== '') return { apiUrl, apiKey: draftKey, model, origin: 'custom', keySource: 'draft' }
+    if (value.promptApiKey !== '') return { apiUrl, apiKey: value.promptApiKey, model, origin: 'custom', keySource: 'custom' }
+    return { apiUrl, apiKey: '', model, origin: 'custom', keySource: 'none' }
   }
 
   const requestedId = ((override?.channelId ?? '').trim() || (value.promptChannelId ?? '')).trim()
   if (requestedId !== '') {
     const requested = value.channels.find(channel => channel.id === requestedId)
-    if (requested === undefined) return { apiUrl: '', apiKey: '', model, origin: 'none', issue: 'missing' }
-    if (requested.auth === 'subscription') return { apiUrl: '', apiKey: '', model, origin: 'none', channelId: requested.id, channelName: requested.name, issue: 'subscription' }
-    if (requested.apiUrlFull === true) return { apiUrl: '', apiKey: '', model, origin: 'none', channelId: requested.id, channelName: requested.name, issue: 'full-url' }
-    if (!isReusablePromptChannel(requested)) return { apiUrl: '', apiKey: '', model, origin: 'none', channelId: requested.id, channelName: requested.name, issue: 'missing' }
-    return { apiUrl: requested.apiUrl, apiKey: requested.apiKey, model, origin: 'channel', channelId: requested.id, channelName: requested.name }
+    if (requested === undefined) return { apiUrl: '', apiKey: '', model, origin: 'none', keySource: 'none', issue: 'missing' }
+    if (requested.auth === 'subscription') return { apiUrl: '', apiKey: '', model, origin: 'none', keySource: 'none', channelId: requested.id, channelName: requested.name, issue: 'subscription' }
+    if (requested.apiUrlFull === true) return { apiUrl: '', apiKey: '', model, origin: 'none', keySource: 'none', channelId: requested.id, channelName: requested.name, issue: 'full-url' }
+    if (!isReusablePromptChannel(requested)) return { apiUrl: '', apiKey: '', model, origin: 'none', keySource: 'none', channelId: requested.id, channelName: requested.name, issue: 'missing' }
+    return { apiUrl: requested.apiUrl, apiKey: requested.apiKey, model, origin: 'channel', keySource: 'channel', channelId: requested.id, channelName: requested.name }
   }
 
   const modelChannel = value.defaultModel === ''
@@ -711,12 +715,13 @@ export function resolvePromptEndpoint(value: EffectiveConfig, override?: PromptE
   const reusable = [modelChannel, defaultChannel, ...value.channels].find(
     (channel): channel is RuntimeChannel => channel !== undefined && isReusablePromptChannel(channel),
   )
-  if (reusable === undefined) return { apiUrl: '', apiKey: '', model, origin: 'none' }
+  if (reusable === undefined) return { apiUrl: '', apiKey: '', model, origin: 'none', keySource: 'none' }
   return {
     apiUrl: reusable.apiUrl,
     apiKey: reusable.apiKey,
     model,
     origin: 'channel',
+    keySource: 'channel',
     channelId: reusable.id,
     channelName: reusable.name,
   }

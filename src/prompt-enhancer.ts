@@ -12,6 +12,9 @@ export interface PromptModelConfig {
 /** Why a channel cannot back a chat request (absent when it can). */
 export type PromptChannelIssue = 'missing' | 'subscription' | 'full-url'
 
+/** Where the chat request's credential came from. */
+export type PromptKeySource = 'draft' | 'custom' | 'channel' | 'none'
+
 /** The endpoint a chat call would use, plus where it came from. */
 export interface PromptEndpoint extends PromptModelConfig {
   /** `custom` = the prompt fields, `channel` = a reused image channel, `none` = unconfigured. */
@@ -22,6 +25,11 @@ export interface PromptEndpoint extends PromptModelConfig {
   channelName?: string
   /** Why the requested channel could not be used (absent when it could). */
   issue?: PromptChannelIssue
+  /**
+   * Which layer supplied the key. `none` means the request goes out without
+   * an Authorization header — never silently filled with another host's key.
+   */
+  keySource?: PromptKeySource
 }
 
 /**
@@ -59,6 +67,13 @@ export interface ModelListConfig {
   apiKey: string
   apiUrlFull?: boolean
   protocol?: ChannelProtocolPreference
+  /**
+   * Also probe `?kind=image` (image detection only). Gateways such as magpie
+   * strip capability metadata from the plain list and answer the filtered one
+   * with real image models; OpenAI-compatible gateways ignore the parameter,
+   * so it is an additive probe rather than a requirement.
+   */
+  imageKindFilter?: boolean
 }
 
 function endpoint(base: string, suffix: string): string {
@@ -95,8 +110,7 @@ function modelListUrls(config: ModelListConfig): string[] {
     url.pathname = `${url.pathname.replace(/\/chat\/completions\/?$/, '')}/models`
     url.search = ''
     url.hash = ''
-    urls.push(url.toString())
-    return urls
+    return kindFilteredUrls([url.toString()], config)
   }
   urls.push(endpoint(base, '/models'))
   try {
@@ -114,7 +128,27 @@ function modelListUrls(config: ModelListConfig): string[] {
   } catch {
     // Non-URL bases fall back to the original string concatenation behavior.
   }
-  return [...new Set(urls)]
+  return kindFilteredUrls(urls, config)
+}
+
+/**
+ * Add `?kind=image` variants of the candidate URLs for image detection.
+ *
+ * Gateways that expose capabilities only through the filtered list (magpie
+ * answers 25 image models there and strips the metadata from the plain list)
+ * need this probe; plain OpenAI-compatible gateways ignore the unknown query
+ * parameter, so the probe is additive and never replaces the plain list.
+ * @param urls - plain candidate URLs, most specific first.
+ * @param config - detection config carrying the image flag.
+ * @returns plain URLs followed by their kind-filtered variants.
+ */
+function kindFilteredUrls(urls: string[], config: ModelListConfig): string[] {
+  const unique = [...new Set(urls)]
+  if (config.imageKindFilter !== true) return unique
+  return [...new Set([
+    ...unique,
+    ...unique.map(url => `${url}${url.includes('?') ? '&' : '?'}kind=image`),
+  ])]
 }
 
 function errorMessageOf(body: unknown, fallback: string): string {
@@ -190,9 +224,35 @@ async function fetchModelRecords(url: string, apiKey: string): Promise<ModelList
   return { records, retryable: false }
 }
 
+/**
+ * Merge records gathered from several candidate URLs by id.
+ *
+ * A gateway can answer the plain list with bare ids and the filtered list with
+ * full metadata, so per-id metadata is merged and a record that claims image
+ * capability wins over one that does not.
+ * @param records - records in arrival order.
+ * @returns one record per id.
+ */
+function mergeModelRecords(records: ModelRecord[]): ModelRecord[] {
+  const byId = new Map<string, ModelRecord>()
+  for (const record of records) {
+    const existing = byId.get(record.id)
+    if (existing === undefined) {
+      byId.set(record.id, record)
+      continue
+    }
+    const merged = { ...existing, ...record }
+    byId.set(record.id, hasImageGenerationCapability(record) === true || hasImageGenerationCapability(merged) !== false ? merged : existing)
+  }
+  return [...byId.values()]
+}
+
 async function listModelRecords(config: ModelListConfig): Promise<ModelRecord[]> {
   const urls = modelListUrls(config)
   let lastError: Error | undefined
+  let collected: ModelRecord[] = []
+  /** At least one candidate answered with a model list (possibly empty). */
+  let answered = false
   for (const url of urls) {
     let attempt: ModelListAttempt
     try {
@@ -201,10 +261,20 @@ async function listModelRecords(config: ModelListConfig): Promise<ModelRecord[]>
       lastError = error instanceof Error ? error : new Error(String(error))
       continue
     }
-    if (attempt.records !== undefined) return attempt.records
+    if (attempt.records !== undefined) {
+      answered = true
+      collected = mergeModelRecords([...collected, ...attempt.records])
+      continue
+    }
     lastError = attempt.error
-    if (!attempt.retryable) throw attempt.error
+    // A definitive refusal (auth, bad request) will not differ per candidate
+    // URL; when earlier candidates already answered, keep what they returned.
+    if (!attempt.retryable) {
+      if (answered) break
+      throw attempt.error
+    }
   }
+  if (answered) return collected
   throw lastError ?? new Error('模型接口不可用')
 }
 
@@ -215,6 +285,18 @@ function textOf(value: unknown): string[] {
 }
 
 function hasImageGenerationCapability(record: ModelRecord): boolean | undefined {
+  // Explicit gateway metadata wins over every heuristic below: some gateways
+  // (magpie) tag image models with `kind`, an endpoint capability list, or a
+  // nested modalities block instead of the OpenAI capability fields.
+  if (typeof record.kind === 'string' && record.kind.trim().toLowerCase() === 'image') return true
+  const endpointTypes = textOf(record.supported_endpoint_types)
+  if (endpointTypes.some(value => /^image-(?:generation|edit)$/i.test(value.trim()))) return true
+  const nestedModalities = record.modalities
+  if (nestedModalities !== null && typeof nestedModalities === 'object') {
+    const output = (nestedModalities as { output?: unknown }).output
+    if (textOf(output).some(value => value.trim().toLowerCase() === 'image')) return true
+  }
+
   const capability = record.capabilities
   if (capability !== null && typeof capability === 'object') {
     const values = capability as Record<string, unknown>
@@ -258,7 +340,9 @@ export async function listOpenAIModels(config: ModelListConfig): Promise<string[
 
 /** List only models that advertise or conventionally represent image generation. */
 export async function listImageModels(config: ModelListConfig): Promise<string[]> {
-  return [...new Set((await listModelRecords(config)).filter(isImageModelRecord).map(record => record.id))]
+  // Only the image path probes `?kind=image`: the chat model list must stay
+  // exactly what the plain endpoint exposes.
+  return [...new Set((await listModelRecords({ ...config, imageKindFilter: true })).filter(isImageModelRecord).map(record => record.id))]
     .sort((a, b) => a.localeCompare(b))
 }
 
