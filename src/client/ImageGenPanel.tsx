@@ -607,8 +607,22 @@ export function ImageGenPanel(props: {
         && scope.getSecretSetSnapshot(`channelSecrets.${channel.id}`))
       .map(channel => channel.id),
   )
-  const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== '' || reusablePromptChannelIds.size > 0
-  const promptKeyConfigured = promptKeySet || reusablePromptChannelIds.size > 0
+  // An explicitly chosen channel is what the host will use, so readiness must
+  // follow that choice instead of "any reusable channel exists".
+  const chosenPromptChannelId = (config?.promptChannelId ?? '').trim()
+  const chosenPromptChannel = chosenPromptChannelId === ''
+    ? undefined
+    : (config?.channels ?? []).find(channel => channel.id === chosenPromptChannelId)
+  const chosenPromptChannelUsable = chosenPromptChannel === undefined
+    ? false
+    : chosenPromptChannel.auth !== 'subscription'
+      && chosenPromptChannel.apiUrlFull !== true
+      && chosenPromptChannel.apiUrl.trim() !== ''
+      && scope.getSecretSetSnapshot(`channelSecrets.${chosenPromptChannel.id}`)
+  const promptEndpointConfigured = (config?.promptApiUrl ?? '').trim() !== ''
+    || (chosenPromptChannel === undefined ? reusablePromptChannelIds.size > 0 : chosenPromptChannelUsable)
+  const promptKeyConfigured = promptKeySet
+    || (chosenPromptChannel === undefined ? reusablePromptChannelIds.size > 0 : chosenPromptChannelUsable)
   const promptReady = enabled
     && (config?.promptModel ?? '').trim() !== ''
     && promptEndpointConfigured

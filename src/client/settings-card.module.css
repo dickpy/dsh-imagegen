@@ -1816,3 +1816,138 @@
   padding-top: 10px;
   border-top: 1px dashed var(--dsw-alias-border-l2);
 }
+
+/* ----- prompt-enhancement section: endpoint source + model filtering ----- */
+
+.promptSourceRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 14px;
+}
+
+.promptSourceLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.promptSegments {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.promptSegment {
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.promptSegment[data-selected] {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+.promptSegment:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.promptSegment:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.promptChannelRow {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.promptChannelRow .modelChoices {
+  height: 32px;
+}
+
+.promptModels {
+  margin-top: 4px;
+}
+
+.promptModelToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.promptModelToolbar .modelCandidateLabel {
+  width: auto;
+  margin-right: auto;
+}
+
+.promptModelFilter {
+  flex: 1 1 140px;
+  min-width: 120px;
+  max-width: 240px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.promptModelFilter:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.promptModelCount {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.promptSaveRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.promptSaveRow .footerStatus {
+  margin-right: 0;
+}
+
+.promptSaveRow .save {
+  background: var(--dsw-alias-brand-primary);
+  color: #fff;
+}
+
+.promptSaveRow .save:hover:not(:disabled) {
+  filter: brightness(1.05);
+}

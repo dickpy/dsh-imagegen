@@ -168,6 +168,64 @@ await check('A2c prompt models reuse an API-key channel instead of a leading sub
     model: 'gpt-5.6-luna',
   })
 })
+await check('A2d prompt endpoint honors a chosen channel and the settings-card draft', () => {
+  const base = {
+    channels: [
+      {
+        id: 'sub', preset: '', name: 'Subscription', apiUrl: '', apiUrlFull: false,
+        auth: 'subscription', subscription: 'openrouter-sub', apiKey: '', models: [],
+      },
+      {
+        id: 'first', preset: '', name: 'First', apiUrl: 'https://first.example.test/v1', apiUrlFull: false,
+        apiKey: 'key-first', models: [{ alias: 'image-first', id: 'image-first' }],
+      },
+      {
+        id: 'second', preset: '', name: 'Second', apiUrl: 'https://second.example.test/v1', apiUrlFull: false,
+        apiKey: 'key-second', models: [{ alias: 'image-second', id: 'image-second' }],
+      },
+    ],
+    defaultChannelId: 'first',
+    defaultModel: 'image-first',
+    promptApiUrl: '',
+    promptApiKey: '',
+    promptModel: 'gpt-4.1-mini',
+    promptChannelId: '',
+  }
+  // Blank prompt fields still reuse the default model's channel automatically.
+  assert.deepEqual(host.resolvePromptModelConfig(base), {
+    apiUrl: 'https://first.example.test/v1',
+    apiKey: 'key-first',
+    model: 'gpt-4.1-mini',
+  })
+  // An explicitly chosen channel wins over the automatic order and names its source.
+  assert.deepEqual(host.resolvePromptEndpoint({ ...base, promptChannelId: 'second' }), {
+    apiUrl: 'https://second.example.test/v1',
+    apiKey: 'key-second',
+    model: 'gpt-4.1-mini',
+    origin: 'channel',
+    channelId: 'second',
+    channelName: 'Second',
+  })
+  // A subscription channel cannot serve chat calls: the resolver says so instead of guessing.
+  assert.deepEqual(host.resolvePromptEndpoint({ ...base, promptChannelId: 'sub' }), {
+    apiUrl: '',
+    apiKey: '',
+    model: 'gpt-4.1-mini',
+    origin: 'none',
+    channelId: 'sub',
+    channelName: 'Subscription',
+    issue: 'subscription',
+  })
+  // A custom URL from the card takes precedence; a blank draft key falls back to the stored one.
+  assert.deepEqual(host.resolvePromptEndpoint({ ...base, promptChannelId: 'second' }, {
+    apiUrl: 'https://draft.example.test/v1',
+  }), {
+    apiUrl: 'https://draft.example.test/v1',
+    apiKey: '',
+    model: 'gpt-4.1-mini',
+    origin: 'custom',
+  })
+})
 await check('A3 updater parses stable Releases and caches checks', async () => {
   assert.equal(host.CURRENT_VERSION, packageJson.version)
   assert.equal(host.compareVersions('v1.0.3', '1.0.2') > 0, true)
@@ -1559,7 +1617,13 @@ const routes = host.makeRoutes({
   settingsNamespace: 'imagegen',
   subscriptions: subscriptionFake,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
-  resolvePrompt: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test', model: 'chat-test' }),
+  // The card sends an unsaved draft; the route must resolve through it.
+  resolvePrompt: (override) => ({
+    apiUrl: override?.apiUrl ?? `http://127.0.0.1:${upstreamPort}/v1`,
+    apiKey: override?.apiKey ?? 'sk-test',
+    model: 'chat-test',
+    origin: 'custom',
+  }),
   history,
   templates,
   favorites,
@@ -1669,6 +1733,22 @@ await check('C1 settings describe serves the redacted namespace', async () => {
   assert.equal(view.value.apiUrl, 'http://upstream/v1')
   assert.equal(view.value.apiKey, undefined)
   assert.deepEqual(view.secrets, [{ path: ['apiKey'], set: false }])
+})
+
+await check('C1b prompt model detection names its source and honors the settings-card draft', async () => {
+  const listed = await post('/api/dsh-imagegen/prompt-enhance/models', {})
+  assert.equal(listed.body.ok, true, JSON.stringify(listed.body))
+  assert.ok(Array.isArray(listed.body.models))
+  assert.equal(listed.body.source.origin, 'custom')
+  assert.equal(listed.body.source.apiUrl, `http://127.0.0.1:${upstreamPort}/v1`)
+  // The card's unsaved draft is what the request uses, so detection works
+  // before a save (the regression this check exists for).
+  const draft = await post('/api/dsh-imagegen/prompt-enhance/models', {
+    apiUrl: `http://127.0.0.1:${upstreamPort}/v1/`,
+  })
+  assert.equal(draft.body.ok, true, JSON.stringify(draft.body))
+  assert.deepEqual(draft.body.models, listed.body.models)
+  assert.equal(draft.body.source.apiUrl, `http://127.0.0.1:${upstreamPort}/v1/`)
 })
 
 await check('C2 settings mutate writes + redacts the key', async () => {

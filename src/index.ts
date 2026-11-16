@@ -314,7 +314,7 @@ import { registerAgentImageTools } from './agent-image-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
 import { setImageDataRoot, imageDataRoot } from './image-storage-path.ts'
 import { presetById } from './presets.ts'
-import { chatComplete, type PromptModelConfig } from './prompt-enhancer.ts'
+import { chatComplete, type PromptEndpoint, type PromptEndpointOverride, type PromptModelConfig } from './prompt-enhancer.ts'
 import { SkillRunner, setSkillTranslate, canvasSkillCopy, type SkillAgentBackend, type SkillAgentHandle, type SkillCanvasBackend, type SkillChatBackend, type SkillRegistryBackend } from './skill-runner.ts'
 import { installFromArchive, installFromUrl, knownSkillUrl, listLibrary, listLocalSkills, readLocalSkill, removeSkill, SkillStoreError, skillsRoot, type LocalSkill, type LocalSkillIssue } from './skill-store.ts'
 import { applySkillConfigSteps, asConfigDict, configNote, configView, missingFields, parseSkillConfigManifest, readSkillConfigFile, skillConfigKey, valuesFor, type SkillConfigDeclaration, type SkillConfigIssue, type SkillConfigStore } from './skill-config.ts'
@@ -397,6 +397,12 @@ export interface Config {
   promptApiKey?: string
   /** Chat model used to expand short image prompts. */
   promptModel?: string
+  /**
+   * Image channel that backs the chat model when no custom endpoint is set.
+   * Empty means "pick automatically" (the default model's channel, then the
+   * default channel, then the first API-key channel).
+   */
+  promptChannelId?: string
   /** Local root for generated/history/gallery/canvas images. Empty keeps the default under DSH_HOME. */
   localStoragePath?: string
   /** Sync saved images to an S3-compatible object store (COS / OSS / Qiniu S3 …). */
@@ -500,6 +506,7 @@ const configSchema = z.object({
   promptApiUrl: z.string().default('').volatile(),
   promptApiKey: z.string().role('secret').default('').volatile(),
   promptModel: z.string().default('').volatile(),
+  promptChannelId: z.string().default('').volatile(),
   localStoragePath: z.string().default('').volatile(),
   storageEnabled: z.boolean().default(false).volatile(),
   storageEndpoint: z.string().default('').volatile(),
@@ -629,6 +636,8 @@ export interface EffectiveConfig {
   promptApiUrl: string
   promptApiKey: string
   promptModel: string
+  /** Channel chosen for the chat model; empty means automatic reuse. */
+  promptChannelId: string
   storage: StorageSyncConfig & { enabled: boolean; syncGallery: boolean; syncHistory: boolean }
   /** Infinite-canvas skill settings. */
   skills: {
@@ -665,24 +674,62 @@ function isReusablePromptChannel(channel: RuntimeChannel): boolean {
 }
 
 /**
- * Resolve the optional chat endpoint. Keeping this separate from image
- * generation matters when subscription channels appear first: blank prompt
- * fields must reuse a real API-key channel, not the first configured row.
+ * Resolve the optional chat endpoint and report where it came from.
+ *
+ * Order: an explicit custom URL, then the chosen channel, then the automatic
+ * reuse order (the default model's channel, the default channel, any API-key
+ * channel). Keeping the source in the result lets the settings card and the
+ * detection route say which channel is actually in use instead of guessing.
+ * @param value - effective plugin config.
+ * @param override - unsaved card draft; only honored for loopback callers.
+ * @returns endpoint, model, and its origin.
  */
-export function resolvePromptModelConfig(value: EffectiveConfig): PromptModelConfig {
+export function resolvePromptEndpoint(value: EffectiveConfig, override?: PromptEndpointOverride): PromptEndpoint {
+  const model = value.promptModel
+  const draftUrl = (override?.apiUrl ?? '').trim()
+  if (draftUrl !== '' || value.promptApiUrl !== '') {
+    const apiUrl = draftUrl !== '' ? draftUrl : value.promptApiUrl
+    const draftKey = (override?.apiKey ?? '').trim()
+    return { apiUrl, apiKey: draftKey !== '' ? draftKey : value.promptApiKey, model, origin: 'custom' }
+  }
+
+  const requestedId = ((override?.channelId ?? '').trim() || (value.promptChannelId ?? '')).trim()
+  if (requestedId !== '') {
+    const requested = value.channels.find(channel => channel.id === requestedId)
+    if (requested === undefined) return { apiUrl: '', apiKey: '', model, origin: 'none', issue: 'missing' }
+    if (requested.auth === 'subscription') return { apiUrl: '', apiKey: '', model, origin: 'none', channelId: requested.id, channelName: requested.name, issue: 'subscription' }
+    if (requested.apiUrlFull === true) return { apiUrl: '', apiKey: '', model, origin: 'none', channelId: requested.id, channelName: requested.name, issue: 'full-url' }
+    if (!isReusablePromptChannel(requested)) return { apiUrl: '', apiKey: '', model, origin: 'none', channelId: requested.id, channelName: requested.name, issue: 'missing' }
+    return { apiUrl: requested.apiUrl, apiKey: requested.apiKey, model, origin: 'channel', channelId: requested.id, channelName: requested.name }
+  }
+
   const modelChannel = value.defaultModel === ''
     ? undefined
     : value.channels.find(channel => isReusablePromptChannel(channel)
-      && channel.models.some(model => model.alias === value.defaultModel))
+      && channel.models.some(entry => entry.alias === value.defaultModel))
   const defaultChannel = value.channels.find(channel => channel.id === value.defaultChannelId)
   const reusable = [modelChannel, defaultChannel, ...value.channels].find(
     (channel): channel is RuntimeChannel => channel !== undefined && isReusablePromptChannel(channel),
   )
+  if (reusable === undefined) return { apiUrl: '', apiKey: '', model, origin: 'none' }
   return {
-    apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : reusable?.apiUrl ?? '',
-    apiKey: value.promptApiKey !== '' ? value.promptApiKey : reusable?.apiKey ?? '',
-    model: value.promptModel,
+    apiUrl: reusable.apiUrl,
+    apiKey: reusable.apiKey,
+    model,
+    origin: 'channel',
+    channelId: reusable.id,
+    channelName: reusable.name,
   }
+}
+
+/**
+ * Resolve the optional chat endpoint. Keeping this separate from image
+ * generation matters when subscription channels appear first: blank prompt
+ * fields must reuse a real API-key channel, not the first configured row.
+ */
+export function resolvePromptModelConfig(value: EffectiveConfig, override?: PromptEndpointOverride): PromptModelConfig {
+  const { apiUrl, apiKey, model } = resolvePromptEndpoint(value, override)
+  return { apiUrl, apiKey, model }
 }
 
 /**
@@ -740,6 +787,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
       promptApiUrl: typeof value.promptApiUrl === 'string' ? value.promptApiUrl.trim() : '',
       promptApiKey: typeof value.promptApiKey === 'string' ? value.promptApiKey.trim() : '',
       promptModel: typeof value.promptModel === 'string' ? value.promptModel.trim() : '',
+      promptChannelId: typeof value.promptChannelId === 'string' ? value.promptChannelId.trim() : '',
       storage: {
         enabled: value.storageEnabled ?? false,
         endpoint: typeof value.storageEndpoint === 'string' ? value.storageEndpoint.trim() : '',
@@ -1155,7 +1203,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
             return { apiUrl: channel?.apiUrl ?? '', apiKey: channel?.apiKey ?? '' }
           },
           resolveChannels: channelsView,
-          resolvePrompt: () => resolvePromptModelConfig(resolve()),
+          resolvePrompt: (override) => resolvePromptEndpoint(resolve(), override),
           resolveImageModels: () => {
             const value = resolve()
             return [...new Set(value.channels.flatMap(channel => channel.models.map(model => model.alias)))]

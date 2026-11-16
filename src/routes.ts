@@ -20,7 +20,7 @@ import { pickImageMetadata } from './image-metadata.ts'
 import { imageDimensions } from './image-dimensions.ts'
 import { isLoopbackRequest, remoteSettingsMutationAllowed, requestAccessRejection, type RemoteAccess, type RemoteAccessConnection } from './remote-access.ts'
 import type { UpstreamConfig } from './engine.ts'
-import { enhancePrompt, listImageModels, listPromptModels, polishPrompt, type PromptModelConfig } from './prompt-enhancer.ts'
+import { PromptConfigError, enhancePrompt, listImageModels, listPromptModels, polishPrompt, type PromptEndpoint, type PromptEndpointOverride } from './prompt-enhancer.ts'
 import { analyzeLayers, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
 import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
@@ -112,8 +112,8 @@ export interface ImageGenRoutesDeps {
   resolve: () => UpstreamConfig
   /** Resolve the current channel view (the channel-aware path). */
   resolveChannels?: () => ChannelsView
-  /** Resolve the optional chat-model configuration for prompt enhancement. */
-  resolvePrompt?: () => PromptModelConfig
+  /** Resolve the optional chat-model endpoint for prompt enhancement. */
+  resolvePrompt?: (override?: PromptEndpointOverride) => PromptEndpoint
   /** Models explicitly selected for this image API endpoint (legacy path). */
   resolveImageModels?: () => string[]
   /** Host attachment storage used by Agent tool-result previews. */
@@ -254,6 +254,34 @@ async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buff
 /** Human-readable text from an unknown thrown value. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Shape-check the unsaved prompt-endpoint draft of a model-detection request.
+ * @param body - parsed request body, when the caller is loopback.
+ * @returns the draft, or undefined when the body carries no override.
+ */
+function promptOverrideOf(body: Record<string, unknown> | undefined): PromptEndpointOverride | undefined {
+  if (body === undefined) return undefined
+  const channelId = typeof body.channelId === 'string' ? body.channelId.trim() : ''
+  const apiUrl = typeof body.apiUrl === 'string' ? body.apiUrl.trim() : ''
+  const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+  if (channelId === '' && apiUrl === '' && apiKey === '') return undefined
+  return {
+    ...channelId === '' ? {} : { channelId },
+    ...apiUrl === '' ? {} : { apiUrl },
+    ...apiKey === '' ? {} : { apiKey },
+  }
+}
+
+/** Public description of where the detection endpoint came from. */
+function promptSourceOf(endpoint: PromptEndpoint): Record<string, unknown> {
+  return {
+    origin: endpoint.origin,
+    apiUrl: endpoint.apiUrl,
+    ...endpoint.channelId === undefined ? {} : { channelId: endpoint.channelId },
+    ...endpoint.channelName === undefined ? {} : { channelName: endpoint.channelName },
+  }
 }
 
 /** Validate the { source } body of a template-library request. */
@@ -538,7 +566,8 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     add: addTemplateFavorite,
     remove: removeTemplateFavorite,
   }
-  const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
+  const resolvePrompt: (override?: PromptEndpointOverride) => PromptEndpoint = deps.resolvePrompt
+    ?? (() => ({ apiUrl: '', apiKey: '', model: '', origin: 'none' }))
   const resolveImageModels = deps.resolveImageModels ?? (() => normalizeImageModels(undefined))
   const settingsNamespace = deps.settingsNamespace ?? IMAGEGEN_SETTINGS_NAMESPACE
 
@@ -745,10 +774,29 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       path: PROMPT_ENHANCE_API.models,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
+        // The settings card sends its unsaved draft, so "fetch models" answers
+        // for what the user is looking at instead of only the last save. A
+        // remote client may not supply one: the host must not become a fetcher
+        // for endpoints and credentials chosen outside the local profile.
+        const override = isLoopbackRequest(req) ? promptOverrideOf(await readJsonBody(req)) : undefined
+        const endpoint = resolvePrompt(override)
+        if (endpoint.apiUrl.trim() === '') {
+          writeJson(res, 200, {
+            ok: false,
+            code: endpoint.issue === undefined ? 'prompt-url-missing' : 'prompt-channel-unsupported',
+            issue: endpoint.issue ?? null,
+            message: 'API URL is required',
+          })
+          return
+        }
         try {
-          writeJson(res, 200, { ok: true, models: await listPromptModels(resolvePrompt()) })
+          writeJson(res, 200, { ok: true, models: await listPromptModels(endpoint), source: promptSourceOf(endpoint) })
         } catch (error) {
-          writeJson(res, 200, { ok: false, code: 'prompt-models-failed', message: messageOf(error) })
+          writeJson(res, 200, {
+            ok: false,
+            code: error instanceof PromptConfigError ? error.code : 'prompt-models-failed',
+            message: messageOf(error),
+          })
         }
       },
     },

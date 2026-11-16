@@ -43,6 +43,8 @@ export interface ImageGenConfig {
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
+  /** Channel reused for the chat model; empty means the automatic order. */
+  promptChannelId?: string
   /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
   apiUrl?: string
   apiKey?: string

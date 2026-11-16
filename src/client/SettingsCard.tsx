@@ -22,11 +22,28 @@ import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
 import { IMAGE_MODEL_API, PLUGIN_VERSION, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isChatCompletionsUrl, isSubscriptionProvider, resolveChannelProtocol, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
-import { tt, type TranslateValues } from './helpers.ts'
+import { tt, errorMessage, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
 import { OPEN_IMAGE_GEN_CONFIG_EVENT, takeImageGenConfigSection } from './config-entry.tsx'
-import { Select } from './Select.tsx'
+import { Select, type SelectOption } from './Select.tsx'
 import css from './settings-card.module.css'
+
+/** Where a model-detection request took its endpoint from (host-echoed). */
+interface PromptProbeSource {
+  origin: 'custom' | 'channel' | 'none'
+  apiUrl: string
+  channelId?: string
+  channelName?: string
+}
+
+/** Short host label for a channel option ('example.com', or the raw URL). */
+function channelHost(url: string): string {
+  try {
+    return new URL(url.trim()).host
+  } catch {
+    return url.trim()
+  }
+}
 
 /** The global (non-channel) fields this card's staged form edits. */
 export interface ImageGenSettings {
@@ -36,6 +53,8 @@ export interface ImageGenSettings {
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
+  /** Channel reused for the chat model; empty means the automatic order. */
+  promptChannelId?: string
   localStoragePath?: string
   storageEnabled?: boolean
   storageEndpoint?: string
@@ -73,6 +92,7 @@ export interface ImageGenSettingsCardState extends CardShell {
   promptApiUrl: CardFieldState
   promptApiKey: CardFieldState
   promptModel: CardFieldState
+  promptChannelId: CardFieldState
   localStoragePath: CardFieldState
   storageEnabled: CardFieldState
   storageEndpoint: CardFieldState
@@ -131,6 +151,7 @@ export class ImageGenSettingsCardController {
       textField('promptApiUrl'),
       secretField('promptApiKey'),
       textField('promptModel'),
+      textField('promptChannelId'),
       textField('localStoragePath'),
       booleanField('storageEnabled'),
       textField('storageEndpoint'),
@@ -168,6 +189,7 @@ export class ImageGenSettingsCardController {
       promptApiUrl: this.form.field('promptApiUrl'),
       promptApiKey: this.form.field('promptApiKey'),
       promptModel: this.form.field('promptModel'),
+      promptChannelId: this.form.field('promptChannelId'),
       localStoragePath: this.form.field('localStoragePath'),
       storageEnabled: this.form.field('storageEnabled'),
       storageEndpoint: this.form.field('storageEndpoint'),
@@ -359,7 +381,12 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
   const [promptModelsError, setPromptModelsError] = useState<string | null>(null)
   const [manualPromptModelOpen, setManualPromptModelOpen] = useState(false)
   const [manualPromptModel, setManualPromptModel] = useState('')
-  const [promptApiOpen, setPromptApiOpen] = useState(false)
+  /** Which endpoint source the section shows; null follows the saved URL. */
+  const [customModeDraft, setCustomModeDraft] = useState<boolean | null>(null)
+  /** Substring filter over the detected chat models. */
+  const [promptModelFilter, setPromptModelFilter] = useState('')
+  /** Where the last detection took its endpoint from (host-echoed). */
+  const [promptProbeSource, setPromptProbeSource] = useState<PromptProbeSource | null>(null)
   const [storageTesting, setStorageTesting] = useState(false)
   const [storageTestResult, setStorageTestResult] = useState<string | null>(null)
   const [skillProbing, setSkillProbing] = useState(false)
@@ -599,6 +626,94 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
     ? t('settings.summaryNotConfigured')
     : t('settings.summaryChannels', { ready: readyChannels, total: channels.length })
   const promptSummary = state.promptModel.text.trim() || t('settings.summaryOptional')
+  /* ----- prompt-enhancement section: endpoint source, detection, filtering ----- */
+  /** Whether a channel can answer /chat/completions (no subscription, no exact image URL). */
+  const promptChannelUsable = (channel: ChannelDraft): boolean => channel.auth !== 'subscription'
+    && channel.apiUrlFull !== true
+    && channel.apiUrl.trim() !== ''
+  const promptChannels = state.channels.channels
+  const selectedPromptChannelId = state.promptChannelId.text.trim()
+  const autoPromptChannel = promptChannels.find(promptChannelUsable)
+  const selectedPromptChannel = selectedPromptChannelId === ''
+    ? autoPromptChannel
+    : promptChannels.find(channel => channel.id === selectedPromptChannelId)
+  const customPromptUrl = state.promptApiUrl.text.trim()
+  const promptCustomMode = customModeDraft ?? customPromptUrl !== ''
+  const promptChannelOptions: SelectOption[] = [
+    { value: '', label: t('settings.promptChannelAuto') },
+    ...promptChannels.map(channel => {
+      const name = channel.name.trim() || channel.id
+      if (promptChannelUsable(channel)) return { value: channel.id, label: `${name} · ${channelHost(channel.apiUrl)}` }
+      return {
+        value: channel.id,
+        label: `${name} · ${channel.auth === 'subscription' ? t('settings.promptChannelSubscription') : t('settings.promptChannelFullUrl')}`,
+        disabled: true,
+      }
+    }),
+  ]
+  const promptEffective = promptCustomMode
+    ? customPromptUrl === ''
+      ? t('settings.promptEffectiveNone')
+      : t('settings.promptEffectiveCustom', { url: customPromptUrl })
+    : selectedPromptChannel === undefined
+      ? t('settings.promptEffectiveNone')
+      : t('settings.promptEffectiveChannel', { name: selectedPromptChannel.name.trim() || selectedPromptChannel.id, url: selectedPromptChannel.apiUrl })
+  const promptEffectiveBroken = promptCustomMode ? customPromptUrl === '' : selectedPromptChannel === undefined
+  const promptChannelNeedsKey = !promptCustomMode
+    && selectedPromptChannel !== undefined
+    && state.channels.keySet[selectedPromptChannel.id] !== true
+  const promptModelNeedle = promptModelFilter.trim().toLowerCase()
+  const visiblePromptModels = (promptModelNeedle === ''
+    ? promptModels
+    : promptModels.filter(candidate => candidate.toLowerCase().includes(promptModelNeedle))).slice(0, 300)
+  const promptSourceLabel = promptProbeSource === null
+    ? ''
+    : promptProbeSource.origin === 'channel'
+      ? t('settings.promptSourceValueChannel', { name: promptProbeSource.channelName ?? '', url: promptProbeSource.apiUrl })
+      : t('settings.promptSourceValueCustom', { url: promptProbeSource.apiUrl })
+  const promptProbeError = (code: string | undefined, message: string | undefined, status: number): string => {
+    if (code === 'prompt-url-missing') return t('settings.promptErrNoUrl')
+    if (code === 'prompt-channel-unsupported') return t('settings.promptErrChannel')
+    return message === undefined || message.trim() === '' ? `HTTP ${status}` : message
+  }
+  /**
+   * Detect chat models for what the section currently shows: the unsaved draft
+   * (custom URL/key or the selected channel) rather than only the last save,
+   * which is what made "fetch models" fail with "API URL is required" before.
+   */
+  const probePromptModels = async (): Promise<void> => {
+    setLoadingPromptModels(true)
+    setPromptModelsError(null)
+    setPromptProbeSource(null)
+    try {
+      const body = promptCustomMode && customPromptUrl !== ''
+        ? { apiUrl: customPromptUrl, apiKey: state.promptApiKey.text.trim() }
+        : { channelId: selectedPromptChannelId }
+      const response = await fetch(PROMPT_ENHANCE_API.models, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const payload = await response.json() as {
+        ok?: boolean
+        models?: string[]
+        message?: string
+        code?: string
+        source?: PromptProbeSource
+      }
+      if (!response.ok || payload.ok !== true) {
+        setPromptModelsError(promptProbeError(payload.code, payload.message, response.status))
+        return
+      }
+      setPromptModels(payload.models ?? [])
+      setPromptProbeSource(payload.source ?? null)
+      setPromptModelFilter('')
+    } catch (error) {
+      setPromptModelsError(errorMessage(error))
+    } finally {
+      setLoadingPromptModels(false)
+    }
+  }
   const storageSummary = state.storageEnabled.text === 'true' ? t('settings.summaryEnabled') : t('settings.summaryDisabled')
   const skillsSummary = state.skillsEnabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
   const generalSummary = state.enabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
@@ -817,22 +932,88 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
           type="button"
           className={css.modelFetch}
           disabled={disabled || loadingPromptModels}
-          onClick={() => {
-            setLoadingPromptModels(true)
-            setPromptModelsError(null)
-            void fetch(PROMPT_ENHANCE_API.models, { method: 'POST' })
-              .then(async response => {
-                const body = await response.json() as { ok?: boolean; models?: string[]; message?: string }
-                if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
-                setPromptModels(body.models ?? [])
-              })
-              .catch(error => { setPromptModelsError(error instanceof Error ? error.message : String(error)) })
-              .finally(() => { setLoadingPromptModels(false) })
-          }}
+          onClick={() => { void probePromptModels() }}
         >
           {loadingPromptModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
         </button>
       </div>
+      <div className={css.promptSourceRow}>
+        <span className={css.promptSourceLabel}>{t('settings.promptSource')}</span>
+        <div className={css.promptSegments} role="radiogroup" aria-label={t('settings.promptSource')}>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!promptCustomMode}
+            data-selected={!promptCustomMode ? '' : undefined}
+            className={css.promptSegment}
+            disabled={disabled}
+            onClick={() => { setCustomModeDraft(false); setPromptModelsError(null) }}
+          >
+            {t('settings.promptSourceChannel')}
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={promptCustomMode}
+            data-selected={promptCustomMode ? '' : undefined}
+            className={css.promptSegment}
+            disabled={disabled}
+            onClick={() => { setCustomModeDraft(true); setPromptModelsError(null) }}
+          >
+            {t('settings.promptSourceCustom')}
+          </button>
+        </div>
+      </div>
+      {promptCustomMode ? (
+        <div className={css.optionalContent} data-prompt-source="custom">
+          <ValueField
+            id="dsh-imagegen-settings-prompt-apiurl"
+            label={t('settings.promptApiUrl')}
+            hint={t('settings.promptApiUrlHint')}
+            placeholder="https://api.openai.com/v1"
+            {...fieldProps}
+            {...state.promptApiUrl}
+            onEdit={(text) => { props.edit('promptApiUrl', text) }}
+            onReset={() => { props.resetField('promptApiUrl') }}
+          />
+          <ValueField
+            id="dsh-imagegen-settings-prompt-apikey"
+            label={t('settings.promptApiKey')}
+            hint={t('settings.promptApiKeyHint')}
+            placeholder="sk-…"
+            secret
+            {...fieldProps}
+            {...state.promptApiKey}
+            overridden={false}
+            onEdit={(text) => { props.edit('promptApiKey', text) }}
+            onReset={() => { props.resetField('promptApiKey') }}
+          />
+        </div>
+      ) : (
+        <div className={css.promptChannelRow} data-prompt-source="channel">
+          <label className={css.label} htmlFor="dsh-imagegen-settings-prompt-channel">{t('settings.promptChannel')}</label>
+          <Select
+            id="dsh-imagegen-settings-prompt-channel"
+            className={css.modelChoices}
+            value={selectedPromptChannelId}
+            disabled={disabled || promptChannels.length === 0}
+            options={promptChannelOptions}
+            onChange={(value) => {
+              props.edit('promptChannelId', value)
+              setPromptModels([])
+              setPromptProbeSource(null)
+              setPromptModelsError(null)
+            }}
+          />
+          <p className={css.hint}>
+            {promptChannels.length === 0 ? t('settings.promptChannelEmpty') : t('settings.promptChannelHint')}
+          </p>
+        </div>
+      )}
+      <p className={promptEffectiveBroken ? css.invalid : css.hint} data-prompt-effective="">
+        {promptEffective}
+        {promptChannelNeedsKey ? ` · ${t('settings.promptChannelNoKey')}` : ''}
+      </p>
       <div className={css.modelSummary}>
         {state.promptModel.text.trim() !== '' ? (
           <span className={css.modelChip}>
@@ -851,53 +1032,55 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         </div>
       ) : null}
       {promptModels.length > 0 ? (
-        <div className={css.modelCandidateList} role="radiogroup" aria-label={t('settings.promptModelsCandidates')}>
-          <span className={css.modelCandidateLabel}>{t('settings.promptModelsCandidates')}</span>
-          {promptModels.map(candidate => (
-            <button
-              key={candidate}
-              type="button"
-              role="radio"
-              className={css.modelCandidate}
-              aria-checked={state.promptModel.text === candidate}
-              data-selected={state.promptModel.text === candidate ? '' : undefined}
+        <div className={css.promptModels}>
+          <div className={css.promptModelToolbar}>
+            <span className={css.modelCandidateLabel}>{t('settings.promptModelsCandidates')}</span>
+            <input
+              className={css.promptModelFilter}
+              type="search"
+              value={promptModelFilter}
+              placeholder={t('settings.promptFilterPlaceholder')}
               disabled={disabled}
-              onClick={() => { props.edit('promptModel', candidate) }}
-            >
-              {candidate}
-            </button>
-          ))}
+              onChange={event => { setPromptModelFilter(event.target.value) }}
+            />
+            <span className={css.promptModelCount}>{t('settings.promptModelCount', { count: visiblePromptModels.length, total: promptModels.length })}</span>
+          </div>
+          <div className={css.modelCandidateList} role="radiogroup" aria-label={t('settings.promptModelsCandidates')}>
+            {visiblePromptModels.map(candidate => (
+              <button
+                key={candidate}
+                type="button"
+                role="radio"
+                className={css.modelCandidate}
+                aria-checked={state.promptModel.text === candidate}
+                data-selected={state.promptModel.text === candidate ? '' : undefined}
+                disabled={disabled}
+                onClick={() => { props.edit('promptModel', candidate) }}
+              >
+                {candidate}
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
+      {promptModels.length > 0 && visiblePromptModels.length === 0 ? <p className={css.hint}>{t('settings.promptFilterEmpty')}</p> : null}
+      {promptProbeSource !== null ? <p className={css.hint}>{t('settings.promptDetectedFrom', { source: promptSourceLabel })}</p> : null}
       {promptModelsError !== null ? <p className={css.failed} role="status">{promptModelsError}</p> : null}
-      <button type="button" className={css.inlineDisclosure} aria-expanded={promptApiOpen} onClick={() => { setPromptApiOpen(open => !open) }}>
-        <span>{t('settings.promptApiAdvanced')}</span>
-        <span aria-hidden="true">{promptApiOpen ? '⌃' : '⌄'}</span>
-      </button>
-      {promptApiOpen ? <div className={css.optionalContent}>
-      <ValueField
-        id="dsh-imagegen-settings-prompt-apiurl"
-        label={t('settings.promptApiUrl')}
-        hint={t('settings.promptApiUrlHint')}
-        placeholder="https://api.openai.com/v1"
-        {...fieldProps}
-        {...state.promptApiUrl}
-        onEdit={(text) => { props.edit('promptApiUrl', text) }}
-        onReset={() => { props.resetField('promptApiUrl') }}
-      />
-      <ValueField
-        id="dsh-imagegen-settings-prompt-apikey"
-        label={t('settings.promptApiKey')}
-        hint={t('settings.promptApiKeyHint')}
-        placeholder="sk-…"
-        secret
-        {...fieldProps}
-        {...state.promptApiKey}
-        overridden={false}
-        onEdit={(text) => { props.edit('promptApiKey', text) }}
-        onReset={() => { props.resetField('promptApiKey') }}
-      />
-      </div> : null}
+      {state.dirty || state.failed ? (
+        <div className={css.promptSaveRow}>
+          <span className={css.footerStatus} data-state={state.dirty ? 'dirty' : 'saved'}>
+            {state.failed ? t('settings.saveFailed') : t('settings.promptUnsaved')}
+          </span>
+          <button
+            type="button"
+            className={css.save}
+            disabled={disabled || blocked}
+            onClick={() => { void props.channels.commit(); void props.save() }}
+          >
+            {state.saving || state.channels.saving ? t('settings.saving') : t('settings.promptSaveInline')}
+          </button>
+        </div>
+      ) : null}
       </SettingsGroup>
 
       <SettingsGroup

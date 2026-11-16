@@ -9,6 +9,50 @@ export interface PromptModelConfig {
   model: string
 }
 
+/** Why a channel cannot back a chat request (absent when it can). */
+export type PromptChannelIssue = 'missing' | 'subscription' | 'full-url'
+
+/** The endpoint a chat call would use, plus where it came from. */
+export interface PromptEndpoint extends PromptModelConfig {
+  /** `custom` = the prompt fields, `channel` = a reused image channel, `none` = unconfigured. */
+  origin: 'custom' | 'channel' | 'none'
+  /** Reused channel, when origin is `channel`. */
+  channelId?: string
+  /** Reused channel's display name, when origin is `channel`. */
+  channelName?: string
+  /** Why the requested channel could not be used (absent when it could). */
+  issue?: PromptChannelIssue
+}
+
+/**
+ * Unsaved draft a settings card sends with a detection request, so "fetch
+ * models" reflects what the user is looking at instead of the last save.
+ * The host honors it for loopback callers only.
+ */
+export interface PromptEndpointOverride {
+  /** Channel id the card currently has selected ('' = automatic). */
+  channelId?: string
+  /** Custom endpoint URL typed into the card (takes precedence over channelId). */
+  apiUrl?: string
+  /** Custom endpoint key typed into the card ('' falls back to the stored key). */
+  apiKey?: string
+}
+
+/**
+ * A configuration problem the UI can explain, as opposed to an upstream
+ * failure. Routes turn `code` into localized copy instead of echoing an
+ * English host string into a Chinese settings page.
+ */
+export class PromptConfigError extends Error {
+  readonly code: 'prompt-url-missing' | 'prompt-channel-unsupported'
+
+  constructor(code: 'prompt-url-missing' | 'prompt-channel-unsupported', message: string) {
+    super(message)
+    this.name = 'PromptConfigError'
+    this.code = code
+  }
+}
+
 /** Credentials shared by OpenAI-compatible `/models` discovery. */
 export interface ModelListConfig {
   apiUrl: string
@@ -44,7 +88,7 @@ type ModelRecord = Record<string, unknown> & { id: string }
 /** Candidate /models URLs for a configured base URL, most specific first. */
 function modelListUrls(config: ModelListConfig): string[] {
   const base = config.apiUrl.trim().replace(/\/+$/, '')
-  if (base === '') throw new Error('API URL is required')
+  if (base === '') throw new PromptConfigError('prompt-url-missing', 'API URL is required')
   const urls: string[] = []
   if (resolveChannelProtocol(base, config.protocol) === 'chat-completions' && isChatCompletionsUrl(base)) {
     const url = new URL(base)
