@@ -3,6 +3,9 @@
  */
 
 export const zh = {
+  'iteration.edit': '继续编辑',
+  'iteration.version': '第 {version} 版',
+  'iteration.missing': '此记录未保存参考图，请选择上一版继续编辑或重新上传参考图。',
   "studio.results": "生成结果",
   "studio.append": "追加模型",
   "studio.appendModel": "追加生图模型",
@@ -1224,6 +1227,9 @@ export const zh = {
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
+  'iteration.edit': 'Continue editing',
+  'iteration.version': 'Version {version}',
+  'iteration.missing': 'References are unavailable. Continue from a previous version or upload them again.',
   "studio.results": "Generation results",
   "studio.append": "Add model",
   "studio.appendModel": "Additional image model",
@@ -2435,6 +2441,9 @@ export type ImageGenKey = keyof typeof zh
 
 /** Russian mirror of every key (полный словарь интерфейса). */
 export const ru: Record<keyof typeof zh, string> = {
+  'iteration.edit': 'Продолжить редактирование',
+  'iteration.version': 'Версия {version}',
+  'iteration.missing': 'Референсы недоступны. Выберите предыдущую версию или загрузите их снова.',
   "studio.results": "Результаты генерации",
   "studio.append": "Добавить модель",
   "studio.appendModel": "Дополнительная модель",

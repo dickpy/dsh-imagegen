@@ -3546,3 +3546,8 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep] {
   max-height: none !important;
   overflow: hidden !important;
 }
+
+/* Iteration branches remain accessible in both host themes. */
+.historyVersions { display: flex; flex-wrap: wrap; gap: 5px; }
+.historyVersions button { border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; padding: 4px 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font: inherit; font-size: 10px; cursor: pointer; }
+.historyVersions button:hover, .historyVersions button:focus-visible { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-brand-primary); }

@@ -2361,7 +2361,8 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
       assert.ok(commands.has('edit_image'), 'the /edit_image command is registered')
       const command = commands.get('edit_image')
       assert.deepEqual(command.input, { hint: 'Describe how to modify the latest image', images: true }, 'the command accepts composer images')
-      const noImageAgent = { session: { deriveMessages: () => [] } }
+      const committedResults = []
+      const noImageAgent = { session: { deriveMessages: () => [], append: (_type, message) => committedResults.push(message) } }
       assert.deepEqual(await command.handler({ agent: noImageAgent, rawInput: '   ', signal: new AbortController().signal }), {
         kind: 'error',
         text: '请提供图片修改描述，例如：/edit_image 把背景改成夜景',
@@ -2379,10 +2380,13 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
         height: commandSource.height,
         name: commandSource.name,
       }
-      const commandAgent = { session: { deriveMessages: () => [{ content: [{ type: 'image', attachment: commandReference }] }] } }
+      const commandMessages = [{ content: [{ type: 'image', attachment: commandReference }] }]
+      const commandAgent = { session: { deriveMessages: () => commandMessages, append: (_type, message) => commandMessages.push(message) } }
       const commandResult = await command.handler({ agent: commandAgent, rawInput: 'edit via command', signal: new AbortController().signal })
       assert.equal(commandResult.kind, 'success')
       assert.match(commandResult.text, /图片编辑已完成/)
+      assert.equal(commandMessages.length, 2, 'command result is committed as a durable message')
+      assert.ok(host.latestSessionImage(commandMessages), 'the next command can discover the committed result')
       assert.equal(sent.length, 0, 'slash command does not send a chat-model message')
       const invocationReference = { ...commandReference, attachmentId: `sha256:${'d'.repeat(64)}` }
       saved.set(invocationReference.attachmentId, { ref: invocationReference, data: pngBytes })
@@ -2398,7 +2402,7 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
       saved.set(pendingRef.attachmentId, { ref: pendingRef, data: pngBytes })
       pending.set('pending-session', pendingRef)
       const pendingResult = await command.handler({
-        agent: { id: 'pending-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment: commandReference }] }] } },
+        agent: { id: 'pending-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment: commandReference }] }], append: (_type, message) => committedResults.push(message) } },
         rawInput: 'edit via command',
         signal: new AbortController().signal,
       })
@@ -2508,7 +2512,7 @@ await check('C9b Agent tools and /edit_image support subscription-only channels 
     const image = generated.images[0]
     const attachment = { attachmentId: image.attachment_id, mediaType: image.media_type, bytes: image.bytes, width: image.width, height: image.height, name: image.name }
     const commandResult = await commands.get('edit_image').handler({
-      agent: { id: 'subscription-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment }] }] } },
+      agent: { id: 'subscription-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment }] }], append() {} } },
       rawInput: 'subscription command edit',
     })
     assert.equal(commandResult.kind, 'success')
@@ -2531,7 +2535,7 @@ await check('C9b Agent tools and /edit_image support subscription-only channels 
     )
     config = { ...config, defaultChannelId: emptyApi.id }
     const badCommand = await commands.get('edit_image').handler({
-      agent: { id: 'subscription-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment }] }] } },
+      agent: { id: 'subscription-session', session: { deriveMessages: () => [{ content: [{ type: 'image', attachment }] }], append() {} } },
       rawInput: 'edit through unconfigured API',
     })
     assert.equal(badCommand.kind, 'error')

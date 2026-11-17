@@ -18,6 +18,7 @@ import { imageDataRoot } from './image-storage-path.ts'
 function historyDir(): string { return imageDataRoot() }
 function indexPath(): string { return path.join(historyDir(), 'index.json') }
 function imagesDir(): string { return path.join(historyDir(), 'images') }
+function refsDir(): string { return path.join(historyDir(), 'refs') }
 
 // History mutations read and replace one shared index. Serialize them so
 // overlapping requests cannot each read an old index and lose the other's row.
@@ -55,6 +56,10 @@ interface StoredEntry {
   detail: string
   n: number
   images: StoredImage[]
+  refs?: StoredImage[]
+  parentId?: string
+  parentImageIndex?: number
+  threadId?: string
   refName?: string
   channelId?: string
   channel?: string
@@ -104,6 +109,7 @@ function safeId(id: string): string {
 /** Ensure the storage directories exist. */
 async function ensureDirs(): Promise<void> {
   await fs.mkdir(imagesDir(), { recursive: true })
+  await fs.mkdir(refsDir(), { recursive: true })
 }
 
 /** Read the index, tolerating a missing/corrupt file. */
@@ -141,6 +147,15 @@ function isStoredEntry(value: unknown): value is StoredEntry {
     && (entry.projectName === undefined || typeof entry.projectName === 'string')
     && (entry.slotKey === undefined || typeof entry.slotKey === 'string')
     && (entry.slotLabel === undefined || typeof entry.slotLabel === 'string')
+    && (entry.refs === undefined || Array.isArray(entry.refs) && entry.refs.every(ref => {
+      if (ref === null || typeof ref !== 'object') return false
+      const record = ref as Record<string, unknown>
+      return typeof record.file === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9-]*-[0-9]+\.(png|jpg|jpeg|webp|gif)$/.test(record.file)
+        && typeof record.mime === 'string'
+    }))
+    && (entry.parentId === undefined || typeof entry.parentId === 'string')
+    && (entry.threadId === undefined || typeof entry.threadId === 'string')
+    && (entry.parentImageIndex === undefined || Number.isInteger(entry.parentImageIndex) && Number(entry.parentImageIndex) >= 0)
     && typeof entry.prompt === 'string'
     && Array.isArray(entry.images)
     && entry.images.every(image => {
@@ -152,6 +167,9 @@ function isStoredEntry(value: unknown): value is StoredEntry {
 
 /** Remove one entry's image files (best effort). */
 async function removeEntryFiles(entry: StoredEntry): Promise<void> {
+  for (const ref of entry.refs ?? []) {
+    if (path.basename(ref.file) === ref.file) await fs.rm(path.join(refsDir(), ref.file), { force: true }).catch(() => {})
+  }
   for (const image of entry.images) {
     try { await fs.rm(path.join(imagesDir(), image.file), { force: true }) } catch { /* ignore */ }
   }
@@ -176,6 +194,10 @@ function toWire(entry: StoredEntry): HistoryEntry {
       ...image.durationMs === undefined ? {} : { durationMs: image.durationMs },
       ...pickImageMetadata(image),
     })),
+    refs: (entry.refs ?? []).map(ref => ({ url: `/api/dsh-imagegen/history/image/refs/${ref.file}`, mime: ref.mime })),
+    parentId: entry.parentId,
+    parentImageIndex: entry.parentImageIndex,
+    threadId: entry.threadId,
     ...entry.refName === undefined ? {} : { refName: entry.refName },
     ...entry.channel === undefined ? {} : { channel: entry.channel },
     ...entry.channelId === undefined ? {} : { channelId: entry.channelId },
@@ -202,6 +224,13 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
     await ensureDirs()
     const prefix = safeId(input.id)
     const storedImages: StoredImage[] = []
+    const storedRefs: StoredImage[] = []
+    const previous = await readIndex()
+    const parent = input.mode === 'edit' ? previous.find(entry => entry.id === input.parentId) : undefined
+    const parentIndex = input.parentImageIndex ?? 0
+    const lineage = parent?.images[parentIndex] === undefined ? {} : {
+      parentId: parent.id, parentImageIndex: parentIndex, threadId: parent.threadId ?? parent.id,
+    }
     try {
       for (let index = 0; index < input.images.length; index++) {
         const image = input.images[index]!
@@ -216,8 +245,17 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
           ...pickImageMetadata(image),
         })
       }
+      const refs = input.refs ?? []
+      const sizes = refs.map(ref => Buffer.byteLength(ref.b64, 'base64'))
+      if (sizes.every(size => size <= 10 * 1024 * 1024) && sizes.reduce((sum, size) => sum + size, 0) <= 16 * 1024 * 1024) {
+        for (const [index, ref] of refs.slice(0, 5).entries()) {
+          const file = `${prefix}-ref-${index}.${extensionOf(ref.mime)}`
+          await fs.writeFile(path.join(refsDir(), file), Buffer.from(ref.b64, 'base64'))
+          storedRefs.push({ file, mime: ref.mime })
+        }
+      }
     } catch (error) {
-      await removeEntryFiles({ images: storedImages } as StoredEntry)
+      await removeEntryFiles({ images: storedImages, refs: storedRefs } as StoredEntry)
       throw error
     }
     const entry: StoredEntry = {
@@ -231,6 +269,8 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
       detail: input.detail,
       n: input.n,
       images: storedImages,
+      refs: storedRefs,
+      ...lineage,
       ...input.refName === undefined ? {} : { refName: input.refName },
       ...input.channelId === undefined ? {} : { channelId: input.channelId },
       ...input.channel === undefined ? {} : { channel: input.channel },
@@ -243,7 +283,7 @@ export async function appendHistory(input: HistoryEntryInput): Promise<HistoryEn
       ...input.slotLabel === undefined ? {} : { slotLabel: input.slotLabel },
       ...input.canvas === undefined ? {} : { canvas: input.canvas },
     }
-    const merged = [entry, ...await readIndex()]
+    const merged = [entry, ...previous]
     const kept = merged.slice(0, HISTORY_MAX)
     for (const dropped of merged.slice(HISTORY_MAX)) await removeEntryFiles(dropped)
     await writeIndex(kept)
@@ -275,11 +315,13 @@ export async function clearHistory(): Promise<HistoryEntry[]> {
 
 /** Read one stored image file by its (validated) file name. */
 export async function readHistoryImage(file: string): Promise<{ data: Buffer; mime: string } | undefined> {
+  const reference = file.startsWith('refs/')
+  if (reference) file = file.slice('refs/'.length)
   // Only accept <id>-<index>.<png|jpg|jpeg|webp|gif> — the exact names this
   // store writes — so the route can never escape the images directory.
   if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*-[0-9]+\.(png|jpg|jpeg|webp|gif)$/.test(file)) return undefined
   try {
-    const data = await fs.readFile(path.join(imagesDir(), file))
+    const data = await fs.readFile(path.join(reference ? refsDir() : imagesDir(), file))
     return { data, mime: mimeOfFile(file) }
   } catch {
     return undefined

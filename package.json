@@ -80,7 +80,7 @@
   "scripts": {
     "prepare": "tsdown",
     "build": "tsdown",
-    "test": "pnpm run test:unit && pnpm run test:remote && pnpm run test:e2e",
+    "test": "pnpm run test:unit && pnpm run test:remote && pnpm run test:e2e && pnpm run test:iterations",
     "test:remote": "pnpm run build && pnpm exec tsdown --config scripts/remote-settings.config.ts && node --test scripts/remote-access.test.mjs scripts/remote-access-routes.test.mjs scripts/remote-settings-client.test.mjs",
     "test:unit": "node --test scripts/conversation-sync.test.mjs scripts/agent-image-config.test.mjs scripts/image-clipboard.test.mjs scripts/engine-openai-size.test.mjs scripts/reference-clipboard.test.mjs scripts/generation-duration.test.mjs scripts/generation-settings.test.mjs scripts/studio-state.test.mjs scripts/engine-capabilities.test.mjs scripts/reverse-prompt.test.mjs scripts/reverse-prompt-route.test.mjs scripts/model-discovery.test.mjs scripts/theme-follow.test.mjs",
     "test:duration:browser": "pnpm exec tsdown --config scripts/generation-preview.config.ts && pnpm exec tsdown --config scripts/result-preview.config.ts && node scripts/generation-duration-browser-test.mjs",
@@ -92,8 +92,9 @@
     "fetch-templates": "node scripts/fetch-templates.mjs",
     "test:studio:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/studio-browser-test.mjs",
     "test:history:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-browser-test.mjs",
-    "test:history": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-dom-e2e.mjs",
+    "test:history": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-dom-e2e.mjs && node scripts/iteration-dom-e2e.mjs",
     "test:reference-reverse": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/reference-reverse-dom-e2e.mjs",
+    "test:iterations": "node --test scripts/iteration-loop.test.mjs",
     "test:reference-reverse:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/reference-reverse-browser-test.mjs"
   }
 }

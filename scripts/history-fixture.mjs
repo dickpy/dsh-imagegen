@@ -31,6 +31,7 @@ export async function startHistoryFixture() {
   ] }
   let revision = 1
   const settingsMutations = []
+  const requests = []
   const settingsView = () => ({ ns: 'dsh-imagegen', value: settings, base: settings, user: settings, revision, secrets: settings.channels.map(channel => ({ path: ['channelSecrets', channel.id], set: true })) })
   const server = createServer(async (req, res) => {
     if (req.url === '/preview.js') { res.setHeader('content-type', 'text/javascript'); return res.end(readFileSync(new URL('../.studio-preview/preview.js', import.meta.url))) }
@@ -62,11 +63,11 @@ export async function startHistoryFixture() {
     if (req.url.endsWith('/image-models')) return json(res, { ok: true, models: ['sensenova-u1.5-lite', 'gpt-image-2'] })
     if (req.url.endsWith('/tasks/list')) return json(res, { ok: true, tasks: [{ ...task, result: undefined, resultAvailable: true }] })
     if (req.url.endsWith('/tasks/get')) return json(res, { ok: true, task })
-    if (req.url.endsWith('/tasks/submit')) return json(res, { ok: true, task: { ...task, request: body } })
+    if (req.url.endsWith('/tasks/submit')) { requests.push(body); return json(res, { ok: true, task: { ...task, request: body } }) }
     if (req.url.endsWith('/history/list')) return json(res, { ok: true, entries })
     if (req.url.endsWith('/update/check')) return json(res, { ok: true, update: { currentVersion: '1.17.0', latestVersion: '1.17.0', updateAvailable: false } })
     return json(res, { ok: true, entries: [], samples: [], tasks: [], available: false, categories: [], projects: [] })
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  return { server, base: `http://127.0.0.1:${server.address().port}`, assets, entries, task, delays, settingsMutations }
+  return { server, base: `http://127.0.0.1:${server.address().port}`, assets, entries, task, delays, settingsMutations, requests }
 }

@@ -7,8 +7,10 @@ import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-attachment'
 import {
   submitAgentImageEdit,
+  toSaveImage,
   type AgentImageToolConfig,
 } from './agent-image-tools.ts'
+import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import type { ImageGenerationRuntime } from './generation-runtime.ts'
 
 function isImageReference(value: unknown): value is ImageAttachmentRef {
@@ -98,8 +100,14 @@ export function registerEditImageCommand(
           signal: invocation.signal,
         })
         if (task.status === 'completed') {
+          const refs = await ctx.attachments.saveImages((task.result?.images ?? []).map((image, index) => toSaveImage(image, task.id, index)))
+          if (refs.length === 0) return { kind: 'error', text: '编辑未返回图片，请重试。' }
+          invocation.agent.session.append('user/message', createUserMessage({
+            content: [{ type: 'text', text: `图片编辑结果：${prompt}` }, ...refs.map(attachment => ({ type: 'image' as const, attachment }))],
+            source: { kind: 'plugin', plugin: '@dickpy/dsh-imagegen' },
+          }), { surfaceOp: 'append' })
           if (pendingImage !== undefined) pendingImages?.consume(String(invocation.agent.id), pendingImage)
-          return { kind: 'success', text: '图片编辑已完成，可在 AI 生图面板查看结果。' }
+          return { kind: 'success', text: '图片编辑已完成并加入当前对话，可继续使用 /edit_image 修改。' }
         }
         return { kind: 'error', text: task.error ?? `图片编辑${task.status === 'cancelled' ? '已取消' : '失败'}。` }
       } catch (error) {
