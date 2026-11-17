@@ -1,40 +1,44 @@
-.backdrop { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center; justify-content: center; padding: 16px; background: #0009; color: #202124; font: 14px/1.5 system-ui, sans-serif; }
-.dialog { display: flex; flex-direction: column; width: min(1160px, 100%); max-height: calc(100dvh - 32px); background: #fff; border-radius: 16px; box-shadow: 0 20px 80px #0004; overflow: hidden; outline: none; }
+/* Poster editor: themed through the host's dsh tokens rather than a fixed
+   light palette, so the dialog follows the app theme (the host switches it with
+   body[data-ds-dark-theme], which a prefers-color-scheme query does not see).
+   The stage keeps its light transparency checker: it stands for the exported
+   artwork, not for app chrome. */
+.backdrop { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center; justify-content: center; padding: 16px; background: #0009; color: var(--dsw-alias-label-primary); font: 14px/1.5 system-ui, sans-serif; }
+.dialog { display: flex; flex-direction: column; width: min(1160px, 100%); max-height: calc(100dvh - 32px); background: var(--dsw-alias-bg-layer-1); border-radius: 16px; box-shadow: 0 20px 80px #0004; overflow: hidden; outline: none; }
 .dialog * { box-sizing: border-box; }
 .dialog button, .dialog input, .dialog textarea, .dialog select { font: inherit; color: inherit; }
-.dialog button { border: 1px solid #d7d9de; background: #fff; border-radius: 8px; padding: 7px 12px; cursor: pointer; }
-.dialog button:hover:not(:disabled) { background: #f1f3f7; }
+.dialog button { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.dialog button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
 .dialog button:disabled { opacity: .45; cursor: default; }
-.dialog button:focus-visible, .dialog input:focus-visible, .dialog textarea:focus-visible, .dialog select:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
-.header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #e6e7eb; }
+.dialog button:focus-visible, .dialog input:focus-visible, .dialog textarea:focus-visible, .dialog select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .header strong { font-size: 18px; }
-.header small { display: block; color: #626873; margin-top: 4px; }
+.header small { display: block; color: var(--dsw-alias-label-secondary); margin-top: 4px; }
 .header button { font-size: 22px; line-height: 1; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 20px; }
-.toolbar span { margin-left: auto; color: #626873; font-size: 12px; }
+.toolbar span { margin-left: auto; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .body { display: grid; grid-template-columns: minmax(0, 1fr) 260px; min-height: 0; flex: 1; overflow: auto; }
-.preview { background: #edeef2; padding: 24px; display: flex; flex-direction: column; align-items: center; min-width: 0; justify-content: flex-start; }
+.preview { background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, var(--dsw-alias-bg-layer-1)); padding: 24px; display: flex; flex-direction: column; align-items: center; min-width: 0; justify-content: flex-start; }
 .stage { position: relative; flex: 0 0 auto; max-width: 100%; overflow: hidden; box-shadow: 0 2px 16px #0002; background: repeating-conic-gradient(#ddd 0% 25%, #fff 0% 50%) 0/16px 16px; }
 .stage canvas { display: block; width: 100%; height: 100%; }
 .stage .layerHandle { position: absolute; border: 1px dashed transparent; padding: 0; border-radius: 0; background: transparent; touch-action: none; cursor: move; min-width: 0; min-height: 0; }
-.stage .layerHandle:hover:not(:disabled), .stage .layerHandle[data-selected] { border-color: #2563eb; background: #2563eb0a; outline: 1px solid #ffffffaa; }
-.inspector { padding: 16px; border-left: 1px solid #e6e7eb; overflow: auto; }
-.inspector small, .inspector p { color: #626873; font-size: 12px; }
+.stage .layerHandle:hover:not(:disabled), .stage .layerHandle[data-selected] { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent); outline: 1px solid #ffffffaa; }
+.inspector { padding: 16px; border-left: 1px solid var(--dsw-alias-border-l2); overflow: auto; }
+.inspector small, .inspector p { color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .layerList { display: flex; flex-direction: column; gap: 5px; max-height: 130px; overflow: auto; margin: 10px 0; }
 .layerList button { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-.layerList button[data-active] { border-color: #2563eb; background: #eff6ff; }
+.layerList button[data-active] { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
 .controls { border: 0; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; min-width: 0; flex: 1; }
-.controls input:not([type=checkbox]), .controls select, .controls textarea { width: 100%; border: 1px solid #d7d9de; border-radius: 6px; background: #fff; padding: 6px 8px; }
+.controls input:not([type=checkbox]), .controls select, .controls textarea { width: 100%; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-base); padding: 6px 8px; }
 .controls textarea { min-height: 84px; resize: vertical; }
 .controls input[type=color] { height: 34px; padding: 3px; }
 .controls .check { flex-direction: row; align-items: center; }
 .row { display: flex; gap: 8px; }
 .row button { flex: 1; font-size: 12px; padding: 6px; }
-.error { color: #b42318; margin: 8px 20px; overflow-wrap: anywhere; }
-.footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid #e6e7eb; flex-wrap: wrap; }
-.footer small, .footer span { margin-right: auto; color: #626873; font-size: 12px; }
-.footer .primary { background: #2563eb; border-color: #2563eb; color: #fff; }
-.footer .primary:hover:not(:disabled) { background: #1d4ed8; }
-@media (max-width: 680px) { .backdrop { padding: 6px; } .dialog { max-height: calc(100dvh - 12px); } .body { grid-template-columns: 1fr; } .preview { padding: 12px; } .inspector { border-left: 0; border-top: 1px solid #e6e7eb; } .header, .toolbar, .footer { padding: 10px 12px; } }
-@media (prefers-color-scheme: dark) { .backdrop { color: #eceef2; } .dialog, .dialog button, .controls input:not([type=checkbox]), .controls select, .controls textarea { background: #202329; color: #eceef2; border-color: #454b55; } .preview { background: #15171b; } .header, .footer, .inspector { border-color: #383d47; } .header small, .toolbar span, .inspector small, .inspector p, .footer small, .footer span { color: #b2b8c3; } .dialog button:hover:not(:disabled) { background: #343a44; } .layerList button[data-active] { background: #203657; } .error { color: #fda29b; } }
+.error { color: var(--dsw-alias-state-error-primary); margin: 8px 20px; overflow-wrap: anywhere; }
+.footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--dsw-alias-border-l2); flex-wrap: wrap; }
+.footer small, .footer span { margin-right: auto; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.footer .primary { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base)); }
+.footer .primary:hover:not(:disabled) { filter: brightness(1.06); }
+@media (max-width: 680px) { .backdrop { padding: 6px; } .dialog { max-height: calc(100dvh - 12px); } .body { grid-template-columns: 1fr; } .preview { padding: 12px; } .inspector { border-left: 0; border-top: 1px solid var(--dsw-alias-border-l2); } .header, .toolbar, .footer { padding: 10px 12px; } }

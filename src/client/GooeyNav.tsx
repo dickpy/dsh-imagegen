@@ -5,7 +5,7 @@
  *  theme. */
 
 import { useEffect, useRef, type ReactNode } from 'react'
-import { detectLightSurface } from './surface-theme.ts'
+import { watchSurfaceTheme } from './surface-theme.ts'
 import css from './GooeyNav.module.css'
 
 export interface GooeyNavItem {
@@ -61,7 +61,9 @@ export function GooeyNav(props: {
     const filter = filterRef.current
     const text = textRef.current
     if (container === null || filter === null || text === null) return
-    container.dataset.theme = detectLightSurface(container) ? 'light' : 'dark'
+    // Follow live theme switches: a one-shot sample would keep the old ink
+    // after the user flips the host theme.
+    const stopWatchingTheme = watchSurfaceTheme(container, light => { container.dataset.theme = light ? 'light' : 'dark' })
     let disposed = false
     const noise = (amount: number): number => amount / 2 - Math.random() * amount
     const getXY = (distance: number, pointIndex: number, totalPoints: number): [number, number] => {
@@ -127,6 +129,7 @@ export function GooeyNav(props: {
     observer.observe(container)
     return () => {
       disposed = true
+      stopWatchingTheme()
       for (const timer of timersRef.current) window.clearTimeout(timer)
       timersRef.current = []
       observer.disconnect()

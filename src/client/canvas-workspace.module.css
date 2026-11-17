@@ -2042,7 +2042,7 @@
 
 .skillPrimary {
   background: var(--dsw-alias-brand-primary);
-  color: #fff;
+  color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base));
 }
 
 .skillPrimary:disabled { opacity: 0.5; cursor: not-allowed; }

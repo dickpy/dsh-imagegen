@@ -1490,11 +1490,16 @@
 }
 
 /* Keep the commit controls visible while long panels scroll. The bar sits in
-   normal flow at the end of the content, so it never covers the last field. */
+   normal flow at the end of the content, so it never covers the last field.
+   Sticky `bottom` is measured from the scrollport's floor *minus* the host's
+   bottom padding, which would leave the bar floating above the panel edge with
+   page content in the gap; the negative bleed docks it. dockCommitBar()
+   measures the host's real padding into the variable, and 24px is the value
+   DSH's settings options column uses. */
 .footer {
   position: sticky;
   z-index: 4;
-  bottom: 0;
+  bottom: calc(-1 * var(--dsh-imagegen-commit-bleed, 24px));
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1522,6 +1527,13 @@
 .footer > .failed {
   flex-basis: 100%;
   margin: 0;
+}
+
+/* The docked bar permanently covers the bottom of the scrollport, and a focused
+   control scrolled into view would land underneath it. Reserve the bar's height
+   so keyboard and scrollIntoView landings stay visible. */
+.body :is(input, select, textarea, button, a[href]) {
+  scroll-margin-bottom: calc(var(--dsh-imagegen-commit-bleed, 24px) + 64px);
 }
 
 /* --- Plugins tab (Settings → Plugins) --------------------------------------------- */
@@ -1945,7 +1957,7 @@
 
 .promptSaveRow .save {
   background: var(--dsw-alias-brand-primary);
-  color: #fff;
+  color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base));
 }
 
 .promptSaveRow .save:hover:not(:disabled) {

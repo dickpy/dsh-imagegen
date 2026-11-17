@@ -3,7 +3,7 @@
  * receives pointer events, so every listener observes the viewport element. */
 
 import { useEffect, useRef } from 'react'
-import { detectLightSurface } from './surface-theme.ts'
+import { detectLightSurface, watchSurfaceTheme } from './surface-theme.ts'
 import css from './canvas-workspace.module.css'
 
 /** Interactive flowmap-style dot field ("fluid distortion"): the pointer's
@@ -643,10 +643,13 @@ function startShaderCanvas(
   viewport: HTMLElement,
   fragmentSource: string,
   frame: (state: ShaderFrameState) => void,
+  onLightChange?: (light: boolean) => void,
 ): { light: boolean, dispose: () => void } | null {
   const contextAttributes: WebGLContextAttributes = { alpha: true, antialias: false, depth: false, stencil: false }
   const gl = canvas.getContext('webgl2', contextAttributes) ?? canvas.getContext('webgl', contextAttributes)
   if (gl === null) return null
+  // Declared outside `try` so the catch can reclaim it if a later init step throws.
+  let stopWatchingTheme: (() => void) | null = null
   try {
     const compile = (type: number, source: string): WebGLShader => {
       const shader = gl.createShader(type)
@@ -693,6 +696,13 @@ function startShaderCanvas(
       pointer: { x: 0, y: 0, active: 0 },
       draw: () => { gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4) },
     }
+    // Frame uniforms read state.light on every tick, so a live theme flip only
+    // has to update it; callers that derive non-shader state (blend mode) get
+    // the same signal through the callback.
+    stopWatchingTheme = watchSurfaceTheme(viewport, light => {
+      state.light = light
+      onLightChange?.(light)
+    })
     const pointerTarget = { x: 0, y: 0, active: 0 }
     const resize = (): void => {
       const rect = viewport.getBoundingClientRect()
@@ -749,6 +759,7 @@ function startShaderCanvas(
     return {
       light: state.light,
       dispose: () => {
+        stopWatchingTheme?.()
         window.cancelAnimationFrame(frameHandle)
         observer.disconnect()
         viewport.removeEventListener('pointermove', onPointerMove)
@@ -757,6 +768,7 @@ function startShaderCanvas(
       },
     }
   } catch {
+    stopWatchingTheme?.()
     gl.getExtension('WEBGL_lose_context')?.loseContext()
     return null
   }
@@ -863,7 +875,7 @@ export function FloatingLinesBackground(): React.JSX.Element {
       )
       gl.uniform1f(uniforms.uLightMode, state.light ? 1 : 0)
       state.draw()
-    })
+    }, light => { canvas.style.mixBlendMode = light ? 'normal' : 'screen' })
     if (handle === null) return
     // The glowing ink only reads correctly over a dark surface; the lightMode
     // branch paints its own light backdrop, so blending must be off there.
@@ -1423,9 +1435,14 @@ export function DotFieldBackground(): React.JSX.Element {
     const ctx = canvas.getContext('2d', { alpha: true })
     if (ctx === null) return
     const FIELD = { radius: 1.5, spacing: 14, cursorRadius: 500, bulgeStrength: 67, glowRadius: 160 }
-    const light = detectLightSurface(viewport)
-    const glowInner = light ? 'rgba(82, 39, 255, 0.16)' : 'rgba(18, 15, 23, 1)'
-    const glowOuter = light ? 'rgba(82, 39, 255, 0)' : 'rgba(18, 15, 23, 0)'
+    let light = detectLightSurface(viewport)
+    let glowInner = light ? 'rgba(82, 39, 255, 0.16)' : 'rgba(18, 15, 23, 1)'
+    let glowOuter = light ? 'rgba(82, 39, 255, 0)' : 'rgba(18, 15, 23, 0)'
+    const stopWatchingTheme = watchSurfaceTheme(viewport, value => {
+      light = value
+      glowInner = light ? 'rgba(82, 39, 255, 0.16)' : 'rgba(18, 15, 23, 1)'
+      glowOuter = light ? 'rgba(82, 39, 255, 0)' : 'rgba(18, 15, 23, 0)'
+    })
     type FieldDot = { ax: number, ay: number, sx: number, sy: number }
     let dots: FieldDot[] = []
     let width = 0
@@ -1531,6 +1548,7 @@ export function DotFieldBackground(): React.JSX.Element {
     const observer = new ResizeObserver(rebuild)
     observer.observe(viewport)
     return () => {
+      stopWatchingTheme()
       window.cancelAnimationFrame(frame)
       observer.disconnect()
       viewport.removeEventListener('pointermove', onPointerMove)

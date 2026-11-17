@@ -26,6 +26,7 @@ import { tt, errorMessage, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
 import { OPEN_IMAGE_GEN_CONFIG_EVENT, takeImageGenConfigSection } from './config-entry.tsx'
 import { Select, type SelectOption } from './Select.tsx'
+import { dockCommitBar } from './commit-bar.ts'
 import css from './settings-card.module.css'
 
 /** Where a model-detection request took its endpoint from (host-echoed). */
@@ -374,12 +375,21 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
   useImageGenLanguageTick()
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
   const [open, setOpen] = useState(true)
+  const commitBarRef = useRef<HTMLDivElement | null>(null)
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => takeImageGenConfigSection() ?? 'channels')
   useEffect(() => {
     const open = (): void => { const section = takeImageGenConfigSection(); if (section) setActiveSection(section) }
     window.addEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, open)
     return () => window.removeEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, open)
   }, [])
+  // Dock the sticky commit bar to the floor of the panel the card scrolls in;
+  // the host's padded options column would otherwise leave it floating above
+  // the panel edge with page content showing underneath.
+  useEffect(() => {
+    const bar = commitBarRef.current
+    if (bar === null) return
+    return dockCommitBar(bar)
+  }, [isTabs, open, state.exposed])
   // Global-section local states (prompt enhancement etc.).
   const [promptModels, setPromptModels] = useState<string[]>([])
   const [loadingPromptModels, setLoadingPromptModels] = useState(false)
@@ -1394,7 +1404,7 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         onReset={() => { props.resetField('allowAgentImageGeneration') }}
       />
       </SettingsGroup>
-      <div className={css.footer}>
+      <div className={css.footer} ref={commitBarRef}>
         <span className={css.footerStatus} data-state={state.dirty ? 'dirty' : 'saved'} role="status">
           {state.dirty ? t('settings.unsaved') : t('settings.saved')}
         </span>
