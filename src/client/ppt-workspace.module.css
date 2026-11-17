@@ -32,7 +32,7 @@
 .ocr input { width: auto; margin: 0; }
 .submitBar { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); }
 .submitBar small { font-size: 10px; line-height: 1.7; color: var(--dsw-alias-label-secondary); }
-.workspace .primary { min-height: 42px; border-color: transparent; color: #fff; background: var(--dsw-alias-brand-primary); }
+.workspace .primary { min-height: 42px; border-color: transparent; color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base)); background: var(--dsw-alias-brand-primary); }
 .workspace .error { color: var(--dsw-alias-state-danger-primary, #b33535); white-space: pre-wrap; overflow-wrap: anywhere; }
 .resultHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .resultHeader > span { color: var(--dsw-alias-label-secondary); font-size: 11px; }
@@ -85,7 +85,7 @@
 .viewerTitle { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .viewerTitle strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .viewerTitle small { color: var(--dsw-alias-label-secondary); font-size: 10px; }
-.workspace a.download, .dialog a.download { flex: none; text-decoration: none; padding: 9px 13px; border-radius: 8px; color: #fff; background: var(--dsw-alias-brand-primary); font-size: 12px; }
+.workspace a.download, .dialog a.download { flex: none; text-decoration: none; padding: 9px 13px; border-radius: 8px; color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base)); background: var(--dsw-alias-brand-primary); font-size: 12px; }
 .viewerBody { display: flex; flex: 1; min-height: 0; background: var(--dsw-alias-bg-layer-2); }
 .filmstrip { display: flex; flex-direction: column; gap: 12px; flex: none; width: 112px; padding: 14px 10px; overflow: auto; border-right: 1px solid var(--dsw-alias-border-l2); }
 .filmstrip button { flex: none; padding: 3px; background: transparent; border-color: transparent; font-size: 10px; text-align: left; }
