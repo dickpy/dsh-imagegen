@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - package.json
+      - src/protocol.ts
       - .github/workflows/release.yml
   workflow_dispatch:
 
