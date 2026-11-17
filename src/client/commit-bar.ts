@@ -15,12 +15,16 @@
  * panel's 24px as the fallback for renderers without layout (jsdom).
  */
 
-/** The nearest ancestor that scrolls the card (the host's options column). */
-function scrollParent(element: HTMLElement): HTMLElement | null {
+/** The element `position: sticky` resolves against: the nearest ancestor that
+ *  establishes a scrollport. `visible` never does, and `clip` clips without
+ *  becoming scrollable, so both are skipped; `hidden` does establish one (it
+ *  simply cannot scroll), which is why it counts here too. */
+function stickyReference(element: HTMLElement): HTMLElement | null {
   let node: HTMLElement | null = element.parentElement
-  while (node !== null && node !== document.body) {
+  while (node !== null) {
+    // jsdom reports '' for an undeclared overflow; browsers say 'visible'.
     const overflow = getComputedStyle(node).overflowY
-    if (overflow === 'auto' || overflow === 'scroll' || overflow === 'overlay') return node
+    if (overflow !== 'visible' && overflow !== 'clip' && overflow !== '') return node
     node = node.parentElement
   }
   return null
@@ -34,9 +38,10 @@ function scrollParent(element: HTMLElement): HTMLElement | null {
  */
 export function dockCommitBar(bar: HTMLElement): () => void {
   const measure = (): void => {
-    const scroller = scrollParent(bar)
+    const scroller = stickyReference(bar)
     const padding = scroller === null ? Number.NaN : Number.parseFloat(getComputedStyle(scroller).paddingBottom)
-    const bleed = Number.isFinite(padding) ? Math.max(0, Math.round(padding)) : 0
+    // Sub-pixel used values are kept: rounding would leave a hairline gap.
+    const bleed = Number.isFinite(padding) ? Math.max(0, padding) : 0
     bar.style.setProperty('--dsh-imagegen-commit-bleed', `${bleed}px`)
   }
   measure()

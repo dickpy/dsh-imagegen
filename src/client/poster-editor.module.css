@@ -39,6 +39,6 @@
 .error { color: var(--dsw-alias-state-error-primary); margin: 8px 20px; overflow-wrap: anywhere; }
 .footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--dsw-alias-border-l2); flex-wrap: wrap; }
 .footer small, .footer span { margin-right: auto; color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.footer .primary { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary-foreground); }
+.footer .primary { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base)); }
 .footer .primary:hover:not(:disabled) { filter: brightness(1.06); }
 @media (max-width: 680px) { .backdrop { padding: 6px; } .dialog { max-height: calc(100dvh - 12px); } .body { grid-template-columns: 1fr; } .preview { padding: 12px; } .inspector { border-left: 0; border-top: 1px solid var(--dsw-alias-border-l2); } .header, .toolbar, .footer { padding: 10px 12px; } }

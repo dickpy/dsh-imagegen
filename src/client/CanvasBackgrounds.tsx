@@ -648,6 +648,8 @@ function startShaderCanvas(
   const contextAttributes: WebGLContextAttributes = { alpha: true, antialias: false, depth: false, stencil: false }
   const gl = canvas.getContext('webgl2', contextAttributes) ?? canvas.getContext('webgl', contextAttributes)
   if (gl === null) return null
+  // Declared outside `try` so the catch can reclaim it if a later init step throws.
+  let stopWatchingTheme: (() => void) | null = null
   try {
     const compile = (type: number, source: string): WebGLShader => {
       const shader = gl.createShader(type)
@@ -697,7 +699,7 @@ function startShaderCanvas(
     // Frame uniforms read state.light on every tick, so a live theme flip only
     // has to update it; callers that derive non-shader state (blend mode) get
     // the same signal through the callback.
-    const stopWatchingTheme = watchSurfaceTheme(viewport, light => {
+    stopWatchingTheme = watchSurfaceTheme(viewport, light => {
       state.light = light
       onLightChange?.(light)
     })
@@ -757,7 +759,7 @@ function startShaderCanvas(
     return {
       light: state.light,
       dispose: () => {
-        stopWatchingTheme()
+        stopWatchingTheme?.()
         window.cancelAnimationFrame(frameHandle)
         observer.disconnect()
         viewport.removeEventListener('pointermove', onPointerMove)
@@ -766,6 +768,7 @@ function startShaderCanvas(
       },
     }
   } catch {
+    stopWatchingTheme?.()
     gl.getExtension('WEBGL_lose_context')?.loseContext()
     return null
   }

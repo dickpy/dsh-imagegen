@@ -1404,7 +1404,7 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         onReset={() => { props.resetField('allowAgentImageGeneration') }}
       />
       </SettingsGroup>
-      <div className={css.footer} ref={commitBarRef} data-commit-bar="">
+      <div className={css.footer} ref={commitBarRef}>
         <span className={css.footerStatus} data-state={state.dirty ? 'dirty' : 'saved'} role="status">
           {state.dirty ? t('settings.unsaved') : t('settings.saved')}
         </span>

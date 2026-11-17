@@ -14,9 +14,17 @@ const sharp = runtimeRequire('sharp')
 const sourceId = `${'a'.repeat(64)}.png`
 const source = await sharp({ create: { width: 1000, height: 700, channels: 4, background: '#17365d' } }).png().toBuffer()
 const logo = await sharp({ create: { width: 120, height: 60, channels: 4, background: '#ff0000' } }).png().toBuffer()
+// The poster editor is themed through the host's dsh tokens; this fixture page
+// stands in for the host, so it has to declare the same minimum set the other
+// browser fixtures use (see references-browser-test.mjs).
+const css = `:root{--dsw-alias-bg-base:#fff;--dsw-alias-bg-layer-1:#fbfbfd;--dsw-alias-bg-layer-2:#f2f2f6;--dsw-alias-border-l1:#e4e4e7;--dsw-alias-border-l2:#d9d9df;--dsw-alias-label-primary:#25262a;--dsw-alias-label-secondary:#5e6069;--dsw-alias-label-tertiary:#8a8c96;--dsw-alias-brand-primary:#26262b;--dsw-alias-label-primary-foreground:#fff;--dsw-alias-interactive-bg-hover:#f0f0f2;--dsw-alias-state-error-primary:#b33535}*{box-sizing:border-box}html,body,#root{margin:0;height:100%;font:14px system-ui,sans-serif}`
 const assets = new Map([[sourceId, source]])
 const server = createServer(async (req, res) => {
-  if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script src="/preview.js"></script></html>'); return }
+  if (req.url === '/') {
+    res.setHeader('content-type', 'text/html')
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style></head><body><div id="root"></div><script src="/preview.js"></script></body></html>`)
+    return
+  }
   if (req.url === '/preview.js') { res.setHeader('content-type', 'text/javascript'); res.end(readFileSync(new URL('../.poster-preview/preview.js', import.meta.url))); return }
   if (req.url === '/upload') {
     const chunks = []; for await (const chunk of req) chunks.push(chunk)

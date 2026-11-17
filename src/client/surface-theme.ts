@@ -38,8 +38,9 @@ export function watchSurfaceTheme(element: HTMLElement, apply: (light: boolean) 
     last = light
     apply(light)
   }
+  if (typeof document === 'undefined') return () => {}
   run()
-  if (typeof MutationObserver !== 'function' || typeof document === 'undefined') return () => {}
+  if (typeof MutationObserver !== 'function') return () => {}
   const schedule = (): void => {
     if (scheduled !== 0) return
     if (typeof requestAnimationFrame !== 'function') {

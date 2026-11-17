@@ -1529,6 +1529,13 @@
   margin: 0;
 }
 
+/* The docked bar permanently covers the bottom of the scrollport, and a focused
+   control scrolled into view would land underneath it. Reserve the bar's height
+   so keyboard and scrollIntoView landings stay visible. */
+.body :is(input, select, textarea, button, a[href]) {
+  scroll-margin-bottom: calc(var(--dsh-imagegen-commit-bleed, 24px) + 64px);
+}
+
 /* --- Plugins tab (Settings → Plugins) --------------------------------------------- */
 
 .tabPanel {

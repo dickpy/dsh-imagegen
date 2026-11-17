@@ -33,13 +33,13 @@
 .submitBar { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); }
 .submitBar small { font-size: 10px; line-height: 1.7; color: var(--dsw-alias-label-secondary); }
 .workspace .primary { min-height: 42px; border-color: transparent; color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base)); background: var(--dsw-alias-brand-primary); }
-.workspace .error { color: var(--dsw-alias-state-danger-primary, #b33535); white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace .error { color: var(--dsw-alias-state-error-primary, #b33535); white-space: pre-wrap; overflow-wrap: anywhere; }
 .resultHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .resultHeader > span { color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .empty > .fileIcon { width: 42px; height: 48px; font-size: 10px; }
 .fileIcon { display: inline-grid; flex: none; place-items: center; width: 64px; height: 72px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-brand-primary); font-size: 13px; font-weight: 600; }
 .taskPicker select { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); font: inherit; }
-.workspace .failure { padding: 12px 14px; border: 1px solid rgb(208 64 64 / 20%); border-radius: 9px; color: var(--dsw-alias-state-danger-primary, #b33535); background: rgb(208 64 64 / 5%); white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace .failure { padding: 12px 14px; border: 1px solid rgb(208 64 64 / 20%); border-radius: 9px; color: var(--dsw-alias-state-error-primary, #b33535); background: rgb(208 64 64 / 5%); white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace .progress { white-space: pre-wrap; overflow-wrap: anywhere; }
 .setup { display: flex; flex-direction: column; gap: 12px; }
 .setup a, .workspace a { color: var(--dsw-alias-brand-primary); font-size: 12px; }
