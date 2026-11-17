@@ -6,6 +6,7 @@ import type { ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-tools'
+import { describeModel } from './model-catalog.ts'
 import { ImageGenError } from './engine.ts'
 import type { ImageGenerationRuntime, RuntimeChannel } from './generation-runtime.ts'
 import { detectImageMime } from './image-format.ts'
@@ -180,7 +181,13 @@ export async function submitAgentImageEdit(
   ensureAgentImageConfigured(config)
   const defaultChannel = config.channels.find(channel => channel.id === config.defaultChannelId) ?? config.channels[0]
   const fallbackModel = defaultChannel?.models[0]?.alias ?? config.channels.flatMap(channel => channel.models)[0]?.alias ?? ''
-  const picked = resolveAgentImageModel(config, config.defaultModel?.trim() || fallbackModel)
+  let picked = resolveAgentImageModel(config, config.defaultModel?.trim() || fallbackModel)
+  if (!describeModel(picked.upstream).supportsEdit) {
+    const editable = config.channels.flatMap(channel => channel.models.map(model => ({ channel, alias: model.alias, upstream: model.id })))
+      .find(candidate => describeModel(candidate.upstream).supportsEdit && hasChannelAuthentication(candidate.channel))
+    if (!editable) throw new ImageGenError('No configured model supports image editing.', 'edit-model-unavailable')
+    picked = editable
+  }
   ensureAgentImageConfigured(config, picked.channel)
   const reference = await attachments.readImage(input.sourceImage, input.signal)
   const task = runtime.queue.submit({
@@ -190,8 +197,11 @@ export async function submitAgentImageEdit(
     channelId: picked.channel.id,
     channel: picked.channel.name,
     prompt: input.prompt.trim(),
-    size: 'auto',
-    quality: 'auto',
+    size: ['1:1', '3:4', '4:3', '9:16', '2:3', '3:2', '16:9', '21:9'].reduce((best, ratio) => {
+      const distance = (value: string): number => { const [w, h] = value.split(':').map(Number); return Math.abs(Math.log(w! / h!) - Math.log(input.sourceImage.width / input.sourceImage.height)) }
+      return distance(ratio) < distance(best) ? ratio : best
+    }),
+    quality: describeModel(picked.upstream).qualityTiers[0]?.toLowerCase() ?? 'auto',
     n: 1,
     detail: '',
     image: imageDataUrl(reference),
@@ -450,7 +460,7 @@ function isFinalTask(task: GenerationTask): boolean {
   return task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
 }
 
-function toSaveImage(image: GeneratedImage, taskId: string, index: number): { data: Uint8Array; mediaType: ImageMediaType; name: string } {
+export function toSaveImage(image: GeneratedImage, taskId: string, index: number): { data: Uint8Array; mediaType: ImageMediaType; name: string } {
   const data = Buffer.from(image.b64, 'base64')
   const declaredMediaType = acceptedMediaType(image.mime) ? image.mime : 'image/png'
   const mediaType = detectImageMime(data) ?? declaredMediaType

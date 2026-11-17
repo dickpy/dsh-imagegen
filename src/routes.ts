@@ -370,6 +370,8 @@ function parseGenerateRequest(body: Record<string, unknown>): GenerateRequest | 
     ...Array.isArray(body.images)
       ? { images: body.images.filter((item): item is string => typeof item === 'string' && item !== '').slice(0, 4) }
       : {},
+    ...typeof body.parentId === 'string' && body.parentId.length <= 200 ? { parentId: body.parentId } : {},
+    ...Number.isInteger(body.parentImageIndex) && Number(body.parentImageIndex) >= 0 ? { parentImageIndex: Number(body.parentImageIndex) } : {},
     ...typeof body.refName === 'string' && body.refName !== '' ? { refName: body.refName } : {},
     ...typeof body.channelId === 'string' && body.channelId !== '' ? { channelId: body.channelId } : {},
     ...typeof body.comparisonId === 'string' && body.comparisonId !== '' ? { comparisonId: body.comparisonId } : {},

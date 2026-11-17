@@ -65,9 +65,11 @@ export class ImageGenerationRuntime {
       ...generated,
       images: generated.images.map(image => ({ ...image, durationMs, ...imageDimensions(Buffer.from(image.b64, 'base64')), model: request.model, channelId: channel.id, channel: channel.name, upstream: request.upstream ?? request.model })),
     }
+    const historyId = randomUUID()
+    result.images = result.images.map((image, index) => ({ ...image, historyId, historyImageIndex: index }))
     try {
       const history = await this.history.append({
-        id: randomUUID(),
+        id: historyId,
         createdAt,
         mode: request.mode,
         model: request.model,
@@ -77,6 +79,14 @@ export class ImageGenerationRuntime {
         detail: request.detail,
         n: request.n,
         images: result.images,
+        ...(request.mode === 'edit' ? {
+          parentId: request.parentId,
+          parentImageIndex: request.parentImageIndex,
+          refs: [request.image, ...(request.images ?? [])].flatMap(url => {
+            const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/u.exec(url ?? '')
+            return match ? [{ mime: match[1]!, b64: match[2]! }] : []
+          }),
+        } : {}),
         ...request.refName === undefined ? {} : { refName: request.refName },
         ...request.channelId === undefined ? {} : { channelId: request.channelId },
         ...request.channel === undefined ? {} : { channel: request.channel },

@@ -1046,7 +1046,7 @@ export interface ProductSetDraft {
 }
 
 /** A client → host generate request (what the panel collects). */
-export interface GenerateRequest extends EcommerceTaskMeta {
+export interface GenerateRequest extends EcommerceTaskMeta, IterationMeta {
   /** text-to-image (images/generations) or image-to-image (images/edits). */
   mode: GenerateMode
   /**
@@ -1104,6 +1104,8 @@ export interface GenerateRequest extends EcommerceTaskMeta {
 /** One generated image, normalized host-side to base64 so the browser never
  *  has to fetch the upstream (no CORS, no key exposure). */
 export interface GeneratedImage {
+  historyId?: string
+  historyImageIndex?: number
   /** Decoded file dimensions, never inferred from the requested quality tier. */
   width?: number
   height?: number
@@ -1254,6 +1256,8 @@ export interface UpdateInfo {
 
 /** One history image reference as the browser consumes it (a served URL). */
 export interface HistoryImageRef {
+  historyId?: string
+  historyImageIndex?: number
   width?: number
   height?: number
   model?: string
@@ -1271,7 +1275,15 @@ export interface HistoryImageRef {
 }
 
 /** A saved generation as the browser consumes it (metadata + served images). */
-export interface HistoryEntry extends EcommerceTaskMeta {
+/** Optional provenance; old records remain valid. */
+export interface IterationMeta {
+  parentId?: string
+  parentImageIndex?: number
+  threadId?: string
+}
+
+export interface HistoryEntry extends EcommerceTaskMeta, IterationMeta {
+  refs?: HistoryImageRef[]
   id: string
   createdAt: number
   mode: GenerateMode
@@ -1282,7 +1294,7 @@ export interface HistoryEntry extends EcommerceTaskMeta {
   detail: string
   n: number
   images: HistoryImageRef[]
-  /** Reference-image filename (edit mode), kept for display only. */
+  /** Original reference-image names (edit mode), retained for display. */
   refName?: string
   /** User-managed gallery labels (unused by history entries). */
   tags?: string[]
@@ -1298,7 +1310,8 @@ export interface HistoryEntry extends EcommerceTaskMeta {
 }
 
 /** A history entry the client submits for persistence (images still carry base64). */
-export interface HistoryEntryInput extends EcommerceTaskMeta {
+export interface HistoryEntryInput extends EcommerceTaskMeta, IterationMeta {
+  refs?: GeneratedImage[]
   id: string
   createdAt: number
   mode: GenerateMode

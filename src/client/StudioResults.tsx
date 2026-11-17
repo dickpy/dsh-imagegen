@@ -37,6 +37,7 @@ export function StudioResults(props: {
   onCopy: (image: GeneratedImage) => void
   onGallery: (image: GeneratedImage, request?: GenerateRequest) => void
   onConversation: (image: GeneratedImage) => void
+  onEdit?: (image: GeneratedImage, request?: GenerateRequest) => void
   onReverse: (image: GeneratedImage) => void
   onContextMenu: (event: MouseEvent<HTMLElement>, image: GeneratedImage) => void
 }): React.JSX.Element {
@@ -81,6 +82,7 @@ export function StudioResults(props: {
           <div className={css.actions}>
             <button type="button" disabled={props.busy || waiting} onClick={() => props.onRetry(slot)}>{tt(status === 'failed' || status === 'cancelled' ? 'tasks.retry' : 'studio.regenerate')}</button>
             {display && <>
+              {props.onEdit && <button type="button" data-continue-edit="" disabled={props.busy || waiting} onClick={() => props.onEdit?.(display, task?.request)}>{tt('iteration.edit')}</button>}
               <button type="button" data-copy-image="" onClick={() => props.onCopy(display)}>{tt('image.copy')}</button>
               <button type="button" onClick={() => props.onGallery(display, task?.request)}>{tt('gallery.add')}</button>
               <button type="button" onClick={() => props.onConversation(display)}>{tt('conversation.add')}</button>

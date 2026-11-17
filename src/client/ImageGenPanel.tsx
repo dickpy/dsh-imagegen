@@ -473,6 +473,7 @@ function modelsOfHistoryEntry(entry: HistoryEntry): string[] {
 
 /** Comparison runs collapse by comparisonId, product sets by projectId. */
 function historyGroupKey(entry: HistoryEntry): string {
+  if (entry.threadId !== undefined) return `thread:${entry.threadId}`
   if (entry.comparisonId !== undefined) return entry.comparisonId
   if (entry.workflow === 'ecommerce' && entry.projectId !== undefined) return `project:${entry.projectId}`
   return entry.id
@@ -482,7 +483,7 @@ function historyGroupKey(entry: HistoryEntry): string {
 function groupHistoryEntries(entries: HistoryEntry[]): HistoryGroup[] {
   const groups = new Map<string, HistoryGroup>()
   for (const entry of entries) {
-    const key = historyGroupKey(entry)
+    const key = entries.some(candidate => candidate.threadId === entry.id) ? `thread:${entry.id}` : historyGroupKey(entry)
     const existing = groups.get(key)
     if (existing === undefined) {
       groups.set(key, { key, entries: [entry], models: modelsOfHistoryEntry(entry) })
@@ -1037,7 +1038,10 @@ export function ImageGenPanel(props: {
     if (id === null) return
     const group = groupHistoryEntries(history).find(group => group.entries.some(entry => entry.id === id))
     if (group === undefined) setHistoryIdForMode(generationMode, null)
-    else if (!group.entries.some(entry => entry.comparisonId !== undefined && entry.comparisonId === studioRunsRef.current[generationMode]?.id)) void viewHistoryGroup(group)
+    else if (!group.entries.some(entry => entry.comparisonId !== undefined && entry.comparisonId === studioRunsRef.current[generationMode]?.id)) {
+      const selected = group.entries.find(entry => entry.id === id)!
+      void viewHistoryGroup(group.key.startsWith('thread:') ? { key: selected.id, entries: [selected], models: [selected.model] } : group)
+    }
   }, [historyReady, history, generationMode])
 
   // Chat toolviews publish durable refs after they finish loading. Decode the
@@ -1388,6 +1392,8 @@ export function ImageGenPanel(props: {
       ...(tab === 'edit' && editMask !== undefined ? { mask: editMask } : {}),
       ...(tab === 'edit' && editReferences.images.length > 0 ? {
         image: editReferences.images[0]!.dataUrl,
+        parentId: editReferences.images[0]!.parentId,
+        parentImageIndex: editReferences.images[0]!.parentImageIndex,
         ...(editReferences.images.length > 1 ? { images: editReferences.images.slice(1).map(image => image.dataUrl) } : {}),
         refName: editReferences.images.map(image => image.name).join('、'),
       } : {}),
@@ -1551,14 +1557,14 @@ export function ImageGenPanel(props: {
     }
   }
 
-  /** Open one persisted product set from history: rebuild the grouped results
-   *  canvas from its entries. Reference images are not persisted, so restored
-   *  edit-mode slots regenerate as text-to-image. */
+  /** Restore product-set results and their persisted edit inputs. */
   const viewEcommerceProject = async (group: HistoryGroup, requestId: number): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined || entry.projectId === undefined) return
     try {
-      const items: EcommerceResultItem[] = await Promise.all(group.entries.map(async item => ({
+      const items: EcommerceResultItem[] = await Promise.all(group.entries.map(async item => {
+        const refs = await historyImagesToGenerated(item.refs ?? [])
+        return {
         id: item.id,
         label: item.slotLabel ?? '',
         slotKey: item.slotKey ?? '',
@@ -1567,7 +1573,8 @@ export function ImageGenPanel(props: {
         prompt: item.prompt,
         images: await historyImagesToGenerated(item.images),
         source: {
-          mode: item.mode === 'edit' ? 'text' as const : item.mode,
+          mode: item.mode,
+          ...(refs.length ? { image: srcOf(refs[0]!), images: refs.slice(1).map(srcOf) } : {}),
           model: item.model,
           prompt: item.prompt,
           size: item.size,
@@ -1581,7 +1588,7 @@ export function ImageGenPanel(props: {
           slotKey: item.slotKey ?? '',
           slotLabel: item.slotLabel ?? '',
         },
-      })))
+      }}))
       if (requestId !== historyViewRequestRef.current) return
       setWorkspace('ecommerce')
       setEcommerceRestored({ projectId: entry.projectId, projectName: entry.projectName ?? '', items })
@@ -1680,7 +1687,7 @@ export function ImageGenPanel(props: {
   }, [preview, previewScale])
 
   const loadHistoryGroup = async (group: HistoryGroup): Promise<GeneratedImage[]> => {
-    const loaded = await Promise.all(group.entries.map(async entry => (await historyImagesToGenerated(entry.images)).map(image => ({ ...image, model: image.model ?? entry.model, channel: image.channel ?? entry.channel, channelId: image.channelId ?? entry.channelId }))))
+    const loaded = await Promise.all(group.entries.map(async entry => (await historyImagesToGenerated(entry.images)).map((image, index) => ({ ...image, historyId: entry.id, historyImageIndex: index, model: image.model ?? entry.model, channel: image.channel ?? entry.channel, channelId: image.channelId ?? entry.channelId }))))
     return loaded.flat()
   }
 
@@ -1713,7 +1720,7 @@ export function ImageGenPanel(props: {
     setModelChannelId(restored.channelId)
     // A comparison run carries every model it submitted: restore the whole set
     // so one click reproduces the comparison instead of a single image.
-    const recordedChoices = group.entries.map(record => resolveModelChoice(targetGroups, { channelId: record.channelId ?? '', model: record.model }, defaultChannelId))
+    const recordedChoices = (group.key.startsWith('thread:') ? [entry] : group.entries).map(record => resolveModelChoice(targetGroups, { channelId: record.channelId ?? '', model: record.model }, defaultChannelId))
     const comparisonKeys = [...new Set(recordedChoices.map(modelChoiceKey))]
     setCompareEnabled(comparisonKeys.length > 1)
     setCompareModels(comparisonKeys.length > 1
@@ -1738,6 +1745,7 @@ export function ImageGenPanel(props: {
     // immediately, then hydrate the selected result into its canvas. The
     // record's prompt and parameters come back with it (#68).
     applyHistorySettings(group)
+    editReferences.clear()
     setHistoryIdForMode(entry.mode, entry.id)
     setGalleryIds(previous => ({ ...previous, [entry.mode]: null }))
     setHistoryLoadingMode(entry.mode)
@@ -1748,14 +1756,40 @@ export function ImageGenPanel(props: {
     setComparison(null)
     setModeErrors(previous => ({ ...previous, [entry.mode]: null }))
     try {
-      const restoredImages = await loadHistoryGroup(group)
+      const refs = entry.refs?.length ? entry.refs : entry.parentId
+        ? history.find(item => item.id === entry.parentId)?.images.slice(entry.parentImageIndex ?? 0, (entry.parentImageIndex ?? 0) + 1) ?? [] : []
+      const [restoredImages, restoredRefs] = await Promise.all([loadHistoryGroup(group), historyImagesToGenerated(refs).catch(() => [])])
       if (requestId !== historyViewRequestRef.current) return
+      if (entry.mode === 'edit') {
+        editReferences.restore(restoredRefs.map((image, index) => ({
+          dataUrl: srcOf(image), name: `${entry.refName || 'reference'}-${index + 1}`, bytes: Math.floor(image.b64.length * 3 / 4),
+          ...(index === 0 ? { parentId: entry.parentId, parentImageIndex: entry.parentImageIndex } : {}),
+        })))
+        if (restoredRefs.length === 0) setModeErrors(previous => ({ ...previous, edit: tt('iteration.missing') }))
+      }
       setImagesForMode(entry.mode, restoredImages)
     } catch (caught) {
       if (requestId === historyViewRequestRef.current) setModeErrors(previous => ({ ...previous, [entry.mode]: errorMessage(caught) }))
     } finally {
       if (requestId === historyViewRequestRef.current) setHistoryLoadingMode(null)
     }
+  }
+
+  const continueEditing = (image: GeneratedImage, source?: GenerateRequest | HistoryEntry): void => {
+    const entry = image.historyId ? history.find(item => item.id === image.historyId) : undefined
+    const settings = entry ?? source
+    if (settings) applyHistorySettings({ key: settings.model, entries: [settings as HistoryEntry], models: [settings.model] })
+    beginResultNavigation('edit')
+    pendingHistoryRestores.current.delete('edit')
+    setHistoryIdForMode('edit', null)
+    setGalleryIds(previous => ({ ...previous, edit: null }))
+    setStudioRuns(previous => ({ ...previous, edit: null }))
+    setImagesForMode('edit', [image])
+    editReferences.replace({ dataUrl: srcOf(image), name: 'iteration.png', bytes: Math.floor(image.b64.length * 3 / 4),
+      parentId: image.historyId, parentImageIndex: image.historyImageIndex ?? 0 })
+    setCompareEnabled(false)
+    setPrompt('')
+    openTab('edit')
   }
 
   /** Remove every persisted row belonging to one comparison group. */
@@ -2306,6 +2340,12 @@ export function ImageGenPanel(props: {
                     </time>
                   </span>
                 </button>
+                {group.key.startsWith('thread:') && <div className={css.historyVersions} data-iteration-versions="">
+                  {[...group.entries].reverse().map((version, index) => <button type="button" key={version.id} data-iteration-version={version.id}
+                    onClick={() => { void viewHistoryGroup({ key: version.id, entries: [version], models: [version.model] }) }}>
+                    {tt('iteration.version', { version: index + 1 })}{version.parentId && group.entries.some(item => item.id === version.parentId) ? ` ← ${tt('iteration.version', { version: [...group.entries].reverse().findIndex(item => item.id === version.parentId) + 1 })}` : ''}
+                  </button>)}
+                </div>}
                 <span className={css.historyActions}>
                   {entry.images.length > 0 ? (
                     <button
@@ -3306,7 +3346,7 @@ export function ImageGenPanel(props: {
             onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
             onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
-            onReverse={image => openReversePrompt(image)} onContextMenu={openCopyMenu} /> : null}
+            onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)} onContextMenu={openCopyMenu} /> : null}
           {historyLoading && isGeneration ? <div className={css.canvasState} data-history-loading="" role="status">{tt('canvas.loading')}</div> : null}
           {studioRun === null && !historyLoading && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
@@ -3402,6 +3442,7 @@ export function ImageGenPanel(props: {
                         <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
                         {conversationAttachment.busyKey === index ? tt('conversation.adding') : tt('conversation.add')}
                       </button>
+                      <button type="button" className={css.pptAction} data-continue-edit="" onClick={event => { event.stopPropagation(); continueEditing(image, viewingEntry ?? viewingGalleryEntry ?? undefined) }}>{tt('iteration.edit')}</button>
                       <button type="button" className={css.pptAction} data-reverse-prompt="" onClick={event => { event.stopPropagation(); openReversePrompt(image, index) }}>{tt('prompt.reverse.action')}</button>
                       <button type="button" className={css.imageCopyAction} data-copy-image="" onClick={event => { event.stopPropagation(); void copyImage(image) }}>{tt('image.copy')}</button>
                       <a

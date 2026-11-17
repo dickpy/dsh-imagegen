@@ -1,4 +1,4 @@
-/** Session-only edit references. Keep the host's primary + four extras contract. */
+/** In-memory edit references; history restores their persisted bytes. Keep the host's primary + four extras contract. */
 import { useEffect, useRef, useState } from 'react'
 import { describeModel } from '../model-catalog.ts'
 import { resolveChannelProtocol, type ChannelConfig } from '../protocol.ts'
@@ -10,7 +10,7 @@ export const EDIT_REFERENCE_MAX_BYTES = 10 * 1024 * 1024
 // expansion, prompts and request metadata without changing the host limits.
 export const EDIT_REFERENCE_TOTAL_BYTES = 16 * 1024 * 1024
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
-export interface EditReference { id: string; name: string; dataUrl: string; bytes: number }
+export interface EditReference { id: string; name: string; dataUrl: string; bytes: number; parentId?: string; parentImageIndex?: number }
 export type ReferencePasteResult = 'added' | 'empty' | 'cancelled'
 
 /** Current adapter capabilities, not a claim about every vendor's API. */
@@ -141,5 +141,9 @@ export function useEditReferences(onError: (message: string | null) => void) {
     clear()
     commit([{ ...image, id: `edit-ref-${++nextId.current}` }])
   }
-  return { images, reading, add, paste, remove, clear, replace }
+  const restore = (references: Omit<EditReference, 'id'>[]): void => {
+    clear()
+    commit(references.map(image => ({ ...image, id: `edit-ref-${++nextId.current}` })))
+  }
+  return { images, reading, add, paste, remove, clear, replace, restore }
 }
