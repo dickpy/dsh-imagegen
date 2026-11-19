@@ -3516,10 +3516,6 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   color: white; background: rgb(15 18 24 / 82%); border: 1px solid rgb(255 255 255 / 62%); border-radius: 999px; cursor: pointer; opacity: 0;
 }
 .imageCard:hover .imageCopyAction, .imageCopyAction:focus-visible { opacity: 1; }
-.imageCopyOverlay { position: fixed; z-index: 2000; inset: 0; }
-.imageCopyMenu { position: fixed; min-width: 150px; padding: 4px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 8px 24px rgb(0 0 0 / 24%); }
-.imageCopyMenu button { width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; text-align: left; color: var(--dsw-alias-label-primary); background: transparent; cursor: pointer; font: inherit; }
-.imageCopyMenu button:hover, .imageCopyMenu button:focus-visible { background: var(--dsw-alias-interactive-bg-hover); }
 .imageCopyToast { position: fixed; z-index: 2100; right: 20px; bottom: 20px; max-width: min(360px, 90vw); padding: 10px 14px; border-radius: 8px; color: white; background: rgb(20 24 30 / 92%); font-size: 13px; }
 @media (hover: none) { .imageCopyAction { opacity: 1; } }
 

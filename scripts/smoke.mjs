@@ -6180,12 +6180,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const menuEvent = new jsdomWindow.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 80 })
     resultImage.dispatchEvent(menuEvent)
     assert.equal(menuEvent.defaultPrevented, true)
-    await waitForSelector(jsdomDocument, '[data-image-copy-menu] [role="menuitem"]')
-    jsdomDocument.querySelector('[data-image-copy-menu] [role="menuitem"]').click()
+    await waitForSelector(jsdomDocument, '[data-image-action-menu] [data-menu-action="copy"]')
+    jsdomDocument.querySelector('[data-image-action-menu] [data-menu-action="copy"]').click()
     assert.ok(await waitUntil(() => copiedImages.length === 1), 'the context menu writes an image to the clipboard')
     assert.deepEqual(copiedImages[0], Buffer.from(resultImage.getAttribute('src').split(',')[1], 'base64'))
     rejectImageCopy = true
-    view.querySelector('[data-result-preview-grid] [data-copy-image]').click()
+    resultImage.dispatchEvent(new jsdomWindow.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 80 }))
+    await waitForSelector(jsdomDocument, '[data-image-action-menu] [data-menu-action="copy"]')
+    jsdomDocument.querySelector('[data-image-action-menu] [data-menu-action="copy"]').click()
     assert.ok(await waitUntil(() => jsdomDocument.querySelector('[role="alert"]')?.textContent.includes('复制图片失败')), 'clipboard errors are visible')
     rejectImageCopy = false
 
@@ -6255,19 +6257,21 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       assert.equal(view.querySelectorAll('[data-comparison-task] [data-generation-animation]').length, 0, 'all animations unmount when all models finish')
       assert.equal(slot(0).querySelector('[data-generation-duration]')?.textContent, firstDuration, '#66: earlier duration stays fixed while other models finish')
       assert.notEqual(slot(1).querySelector('[data-generation-duration]')?.textContent, firstDuration, '#66: models display independent durations')
-      ;[...view.querySelectorAll('button')].find(button => button.textContent === '全屏对比').click()
-      await waitForSelector(jsdomDocument, '[data-studio-fullscreen] [data-generation-duration]')
-      assert.equal(jsdomDocument.querySelectorAll('[data-result-preview-grid] [data-generation-duration]').length, 2, '#66: fullscreen comparison retains each duration')
-      jsdomDocument.querySelector('[data-studio-fullscreen] [aria-label="关闭"]').click()
+      // No fullscreen toggle: results are viewed through the preview lightbox,
+      // and the card menu carries the actions.
+      assert.equal([...view.querySelectorAll('button')].some(button => button.textContent === '全屏对比'), false)
     }
 
     // Earlier native-new-session coverage closed the studio; reopen it first.
     jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]').click()
     await new Promise(resolve => setTimeout(resolve, 40))
-    // The prompt-reverse entry sits where the removed PPT action used to be:
+    // The prompt-reverse entry sits in the result card's right-click menu:
     // it opens the dialog with that image, stages it as a canvas asset, posts
     // the reverse request and hands the answer back to the composer.
-    view.querySelector('[data-comparison-task] [data-reverse-prompt]').click()
+    const reverseImage = view.querySelector('[data-comparison-task] [data-result-open] img')
+    reverseImage.dispatchEvent(new jsdomWindow.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 90 }))
+    await waitForSelector(jsdomDocument, '[data-image-action-menu] [data-menu-action="reverse"]')
+    jsdomDocument.querySelector('[data-image-action-menu] [data-menu-action="reverse"]').click()
     await waitForSelector(jsdomDocument, '[data-workspace=reverse] [data-reverse-workspace]')
     const reverseDialog = jsdomDocument.querySelector('[data-reverse-workspace]')
     const reverseResult = reverseDialog.querySelector('[data-reverse-result]')

@@ -13,6 +13,7 @@ import { GenerationLoading } from './GenerationLoading'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { pickImageMetadata } from '../image-metadata.ts'
 import { StudioResults, ImageResultMeta } from './StudioResults.tsx'
+import { ImageActionMenu, type ImageMenuAction, type ImageMenuGroup } from './ImageActionMenu.tsx'
 import { readHistorySelection, writeHistorySelection } from './history-selection.ts'
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
@@ -696,7 +697,7 @@ export function ImageGenPanel(props: {
   const setImagesForMode = (mode: GenerateMode, next: GeneratedImage[]): void => { setModeImages(previous => ({ ...previous, [mode]: next })) }
   const setImages = (next: GeneratedImage[]): void => { setImagesForMode(generationMode, next) }
   const [privacyMode, setPrivacyMode] = useState(false)
-  const [copyMenu, setCopyMenu] = useState<{ image: GeneratedImage; x: number; y: number } | null>(null)
+  const [imageMenu, setImageMenu] = useState<{ x: number; y: number; groups: ImageMenuGroup[] } | null>(null)
   const [copyNotice, setCopyNotice] = useState<'copied' | 'failed' | null>(null)
   const copyNoticeTimer = useRef<number>()
   useEffect(() => () => { if (copyNoticeTimer.current !== undefined) window.clearTimeout(copyNoticeTimer.current) }, [])
@@ -706,27 +707,44 @@ export function ImageGenPanel(props: {
       if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.repeat && event.code === 'KeyH') {
         event.preventDefault()
         setPrivacyMode(value => !value)
-        setCopyMenu(null)
+        setImageMenu(null)
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => { window.removeEventListener('keydown', onKey, true) }
   }, [active])
-  useEffect(() => {
-    if (copyMenu === null) return
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setCopyMenu(null) }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => { window.removeEventListener('keydown', onKey, true) }
-  }, [copyMenu])
-  const openCopyMenu = (event: ReactMouseEvent<HTMLElement>, image: GeneratedImage): void => {
+  /**
+   * Right-click menu for every generated image in the panel.
+   *
+   * It used to hold a single "copy image" item while seven action buttons
+   * crowded every result card. The menu is the primary surface now, and the
+   * cards stay quiet; Escape and arrow keys are handled by the menu itself.
+   */
+  const openImageMenu = (event: ReactMouseEvent<HTMLElement>, image: GeneratedImage, request?: GenerateRequest | HistoryEntry, options?: { inPreview?: boolean }): void => {
     event.preventDefault()
     event.stopPropagation()
-    setCopyMenu({ image, x: Math.max(6, Math.min(event.clientX, window.innerWidth - 170)), y: Math.max(6, Math.min(event.clientY, window.innerHeight - 50)) })
+    const primary: ImageMenuAction[] = []
+    if (options?.inPreview !== true) primary.push({ id: 'preview', label: tt('result.viewLarge'), onSelect: () => { openPreview([image], 0) } })
+    primary.push({ id: 'edit', label: tt('iteration.edit'), onSelect: () => { continueEditing(image, request) } })
+    setImageMenu({
+      x: event.clientX,
+      y: event.clientY,
+      groups: [
+        primary,
+        [
+          { id: 'copy', label: tt('image.copy'), onSelect: () => { void copyImage(image) } },
+          { id: 'gallery', label: tt('gallery.add'), onSelect: () => { void addToGallery(image, request) } },
+          { id: 'conversation', label: tt('conversation.add'), onSelect: () => { addImageToConversation(image, 0) } },
+          { id: 'reverse', label: tt('prompt.reverse.action'), onSelect: () => { openReversePrompt(image) } },
+        ],
+        [
+          { id: 'download', label: tt('download'), onSelect: () => { downloadGeneratedImage(image) } },
+        ],
+      ],
+    })
   }
   const copyImage = async (image: GeneratedImage): Promise<void> => {
-    setCopyMenu(null)
+    setImageMenu(null)
     try { await copyGeneratedImage(image); setCopyNotice('copied') } catch { setCopyNotice('failed') }
     if (copyNoticeTimer.current !== undefined) window.clearTimeout(copyNoticeTimer.current)
     copyNoticeTimer.current = window.setTimeout(() => setCopyNotice(null), 2500)
@@ -2161,7 +2179,7 @@ export function ImageGenPanel(props: {
                 title={tt('preview.open')}
                 onClick={() => { openPreview(item.images, imageIndex) }}
               >
-                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} onContextMenu={event => openCopyMenu(event, image)} />
+                <img className={css.image} src={srcOf(image)} alt={`${group.label} ${imageIndex + 1}`} onContextMenu={event => openImageMenu(event, image)} />
                 <GenerationDurationBadge durationMs={image.durationMs} />
                 <span className={css.ecommerceResultBadge}>{group.label}</span>
                 <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
@@ -2483,7 +2501,7 @@ export function ImageGenPanel(props: {
         />
         <span className={css.panelHeaderActions}>
           <button type="button" className={css.privacyToggle} data-privacy-toggle="" aria-pressed={privacyMode}
-            aria-keyshortcuts="Alt+Shift+H" title={tt('image.privacyHint')} onClick={() => { setPrivacyMode(value => !value); setCopyMenu(null) }}>
+            aria-keyshortcuts="Alt+Shift+H" title={tt('image.privacyHint')} onClick={() => { setPrivacyMode(value => !value); setImageMenu(null) }}>
             {tt(privacyMode ? 'image.show' : 'image.hide')}
           </button>
           <button
@@ -3040,7 +3058,7 @@ export function ImageGenPanel(props: {
                   setPrompt(text)
                 }
                 setError(null)
-                requestAnimationFrame(() => { promptInput.current?.focus() })
+                if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => { promptInput.current?.focus() })
               }} />
           </div>
 
@@ -3323,7 +3341,7 @@ export function ImageGenPanel(props: {
                           title={tt('preview.open')}
                           onClick={() => { openPreview(taskImages, 0) }}
                         >
-                          <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />
+                          <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openImageMenu(event, image, task.request)} />
                           <GenerationDurationBadge durationMs={image.durationMs} />
                         </button>
                       ) : task.status === 'queued' || task.status === 'running' ? (
@@ -3346,7 +3364,7 @@ export function ImageGenPanel(props: {
             onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
             onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
-            onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)} onContextMenu={openCopyMenu} /> : null}
+            onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)} /> : null}
           {historyLoading && isGeneration ? <div className={css.canvasState} data-history-loading="" role="status">{tt('canvas.loading')}</div> : null}
           {studioRun === null && !historyLoading && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
@@ -3409,7 +3427,7 @@ export function ImageGenPanel(props: {
                       className={css.image}
                       src={srcOf(image)}
                       alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
-                      onContextMenu={event => openCopyMenu(event, image)}
+                      onContextMenu={event => openImageMenu(event, image, viewingEntry ?? viewingGalleryEntry ?? undefined)}
                     />
                     <GenerationDurationBadge durationMs={image.durationMs} />
                     <ImageResultMeta image={image} model={image.model ?? viewingEntry?.model} channel={image.channel ?? viewingEntry?.channel} />
@@ -3510,7 +3528,7 @@ export function ImageGenPanel(props: {
             {comparisonResults.map(task => (
               <figure key={task.id}><figcaption>{task.request.model}</figcaption>{task.result!.images.map((image, index) => (
                 <div key={index} className={css.comparisonFullscreenImage}>
-                  <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openCopyMenu(event, image)} />
+                  <img src={srcOf(image)} alt={task.request.model} onContextMenu={event => openImageMenu(event, image, task.request)} />
                   <GenerationDurationBadge durationMs={image.durationMs} />
                 </div>
               ))}</figure>
@@ -3560,7 +3578,7 @@ export function ImageGenPanel(props: {
                     style={{ width: `${previewImageScale * 100}%`, height: `${previewImageScale * 100}%` }}
                     src={srcOf(previewImage)}
                     alt={previewImage.revisedPrompt ?? tt('preview.title')}
-                    onContextMenu={event => openCopyMenu(event, previewImage)}
+                    onContextMenu={event => openImageMenu(event, previewImage, viewingEntry ?? viewingGalleryEntry ?? undefined, { inPreview: true })}
                   />
                 </div>
               </div>
@@ -3620,12 +3638,7 @@ export function ImageGenPanel(props: {
         )
         : null}
 
-      {copyMenu !== null ? createPortal(
-        <div className={css.imageCopyOverlay} onClick={() => setCopyMenu(null)} onContextMenu={event => { event.preventDefault(); setCopyMenu(null) }}>
-          <div className={css.imageCopyMenu} role="menu" data-image-copy-menu="" style={{ left: copyMenu.x, top: copyMenu.y }} onClick={event => event.stopPropagation()}>
-            <button type="button" role="menuitem" autoFocus onClick={() => { void copyImage(copyMenu.image) }}>{tt('image.copy')}</button>
-          </div>
-        </div>, document.body) : null}
+      {imageMenu !== null ? <ImageActionMenu x={imageMenu.x} y={imageMenu.y} groups={imageMenu.groups} label={tt('result.more')} onClose={() => { setImageMenu(null) }} /> : null}
 
       {copyNotice !== null ? createPortal(<div className={css.imageCopyToast} role={copyNotice === 'failed' ? 'alert' : 'status'}>{tt(copyNotice === 'copied' ? 'image.copied' : 'image.copyFailed')}</div>, document.body) : null}
 
@@ -3674,6 +3687,17 @@ export function ImageGenPanel(props: {
       <DiagnosticsPanel api={api} open={diagnosticsOpen} onClose={() => { setDiagnosticsOpen(false) }} />
     </div>
   )
+}
+
+/** Save the original bytes under a readable filename (menu action). */
+function downloadGeneratedImage(image: GeneratedImage): void {
+  const anchor = document.createElement('a')
+  anchor.href = `data:${image.mime};base64,${image.b64}`
+  anchor.download = `dsh-image.${extensionOf(image.mime)}`
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 /** File extension for a MIME type (download filenames). */

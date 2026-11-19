@@ -124,18 +124,24 @@ try {
   assert.equal(await slots().count(), 4, 'background edit completion does not replace text board')
   await page.getByRole('button', { name: '图生图', exact: true }).click()
   await waitFor(async () => await slots().first().getAttribute('data-task-status') === 'completed', 'edit completes on its own board')
-  await slots().first().getByRole('button', { name: '重新生成', exact: true }).click()
+  // Regeneration lives in the card's right-click menu, not in a button row.
+  await slots().first().locator('[data-result-open]').click({ button: 'right' })
+  await page.locator('[data-image-action-menu] [data-menu-action="retry"]').click()
   await waitFor(() => requests.filter(r => r.mode === 'edit').length >= 2, 'masked edit can regenerate')
   assert.equal(requests.at(-1).mask, editRequest.mask)
   assert.equal(requests.at(-1).image, editRequest.image)
   assert.equal(requests.at(-1).n, 1)
 
-  // Fullscreen retains the result actions and opens previews above itself.
-  await page.getByRole('button', { name: '全屏对比', exact: true }).click()
-  await page.locator('[data-studio-fullscreen] [data-result-open]').first().click()
+  // The board stays quiet: no button row, no fullscreen toggle, and the menu
+  // carries every action instead.
+  assert.equal(await slots().first().locator('button', { hasText: '继续编辑' }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: '全屏对比', exact: true }).count(), 0)
+  await slots().first().locator('[data-result-open]').click({ button: 'right' })
+  const menuLabels = await page.locator('[data-image-action-menu] [role="menuitem"]').allTextContents()
+  assert.deepEqual(menuLabels, ['查看大图', '继续编辑', '重新生成', '复制图片', '加入素材库', '加入对话', '反推提示词', '下载'])
+  await page.locator('[data-image-action-menu] [data-menu-action="preview"]').click()
   const preview = page.getByRole('dialog', { name: '图片预览', exact: true }); await preview.waitFor()
   await preview.getByRole('button', { name: '关闭', exact: true }).click()
-  await page.locator('[data-studio-fullscreen]').getByRole('button', { name: '关闭', exact: true }).click()
 
   // Pixel preservation is checked on the real browser canvas, outside the mask.
   const preserved = await page.evaluate(async () => {
