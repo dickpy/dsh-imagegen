@@ -1010,7 +1010,13 @@ export function ImageGenPanel(props: {
         const run = studioRunsRef.current[mode]
         if (run === null) continue
         const entry = entries.find(entry => entry.mode === mode && entry.comparisonId === run.id)
-        if (entry !== undefined) next[mode] = entry.id
+        if (entry === undefined) continue
+        // A record the operator opened keeps the canvas while the board waits
+        // in memory (#91): a background history refresh must not yank that
+        // selection back to the board's own record.
+        const selected = previous[mode] === null ? undefined : entries.find(item => item.id === previous[mode])
+        if (selected !== undefined && selected.comparisonId !== run.id) continue
+        next[mode] = entry.id
       }
       return next.text === previous.text && next.edit === previous.edit ? previous : next
     })
@@ -1729,6 +1735,10 @@ export function ImageGenPanel(props: {
     openTab(targetTab)
   }
 
+  /** Whether one run still holds a hydrated result its own record can redraw. */
+  const runHasResults = (run: StudioRun): boolean =>
+    tasks.some(task => task.result !== undefined && run.slots.some(slot => slot.taskId === task.id))
+
   /** View every model result from one comparison as one canvas result set. */
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
@@ -1741,6 +1751,12 @@ export function ImageGenPanel(props: {
       await viewEcommerceProject(group, requestId)
       return
     }
+    const liveRun = studioRunsRef.current[entry.mode]
+    const belongsToLiveRun = liveRun !== null && group.entries.some(item => item.comparisonId === liveRun.id)
+    // #91: the record a live board was submitted from opens that board again,
+    // not the generic history grid. Browsing elsewhere keeps the board in
+    // memory, so coming back restores its cards and their actions.
+    const restoresBoard = liveRun !== null && belongsToLiveRun && runHasResults(liveRun)
     // History is also the bridge out of the gallery: show the image workspace
     // immediately, then hydrate the selected result into its canvas. The
     // record's prompt and parameters come back with it (#68).
@@ -1748,17 +1764,26 @@ export function ImageGenPanel(props: {
     editReferences.clear()
     setHistoryIdForMode(entry.mode, entry.id)
     setGalleryIds(previous => ({ ...previous, [entry.mode]: null }))
-    setHistoryLoadingMode(entry.mode)
-    // Remove the old board before fetching. A highlighted history row must
-    // never label an unrelated live or previously loaded result.
-    setImagesForMode(entry.mode, [])
-    setStudioRuns(previous => ({ ...previous, [entry.mode]: null }))
     setComparison(null)
     setModeErrors(previous => ({ ...previous, [entry.mode]: null }))
+    if (belongsToLiveRun && !restoresBoard) {
+      // The record survived but the board's tasks did not: dropping the board
+      // is the only way to let the history grid own the canvas again.
+      setStudioRuns(previous => ({ ...previous, [entry.mode]: null }))
+    }
+    if (!restoresBoard) {
+      setHistoryLoadingMode(entry.mode)
+      // Hide the canvas being replaced before fetching. A highlighted history
+      // row must never label an unrelated live or previously loaded result.
+      setImagesForMode(entry.mode, [])
+    }
     try {
       const refs = entry.refs?.length ? entry.refs : entry.parentId
         ? history.find(item => item.id === entry.parentId)?.images.slice(entry.parentImageIndex ?? 0, (entry.parentImageIndex ?? 0) + 1) ?? [] : []
-      const [restoredImages, restoredRefs] = await Promise.all([loadHistoryGroup(group), historyImagesToGenerated(refs).catch(() => [])])
+      const [restoredImages, restoredRefs] = await Promise.all([
+        restoresBoard ? Promise.resolve<GeneratedImage[]>([]) : loadHistoryGroup(group),
+        historyImagesToGenerated(refs).catch(() => []),
+      ])
       if (requestId !== historyViewRequestRef.current) return
       if (entry.mode === 'edit') {
         editReferences.restore(restoredRefs.map((image, index) => ({
@@ -1767,11 +1792,11 @@ export function ImageGenPanel(props: {
         })))
         if (restoredRefs.length === 0) setModeErrors(previous => ({ ...previous, edit: tt('iteration.missing') }))
       }
-      setImagesForMode(entry.mode, restoredImages)
+      if (!restoresBoard) setImagesForMode(entry.mode, restoredImages)
     } catch (caught) {
-      if (requestId === historyViewRequestRef.current) setModeErrors(previous => ({ ...previous, [entry.mode]: errorMessage(caught) }))
+      if (requestId === historyViewRequestRef.current && !restoresBoard) setModeErrors(previous => ({ ...previous, [entry.mode]: errorMessage(caught) }))
     } finally {
-      if (requestId === historyViewRequestRef.current) setHistoryLoadingMode(null)
+      if (requestId === historyViewRequestRef.current && !restoresBoard) setHistoryLoadingMode(null)
     }
   }
 
@@ -2185,6 +2210,13 @@ export function ImageGenPanel(props: {
   const conversationBusy = conversationAttachment.busyKey !== null || conversationAttachment.pending !== null || galleryConversationAddingId !== null || historyConversationAddingId !== null
   const viewingEntry = viewingHistoryId === null ? null : history.find(entry => entry.id === viewingHistoryId && entry.mode === generationMode) ?? null
   const viewingGalleryEntry = galleryViewingId === null ? null : gallery.find(entry => entry.id === galleryViewingId) ?? null
+  /**
+   * The live board owns the canvas unless another record was opened (#91).
+   * Selecting the board's own history record restores it; any other history
+   * record or gallery item takes the canvas with its own images.
+   */
+  const liveBoardCurrent = studioRun !== null && viewingGalleryEntry === null
+    && (viewingEntry === null || viewingEntry.comparisonId === studioRun.id)
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
   const comparisonTasks = comparison === null ? [] : comparison.taskIds.map(id => tasks.find(task => task.id === id)).filter((task): task is GenerationTask => task !== undefined)
   const comparisonResults = comparisonTasks.filter(task => task.status === 'completed' && task.result !== undefined)
@@ -3342,13 +3374,13 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {studioRun !== null && isGeneration ? <StudioResults key={studioRun.id} run={studioRun} tasks={tasks} groups={modeGroups} busy={studioBusy} privacyMode={privacyMode}
+          {liveBoardCurrent && studioRun !== null && isGeneration ? <StudioResults key={studioRun.id} run={studioRun} tasks={tasks} groups={modeGroups} busy={studioBusy} privacyMode={privacyMode}
             onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
             onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
             onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)} onContextMenu={openCopyMenu} /> : null}
           {historyLoading && isGeneration ? <div className={css.canvasState} data-history-loading="" role="status">{tt('canvas.loading')}</div> : null}
-          {studioRun === null && !historyLoading && generating && comparison === null && isGeneration ? (
+          {!liveBoardCurrent && !historyLoading && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
               <GenerationLoading
                 title={submitting && activeTask === undefined
@@ -3367,7 +3399,7 @@ export function ImageGenPanel(props: {
             <div className={css.canvasError} role="alert">{tt('canvas.error', { error })}</div>
           ) : null}
 
-          {studioRun === null && isGeneration && !historyLoading && !generating && !error && images.length === 0 ? (
+          {!liveBoardCurrent && isGeneration && !historyLoading && !generating && !error && images.length === 0 ? (
             <InspirationGallery
               api={api}
               onUse={(text) => {
@@ -3377,7 +3409,7 @@ export function ImageGenPanel(props: {
             />
           ) : null}
 
-          {studioRun === null && isGeneration && !historyLoading && !generating && images.length > 0 ? (
+          {!liveBoardCurrent && isGeneration && !historyLoading && !generating && images.length > 0 ? (
             <div className={css.canvasBody}>
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>
