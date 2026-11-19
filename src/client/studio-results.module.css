@@ -9,15 +9,14 @@
 .board {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
   min-width: 0;
-  padding: 52px 20px 28px;
+  padding: 52px 20px 20px;
   color: var(--dsw-alias-label-primary);
-  scrollbar-gutter: stable;
 }
 
 .toolbar {
@@ -50,27 +49,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.appendToggle {
-  display: inline-flex;
+.toolbarActions {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 11px;
-  border: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary, #575b65);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.appendToggle:hover,
-.appendToggle[aria-expanded='true'] {
-  border-color: var(--dsw-alias-border-l2, #d3d5dd);
-  background: var(--dsw-alias-bg-layer-2, #f1f2f6);
-  color: var(--dsw-alias-label-primary, #25262a);
+  gap: 8px;
 }
 
 .append {
@@ -110,21 +92,57 @@
   cursor: default;
 }
 
+/*
+ * The board is a photo sheet, not a scrolling list: one image owns the whole
+ * canvas, two split it left/right, four split it into a 2×2. Each cell keeps
+ * the image fully visible (contain, never cropped).
+ */
 .grid {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 232px), 1fr));
-  gap: 16px;
-  align-items: start;
+  gap: 12px;
+}
+
+.grid[data-count='1'] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.grid[data-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.grid[data-count='3'] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.grid[data-count='4'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+/* Appended models past four keep a readable minimum and scroll instead. */
+.grid[data-count='many'] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(220px, 1fr);
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .card {
+  display: flex;
+  flex-direction: column;
   margin: 0;
   min-width: 0;
+  min-height: 0;
   border: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
-  border-radius: 16px;
+  border-radius: 14px;
   overflow: hidden;
   background: var(--dsw-alias-bg-layer-1, #fcfcfd);
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .card:hover {
@@ -134,24 +152,27 @@
 
 .media {
   position: relative;
+  flex: 1;
+  min-height: 0;
   display: grid;
   place-items: center;
-  min-height: 140px;
   background: var(--dsw-alias-bg-layer-2, #f1f2f6);
 }
 
-.media[data-empty] {
-  min-height: 300px;
-}
-
-.media[data-failed] {
-  min-height: 220px;
+/* Letterbox bars around a contained image blend into the card instead of
+   framing it with a grey band. Pending/failed cards keep the grey field. */
+.media:not([data-empty]) {
+  background: var(--dsw-alias-bg-layer-1, #fcfcfd);
 }
 
 .imageButton {
-  position: relative;
-  display: block;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
+  height: 100%;
   padding: 0;
   border: 0;
   background: transparent;
@@ -175,8 +196,8 @@
 .imageButton img {
   display: block;
   width: 100%;
-  max-height: min(62vh, 560px);
-  height: auto;
+  height: 100%;
+  max-height: none;
   object-fit: contain;
 }
 
@@ -280,12 +301,13 @@
 }
 
 .meta {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border-top: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
   color: var(--dsw-alias-label-secondary, #575b65);
   font-size: 11.5px;
@@ -307,6 +329,7 @@
 }
 
 .errorText {
+  flex: none;
   margin: 0;
   padding: 8px 12px 10px;
   border-top: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
@@ -320,14 +343,16 @@
   visibility: hidden !important;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 560px) {
   .board {
-    padding: 48px 10px 14px;
+    padding: 48px 10px 12px;
   }
   .grid {
-    gap: 12px;
+    gap: 10px;
   }
-  .media[data-empty] {
-    min-height: 240px;
+  /* Two columns is the narrowest useful split; three across would be tiny. */
+  .grid[data-count='3'],
+  .grid[data-count='many'] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

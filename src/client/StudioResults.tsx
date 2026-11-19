@@ -3,6 +3,7 @@ import type { GeneratedImage, GenerateRequest, GenerationTask } from '../protoco
 import type { ImageModelGroup } from './settings-scope.ts'
 import type { StudioRun, StudioSlot } from './studio-state.ts'
 import { ModelPicker, type ModelPickerValue } from './ModelPicker.tsx'
+import { StudioActionButton } from './StudioActionButton.tsx'
 import { GenerationLoading } from './GenerationLoading.tsx'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { ImageActionMenu, type ImageMenuGroup } from './ImageActionMenu.tsx'
@@ -78,6 +79,8 @@ export function StudioResults(props: {
   onConversation: (image: GeneratedImage) => void
   onEdit?: (image: GeneratedImage, request?: GenerateRequest) => void
   onReverse: (image: GeneratedImage) => void
+  /** Extra toolbar control (the template library) rendered beside "add model". */
+  toolbarAction?: React.ReactNode
 }): React.JSX.Element {
   const [appendOpen, setAppendOpen] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; groups: ImageMenuGroup[] } | null>(null)
@@ -105,17 +108,19 @@ export function StudioResults(props: {
         <strong>{tt('studio.results')}</strong>
         <span className={css.count}>{props.run.slots.length}</span>
       </div>
-      <button type="button" className={css.appendToggle} aria-expanded={appendOpen} onClick={() => setAppendOpen(value => !value)}>
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" /></svg>
-        {tt('studio.append')}
-      </button>
+      <div className={css.toolbarActions}>
+        {props.toolbarAction}
+        <StudioActionButton icon={<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" /></svg>} aria-expanded={appendOpen} onClick={() => setAppendOpen(value => !value)}>
+          {tt('studio.append')}
+        </StudioActionButton>
+      </div>
     </header>
     {appendOpen && <div className={css.append}>
       <ModelPicker groups={props.groups} value={choice} onChange={setChoice} channelLabel={tt('model.channel')} modelLabel={tt('model.label')} emptyLabel={tt('model.noEditModels')} channelPlaceholder={tt('model.channelPlaceholder')} ariaLabel={tt('studio.appendModel')} />
       <button type="button" className={css.appendSubmit} disabled={props.busy || choice.model === ''} onClick={() => props.onAppend(choice)}>{tt('studio.appendGenerate')}</button>
       <span>{tt('studio.appendHint')}</span>
     </div>}
-    <div className={css.grid} data-result-preview-grid="">
+    <div className={css.grid} data-count={props.run.slots.length <= 4 ? String(props.run.slots.length) : 'many'} data-result-preview-grid="">
       {props.run.slots.map(slot => {
         const task = byId.get(slot.taskId)
         const status = task?.status ?? slot.status ?? 'queued'

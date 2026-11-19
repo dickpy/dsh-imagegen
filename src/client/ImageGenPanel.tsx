@@ -3364,7 +3364,8 @@ export function ImageGenPanel(props: {
             onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
             onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
-            onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)} /> : null}
+            onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)}
+            toolbarAction={<TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => { setLibraryOpen(true) }} />} /> : null}
           {historyLoading && isGeneration ? <div className={css.canvasState} data-history-loading="" role="status">{tt('canvas.loading')}</div> : null}
           {studioRun === null && !historyLoading && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
@@ -3476,7 +3477,7 @@ export function ImageGenPanel(props: {
               </div>
             </div>
           ) : null}
-          {(isGeneration || workspace === 'ecommerce') ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
+          {workspace === 'ecommerce' || (isGeneration && studioRun === null) ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
           </section>
         </div>
 
