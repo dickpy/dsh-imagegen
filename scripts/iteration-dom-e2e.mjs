@@ -30,13 +30,21 @@ async function openPage(savedSelection, seedLive = false, settings = false) {
   }
   const click = element => { assert.ok(element, 'target exists'); element.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) }
   const button = text => [...document.querySelectorAll('button')].find(element => element.textContent === text)
+  /** Result actions live in the image's right-click menu. */
+  const openResultMenu = async action => {
+    const image = document.querySelector('[data-result-preview-grid] img')
+    assert.ok(image, 'a result image is on screen')
+    image.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+    await waitFor(() => document.querySelector(`[data-image-action-menu] [data-menu-action="${action}"]`), `${action} menu item appears`)
+    click(document.querySelector(`[data-image-action-menu] [data-menu-action="${action}"]`))
+  }
   const history = id => [...document.querySelectorAll('[data-dsh-imagegen-history-main]')].find(element => element.textContent.includes(`History ${id}`))
   const images = () => [...document.querySelectorAll('[data-result-preview-grid] img')]
   const expectImage = async id => {
     await waitFor(() => images().some(image => image.src.endsWith(assets[id].toString('base64'))), `selected ${id} pixels are shown`)
     assert.equal(images().length, 1)
   }
-  return { dom, window, document, waitFor, click, button, history, images, expectImage, errors }
+  return { dom, window, document, waitFor, click, button, openResultMenu, history, images, expectImage, errors }
 }
 
 try {
@@ -50,8 +58,7 @@ try {
   assert.ok(page.document.querySelector('[data-edit-reference] img').src.endsWith(assets['text-a'].toString('base64')))
   assert.equal(page.document.querySelector('textarea').value, child.prompt)
   assert.ok(page.document.querySelector('[data-iteration-versions]'), 'history groups a thread')
-  const continueButton = page.document.querySelector('[data-result-preview-grid] [data-continue-edit]')
-  page.click(continueButton)
+  await page.openResultMenu('edit')
   await page.waitFor(() => page.document.querySelector('[data-edit-reference] img').src.endsWith(assets.edit.toString('base64')), 'continue editing uses the output, not its input')
   const textarea = page.document.querySelector('textarea')
   assert.equal(textarea.value, '', 'new edit instruction is independent of the original prompt')
@@ -75,7 +82,7 @@ try {
   await page.waitFor(() => page.document.querySelector('[data-iteration-version="text-a"]'), 'root version remains selectable')
   page.click(page.document.querySelector('[data-iteration-version="text-a"]'))
   await page.expectImage('text-a')
-  page.click(page.document.querySelector('[data-result-preview-grid] [data-continue-edit]'))
+  await page.openResultMenu('edit')
   await page.waitFor(() => page.document.querySelector('[data-edit-reference] img'), 'branch reference loaded')
   assert.ok(page.document.querySelector('[data-edit-reference] img').src.endsWith(assets['text-a'].toString('base64')))
   assert.deepEqual(page.errors, [])

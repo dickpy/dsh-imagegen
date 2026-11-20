@@ -3441,37 +3441,6 @@ export function ImageGenPanel(props: {
                       <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M13 13l-3.2-3.2"/><path d="M7 5.4v3.2M5.4 7h3.2"/></svg>
                       {tt('preview.open')}
                     </span>
-                      <button
-                        type="button"
-                        className={css.galleryAdd}
-                        title={tt('gallery.add')}
-                        disabled={galleryAdding}
-                        onClick={(event) => { event.stopPropagation(); void addToGallery(image) }}
-                      >
-                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 5.8v4.4M5.8 8h4.4"/></svg>
-                        {tt('gallery.add')}
-                      </button>
-                      <button
-                        type="button"
-                        className={css.conversationAdd}
-                        title={tt('conversation.add')}
-                        disabled={conversationBusy}
-                        onClick={(event) => { event.stopPropagation(); void addImageToConversation(image, index) }}
-                      >
-                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 2.5h5M8 6v4M6 8h4"/></svg>
-                        {conversationAttachment.busyKey === index ? tt('conversation.adding') : tt('conversation.add')}
-                      </button>
-                      <button type="button" className={css.pptAction} data-continue-edit="" onClick={event => { event.stopPropagation(); continueEditing(image, viewingEntry ?? viewingGalleryEntry ?? undefined) }}>{tt('iteration.edit')}</button>
-                      <button type="button" className={css.pptAction} data-reverse-prompt="" onClick={event => { event.stopPropagation(); openReversePrompt(image, index) }}>{tt('prompt.reverse.action')}</button>
-                      <button type="button" className={css.imageCopyAction} data-copy-image="" onClick={event => { event.stopPropagation(); void copyImage(image) }}>{tt('image.copy')}</button>
-                      <a
-                      className={css.download}
-                      href={srcOf(image)}
-                      download={`dsh-image-${index + 1}.${extensionOf(image.mime)}`}
-                      onClick={(event) => { event.stopPropagation() }}
-                    >
-                      {tt('download')}
-                    </a>
                   </figure>
                 ))}
               </div>
