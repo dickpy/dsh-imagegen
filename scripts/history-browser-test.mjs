@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { startHistoryFixture } from './history-fixture.mjs'
+import { addPaginatedHistory, startHistoryFixture } from './history-fixture.mjs'
 const require = createRequire(import.meta.url)
 const runtime = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES ? createRequire(`${process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES}/.history-test.cjs`) : require
 const { chromium } = runtime('playwright')
@@ -162,6 +162,46 @@ try {
   await expectImage('text-b')
   await page.screenshot({ path: new URL('../.test-artifacts/history-sidebar.png', import.meta.url).pathname })
   console.log('PASS history/sidebar Chromium: independent mode results, exact selection, async races, restart, load failure, reset, timestamps, DSH 0.2.2 flex geometry and wrapper repair')
+
+  addPaginatedHistory(entries)
+  await page.setViewportSize({ width: 1440, height: 720 })
+  await page.reload()
+  await page.locator('.host_sidebarCol').evaluate(element => { element.style.width = '220px' })
+  const pager = page.getByRole('navigation', { name: '历史记录分页' })
+  const pageNumber = pager.getByRole('spinbutton', { name: '页码' })
+  const nextPage = pager.getByRole('button', { name: '下一页' })
+  const historyRows = page.locator('[data-dsh-imagegen-history-main]')
+  await pager.waitFor()
+  assert.equal(await historyRows.count(), 10)
+  await historyList.evaluate(element => { element.scrollTop = 120 })
+  const [listRect, pagerRect] = await Promise.all([historyList.boundingBox(), pager.boundingBox()])
+  assert.ok(pagerRect.y >= listRect.y + listRect.height && pagerRect.y + pagerRect.height <= 720, 'pager stays visible below the scrolling list')
+  await nextPage.click()
+  assert.equal(await pageNumber.inputValue(), '2')
+  assert.equal(await historyList.evaluate(element => element.scrollTop), 0)
+  await pageNumber.fill('3')
+  await pageNumber.press('Enter')
+  const archivedRow = historyRows.filter({ hasText: 'Archive record 16' })
+  await archivedRow.waitFor()
+  assert.equal(await historyRows.count(), 1)
+  assert.equal(await nextPage.isDisabled(), true)
+  await page.screenshot({ path: new URL('../.test-artifacts/history-pagination.png', import.meta.url).pathname })
+
+  const query = page.getByRole('textbox', { name: '搜索提示词或模型…' })
+  await query.fill('Archive record 16')
+  await pager.waitFor({ state: 'hidden' })
+  assert.equal(await archivedRow.count(), 1, 'search reaches records from any page')
+  await query.clear()
+  await pager.waitFor()
+  assert.equal(await pageNumber.inputValue(), '1')
+  assert.equal(await archivedRow.count(), 0)
+  await nextPage.click()
+  await page.getByRole('button', { name: '比例筛选' }).click()
+  await page.getByRole('option', { name: '3:2', exact: true }).click()
+  await pager.waitFor({ state: 'hidden' })
+  assert.equal(await archivedRow.count(), 1, 'ratio filtering applies before pagination')
+  assert.deepEqual(errors, [])
+  console.log('PASS history pagination Chromium: fixed footer, wheel position reset, direct jump, global search and ratio filter')
 
   // #73: exercise the actual settings controller, staging and HTTP save path.
   await page.goto(`${base}/?settings`)
