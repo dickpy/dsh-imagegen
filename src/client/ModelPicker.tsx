@@ -70,7 +70,14 @@ export function ModelPicker(props: {
       if (target instanceof Element && (triggerRef.current?.contains(target) === true || menuRef.current?.contains(target) === true || flyoutRef.current?.contains(target) === true)) return
       setOpen(false)
     }
-    const closeOnViewportChange = (): void => { setOpen(false) }
+    const closeOnViewportChange = (event: Event): void => {
+      // A scroll inside the popover (the channel pane or the model flyout) is
+      // how long model lists are read (#92). Window capture sees it too, so
+      // closing on it made the menu vanish the moment the wheel moved.
+      const target = event.target
+      if (target instanceof Element && (menuRef.current?.contains(target) === true || flyoutRef.current?.contains(target) === true)) return
+      setOpen(false)
+    }
     window.addEventListener('pointerdown', close, true)
     window.addEventListener('resize', closeOnViewportChange)
     window.addEventListener('scroll', closeOnViewportChange, true)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { appendHistory, listHistory, readHistoryImage, removeHistory, clearHistory } from '../src/history-store.ts'
@@ -58,6 +58,57 @@ test('invalid parent image indices do not create false lineage and legacy record
     await appendHistory({ ...entry, id: 'bad', mode: 'edit', parentId: 'root', parentImageIndex: 99 })
     assert.equal((await listHistory())[0].parentId, undefined)
     assert.equal((await listHistory())[1].id, 'root')
+  } finally { setImageDataRoot(undefined); await rm(root, { recursive: true, force: true }) }
+})
+
+test('concurrent history writes retain entries and image files beyond the former 50-entry limit', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-history-retention-'))
+  setImageDataRoot(root)
+  try {
+    await appendHistory({ ...entry, mode: 'edit', refs: [image] })
+    await Promise.all(Array.from({ length: 55 }, (_, index) =>
+      appendHistory({ ...entry, id: `new-${index}`, createdAt: index + 2, images: [image] })))
+    const entries = await listHistory()
+    assert.equal(entries.length, 56)
+    assert.equal(entries.at(-1).id, 'root')
+    assert.equal((await readHistoryImage('root-0.png')).data.toString('base64'), png)
+    assert.equal((await readHistoryImage('refs/root-ref-0.png')).data.toString('base64'), png)
+    await appendHistory({ ...entry, id: 'new-0' })
+    assert.equal((await listHistory()).length, 56, 'retrying the same entry is idempotent')
+    await removeHistory('root')
+    assert.equal(await readHistoryImage('root-0.png'), undefined)
+    assert.equal(await readHistoryImage('refs/root-ref-0.png'), undefined)
+    assert.equal((await listHistory()).length, 55)
+  } finally { setImageDataRoot(undefined); await rm(root, { recursive: true, force: true }) }
+})
+
+test('invalid indexes and failed commits preserve existing history and image files', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-history-recovery-'))
+  setImageDataRoot(root)
+  try {
+    await appendHistory(entry)
+    const index = path.join(root, 'index.json')
+    const original = await readFile(index, 'utf8')
+    const next = { ...entry, id: 'next', mode: 'edit', refs: [image] }
+    for (const invalid of ['{"entries":[', '{"entries":[null]}']) {
+      await writeFile(index, invalid)
+      await assert.rejects(listHistory, /History index is invalid/)
+      await assert.rejects(appendHistory(next), /History index is invalid/)
+      assert.equal(await readFile(index, 'utf8'), invalid)
+    }
+    await writeFile(index, original)
+    const blocked = `${index}.tmp-${process.pid}`
+    await mkdir(blocked)
+    await assert.rejects(appendHistory(next))
+    await assert.rejects(removeHistory('root'))
+    await assert.rejects(clearHistory())
+    assert.equal(await readFile(index, 'utf8'), original)
+    assert.ok(await readHistoryImage('root-0.png'))
+    assert.equal(await readHistoryImage('next-0.png'), undefined)
+    assert.equal(await readHistoryImage('refs/next-ref-0.png'), undefined)
+    await rmdir(blocked)
+    await appendHistory(next)
+    assert.deepEqual((await listHistory()).map(item => item.id), ['next', 'root'])
   } finally { setImageDataRoot(undefined); await rm(root, { recursive: true, force: true }) }
 })
 

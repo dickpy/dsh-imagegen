@@ -219,9 +219,6 @@ export const CANVAS_SKILL_API = {
   configApply: '/api/dsh-imagegen/canvas/skills/config/apply',
 } as const
 
-/** Maximum number of history entries retained host-side (oldest evicted). */
-export const HISTORY_MAX = 50
-
 /**
  * Same-origin route family for the prompt-template libraries. The library is
  * multi-source: every request names a source id from {@link TEMPLATE_SOURCES},

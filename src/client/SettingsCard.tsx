@@ -1144,6 +1144,7 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         onEdit={(text) => { props.edit('localStoragePath', text) }}
         onReset={() => { props.resetField('localStoragePath') }}
       />
+      <p className={css.hint}>{t('settings.historyRetention')}</p>
       <BooleanField
         id="dsh-imagegen-settings-storage-enabled"
         label={t('settings.storageEnabled')}
