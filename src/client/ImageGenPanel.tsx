@@ -18,7 +18,7 @@ import { readHistorySelection, writeHistorySelection } from './history-selection
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
-import { Maximize2, Sparkles, Paintbrush, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Maximize2, Sparkles, Paintbrush, X } from 'lucide-react'
 import { StudioActionButton } from './StudioActionButton.tsx'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
@@ -450,6 +450,7 @@ type PanelWorkspace = 'normal' | 'ecommerce' | 'canvas' | 'reverse'
 type GalleryFilter = string
 type ComparisonSession = { taskIds: string[]; prompt: string; comparisonId: string }
 type HistoryGroup = { key: string; entries: HistoryEntry[]; models: string[] }
+const HISTORY_PAGE_SIZE = 10
 
 /** One image unit in the ecommerce results canvas: a live queue task or a
  *  restored history entry of the viewed product set. */
@@ -815,6 +816,12 @@ export function ImageGenPanel(props: {
   const [historyQuery, setHistoryQuery] = useState('')
   const [historyModelFilter, setHistoryModelFilter] = useState('all')
   const [historyRatioFilter, setHistoryRatioFilter] = useState('all')
+  const [historyPage, setHistoryPage] = useState(1)
+  const historyListRef = useRef<HTMLDivElement>(null)
+  const goToHistoryPage = (page: number): void => {
+    setHistoryPage(page)
+    if (historyListRef.current !== null) historyListRef.current.scrollTop = 0
+  }
   const [preview, setPreview] = useState<{ images: GeneratedImage[]; index: number } | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
   const [promptCopied, setPromptCopied] = useState(false)
@@ -1012,13 +1019,22 @@ export function ImageGenPanel(props: {
   const galleryModels = [...new Set([...imageModels, ...gallery.map(entry => entry.model)])]
 
   const historyGroups = useMemo(() => groupHistoryEntries(history), [history])
-  const filteredHistory = historyGroups.filter(group => group.entries.some(entry => {
+  const filteredHistory = useMemo(() => {
     const query = historyQuery.trim().toLocaleLowerCase()
-    const models = modelsOfHistoryEntry(entry)
-    return (query === '' || `${entry.prompt} ${models.join(' ')}`.toLocaleLowerCase().includes(query))
-      && (historyModelFilter === 'all' || models.includes(historyModelFilter))
-      && (historyRatioFilter === 'all' || normalizeSize(entry.size) === historyRatioFilter)
-  }))
+    return historyGroups.filter(group => group.entries.some(entry => {
+      const models = modelsOfHistoryEntry(entry)
+      return (query === '' || `${entry.prompt} ${models.join(' ')}`.toLocaleLowerCase().includes(query))
+        && (historyModelFilter === 'all' || models.includes(historyModelFilter))
+        && (historyRatioFilter === 'all' || normalizeSize(entry.size) === historyRatioFilter)
+    }))
+  }, [historyGroups, historyQuery, historyModelFilter, historyRatioFilter])
+  const historyPageCount = Math.max(1, Math.ceil(filteredHistory.length / HISTORY_PAGE_SIZE))
+  const visibleHistoryPage = Math.min(historyPage, historyPageCount)
+  const historyPageStart = (visibleHistoryPage - 1) * HISTORY_PAGE_SIZE
+  const visibleHistoryGroups = filteredHistory.slice(historyPageStart, historyPageStart + HISTORY_PAGE_SIZE)
+  useEffect(() => {
+    if (historyPage !== visibleHistoryPage) goToHistoryPage(visibleHistoryPage)
+  }, [historyPage, visibleHistoryPage])
 
   const syncHistory = (entries: HistoryEntry[]): void => {
     setHistory(entries)
@@ -1067,11 +1083,16 @@ export function ImageGenPanel(props: {
     if (id === null) return
     const group = historyGroups.find(group => group.entries.some(entry => entry.id === id))
     const selected = group?.entries.find(entry => entry.id === id)
-    if (group === undefined || selected === undefined) setHistoryIdForMode(generationMode, null)
-    else if (selected.comparisonId === undefined || selected.comparisonId !== studioRunsRef.current[generationMode]?.id) {
+    if (group === undefined || selected === undefined) {
+      setHistoryIdForMode(generationMode, null)
+      return
+    }
+    const index = filteredHistory.indexOf(group)
+    if (index >= 0) goToHistoryPage(Math.floor(index / HISTORY_PAGE_SIZE) + 1)
+    if (selected.comparisonId === undefined || selected.comparisonId !== studioRunsRef.current[generationMode]?.id) {
       void viewHistoryGroup(group.key.startsWith('thread:') ? { key: selected.id, entries: [selected], models: [selected.model] } : group)
     }
-  }, [historyReady, historyGroups, generationMode])
+  }, [historyReady, historyGroups, filteredHistory, generationMode])
 
   // Chat toolviews publish durable refs after they finish loading. Decode the
   // refs through the same host-authorized route and make them the current
@@ -1460,6 +1481,7 @@ export function ImageGenPanel(props: {
       for (const task of submitted) submittedTaskIdsRef.current.add(task.id)
       setTasks(previous => [...submitted, ...previous.filter(item => !submitted.some(task => task.id === item.id))])
       if (viewRequestId === historyViewRequestRef.current) {
+        goToHistoryPage(1)
         setComparison(null)
         setStudioRuns(previous => ({ ...previous, [baseRequest.mode]: newStudioRun(comparisonId, baseRequest.mode, promptText, submitted) }))
       }
@@ -1866,6 +1888,7 @@ export function ImageGenPanel(props: {
 
   /** Reset the workspace for a fresh image-generation run. */
   const startNewCreation = (): void => {
+    goToHistoryPage(1)
     historyViewRequestRef.current += 1
     pendingHistoryRestores.current.clear()
     setHistoryLoadingMode(null)
@@ -2340,12 +2363,12 @@ export function ImageGenPanel(props: {
       </header>
 
       <div className={css.historyFilters}>
-        <input className={css.historySearch} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value) }} placeholder={tt('history.search')} aria-label={tt('history.search')} />
-        <Select value={historyModelFilter} onChange={value => { setHistoryModelFilter(value) }} aria-label={tt('history.model')}>
+        <input className={css.historySearch} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value); goToHistoryPage(1) }} placeholder={tt('history.search')} aria-label={tt('history.search')} />
+        <Select value={historyModelFilter} onChange={value => { setHistoryModelFilter(value); goToHistoryPage(1) }} aria-label={tt('history.model')}>
           <option value="all">{tt('history.allModels')}</option>
           {[...new Set(history.flatMap(entry => modelsOfHistoryEntry(entry)))].map(option => <option key={option} value={option}>{option}</option>)}
         </Select>
-        <Select value={historyRatioFilter} onChange={value => { setHistoryRatioFilter(value) }} aria-label={tt('history.ratio')}>
+        <Select value={historyRatioFilter} onChange={value => { setHistoryRatioFilter(value); goToHistoryPage(1) }} aria-label={tt('history.ratio')}>
           <option value="all">{tt('history.allRatios')}</option>
           {[...new Set(history.map(entry => normalizeSize(entry.size)))].map(option => <option key={option} value={option}>{option}</option>)}
         </Select>
@@ -2355,8 +2378,8 @@ export function ImageGenPanel(props: {
       {filteredHistory.length === 0 ? (
         historyReadError === null && <div className={css.historyEmpty}>{tt('history.empty')}</div>
       ) : (
-        <div className={css.historyList} data-history-list="" onWheel={event => { event.stopPropagation() }}>
-          {filteredHistory.map(group => {
+        <div ref={historyListRef} className={css.historyList} data-history-list="" onWheel={event => { event.stopPropagation() }}>
+          {visibleHistoryGroups.map(group => {
             const entry = group.entries[0]!
             const isComparison = group.models.length > 1
             const isActive = group.entries.some(item => item.id === viewingHistoryId)
@@ -2456,6 +2479,29 @@ export function ImageGenPanel(props: {
             )
           })}
         </div>
+      )}
+      {historyPageCount > 1 && (
+        <nav className={css.historyPagination} aria-label={tt('history.pagination')}>
+          <button type="button" aria-label={tt('history.previousPage')} title={tt('history.previousPage')}
+            disabled={visibleHistoryPage === 1} onClick={() => { goToHistoryPage(visibleHistoryPage - 1) }}>
+            <ChevronLeft size={14} aria-hidden="true" />
+          </button>
+          <form className={css.historyPageForm} onSubmit={event => {
+            event.preventDefault()
+            const input = event.currentTarget.elements.namedItem('page') as HTMLInputElement
+            const page = input.valueAsNumber
+            if (Number.isInteger(page) && page >= 1 && page <= historyPageCount) goToHistoryPage(page)
+          }}>
+            <input key={visibleHistoryPage} type="number" name="page" inputMode="numeric" min={1} max={historyPageCount} required
+              aria-label={tt('history.pageNumber')} defaultValue={visibleHistoryPage} onFocus={event => { event.currentTarget.select() }} />
+            <span role="status" aria-label={tt('history.pageStatus', { page: visibleHistoryPage, total: historyPageCount })}>/ {historyPageCount}</span>
+            <button type="submit">{tt('history.jumpPage')}</button>
+          </form>
+          <button type="button" aria-label={tt('history.nextPage')} title={tt('history.nextPage')}
+            disabled={visibleHistoryPage === historyPageCount} onClick={() => { goToHistoryPage(visibleHistoryPage + 1) }}>
+            <ChevronRight size={14} aria-hidden="true" />
+          </button>
+        </nav>
       )}
     </aside>
   )

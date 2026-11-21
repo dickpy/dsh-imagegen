@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { JSDOM, VirtualConsole } from 'jsdom'
-import { startHistoryFixture } from './history-fixture.mjs'
+import { addPaginatedHistory, startHistoryFixture } from './history-fixture.mjs'
 
 const { server, base, assets, entries, delays, settingsMutations } = await startHistoryFixture()
 let page
@@ -130,6 +130,41 @@ try {
   assert.deepEqual(page.errors, [])
   console.log('PASS history DOM E2E: exact record pixels, independent mode selection, async races, fresh-document recovery, failures, reset, timestamps and native sidebar wrapper repair')
   page.dom.window.close()
+
+  addPaginatedHistory(entries)
+  page = await openPage()
+  const pagination = () => page.document.querySelector('nav[aria-label="历史记录分页"]')
+  const pageNumber = () => pagination()?.querySelector('input')
+  const pageButton = name => pagination()?.querySelector(`button[aria-label="${name}"]`)
+  const rowCount = () => page.document.querySelectorAll('[data-dsh-imagegen-history-main]').length
+  await page.waitFor(pagination, 'history pagination appears when there are more than 10 groups')
+  assert.equal(rowCount(), 10)
+  assert.equal(pageButton('上一页').disabled, true)
+  page.click(pageButton('下一页'))
+  await page.waitFor(() => pageNumber().value === '2', 'next page is selected')
+  assert.equal(rowCount(), 10)
+  pageNumber().value = '3'
+  pageNumber().form.requestSubmit()
+  await page.waitFor(() => pageNumber().value === '3' && rowCount() === 1, 'jump reaches the last page')
+  assert.equal(pageButton('下一页').disabled, true)
+  assert.equal(page.document.querySelectorAll('[data-iteration-version]').length, 2, 'all versions stay in one history group')
+  const oldest = () => page.document.querySelector('[data-dsh-imagegen-history-main]')
+  assert.match(oldest().textContent, /Archive record 16/)
+  page.click(page.document.querySelector('[data-iteration-version="archive-16"]'))
+  await page.expectImage('text-b')
+  const archivedSelection = page.window.localStorage.getItem('dsh-imagegen:history-selection:v1')
+  page.dom.window.close()
+  page = await openPage(archivedSelection)
+  await page.expectImage('text-b')
+  assert.equal(pageNumber().value, '3')
+  assert.equal(oldest().getAttribute('aria-current'), 'true', 'restoration opens the selected record’s page')
+  page.click(page.document.querySelector('[data-history-list] button[aria-label="删除"]'))
+  await page.waitFor(() => pageNumber().value === '2' && rowCount() === 10, 'deleting the last group clamps the current page')
+  assert.equal(pageButton('下一页').disabled, true)
+  assert.deepEqual(page.errors, [])
+  console.log('PASS history pagination DOM E2E: grouped rows, navigation, page jump, restart and last-page deletion')
+  page.dom.window.close()
+
   page = await openPage(undefined, false, true)
   const senseButton = () => [...page.document.querySelectorAll('button')].find(button => button.textContent.includes('SenseNova relay'))
   await page.waitFor(senseButton, 'real settings card loads through the settings bridge')

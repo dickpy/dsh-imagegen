@@ -24,6 +24,19 @@ const json = (res, value) => { res.writeHead(200, { 'content-type': 'application
 const css = `:root{--dsw-alias-bg-base:#fff;--dsw-alias-bg-layer-1:#fcfcfd;--dsw-alias-bg-layer-2:#f1f2f6;--dsw-alias-border-l1:#e2e3ea;--dsw-alias-label-primary:#25262a;--dsw-alias-label-secondary:#575b65;--dsw-alias-label-tertiary:#858b98}*{box-sizing:border-box}html,body{margin:0;height:100%;font-family:system-ui,sans-serif}body{display:flex}#root{flex:1;min-width:0;height:100%}.fixture-controls{height:36px;display:flex;align-items:center;gap:10px;padding:4px 14px;background:#eceef3}.host_sidebarCol{width:260px;flex:none}.host_root{height:100%;display:flex;flex-direction:column;padding:8px;gap:8px}.host_logoRow{height:36px;flex:none}.host_newSessionRow{height:38px;flex:none;display:flex;align-items:center;gap:6px}.host_newSession{container-type:inline-size;flex:1 1 auto;min-width:0;height:38px;overflow:hidden}.host_newSessionContent{display:flex;gap:8px;align-items:center;justify-content:center;width:100cqw;white-space:nowrap}.host_quickAction{width:28px;flex:none}.host_scrollRegion,.host_scrollArea{display:flex;flex:1;min-height:0;flex-direction:column}.host_regionArea{flex:1;min-height:0;position:relative}.host_footArea{height:24px;flex:none}`
 const sidebar = '<aside class="host_sidebarCol" data-pane="sidebar"><div class="host_root"><div class="host_logoRow">DSH 0.2.2-rc.3</div><div class="host_newSessionRow"><button class="host_newSession" aria-label="新建会话" onclick="window.nativeSessions=(window.nativeSessions||0)+1"><span class="host_newSessionContent"><span>＋</span><span>新建会话</span></span></button><button class="host_quickAction">⋮</button></div><div class="host_scrollRegion"><div class="host_scrollArea"><div class="host_regionArea">Native sessions</div></div></div><div class="host_footArea">Account</div></div></aside>'
 const mountSidebar = 'const c = new window.studioSidebar.Controller(); c.open(); window.sidebarController=c; window.sidebarDispose=window.studioSidebar.mount(c,"会话","返回会话","生图","打开生图");'
+export function addPaginatedHistory(entries) {
+  const source = entries[1]
+  const archive = Array.from({ length: 16 }, (_, index) => ({
+    ...source, id: `archive-${index + 1}`, prompt: `Archive record ${index + 1}`,
+    createdAt: source.createdAt - (index + 5) * 60_000,
+  }))
+  const oldest = archive.at(-1)
+  oldest.model = 'gpt-image-2.5-flare'
+  oldest.size = '3:2'
+  entries.push(...archive, { ...oldest, id: 'archive-16-edit', mode: 'edit', prompt: 'Archive revision',
+    parentId: oldest.id, parentImageIndex: 0, threadId: oldest.id, createdAt: oldest.createdAt + 1 })
+}
+
 export async function startHistoryFixture() {
   let settings = { enabled: true, defaultChannelId: 'sense', defaultModel: 'SenseNova image', channels: [
     { id: 'sense', preset: '', name: 'SenseNova relay', apiUrl: 'https://relay.example/v1', apiUrlFull: false, protocol: 'images', models: [{ alias: 'SenseNova image', id: 'sensenova-u1.5-lite' }, { alias: 'GPT fallback', id: 'gpt-image-2' }] },
@@ -65,6 +78,11 @@ export async function startHistoryFixture() {
     if (req.url.endsWith('/tasks/get')) return json(res, { ok: true, task })
     if (req.url.endsWith('/tasks/submit')) { requests.push(body); return json(res, { ok: true, task: { ...task, request: body } }) }
     if (req.url.endsWith('/history/list')) return json(res, { ok: true, entries })
+    if (req.url.endsWith('/history/remove')) {
+      const index = entries.findIndex(entry => entry.id === body.id)
+      if (index >= 0) entries.splice(index, 1)
+      return json(res, { ok: true, entries })
+    }
     if (req.url.endsWith('/update/check')) return json(res, { ok: true, update: { currentVersion: '1.17.0', latestVersion: '1.17.0', updateAvailable: false } })
     return json(res, { ok: true, entries: [], samples: [], tasks: [], available: false, categories: [], projects: [] })
   })

@@ -1157,6 +1157,65 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   border-radius: 999px;
 }
 
+.historyPagination {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.historyPageForm {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.historyPagination button,
+.historyPageForm input {
+  box-sizing: border-box;
+  min-height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+}
+
+.historyPagination button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.historyPagination button:hover:not(:disabled) {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.historyPagination button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.historyPageForm input {
+  width: 5ch;
+  padding: 0 3px;
+  appearance: textfield;
+  text-align: center;
+}
+
+.historyPageForm input::-webkit-inner-spin-button {
+  appearance: none;
+}
+
 .historyEmpty {
   flex: 1;
   display: flex;
