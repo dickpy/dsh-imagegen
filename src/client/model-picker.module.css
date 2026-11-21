@@ -82,6 +82,9 @@
 .modelFlyout {
   z-index: 131;
   overflow-y: auto;
+  /* Keep a wheel at the end of the list from scrolling the page behind the
+     popover — that also used to dismiss it (#92). */
+  overscroll-behavior: contain;
   padding: 5px;
 }
 
@@ -89,6 +92,7 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 5px;
 }
 

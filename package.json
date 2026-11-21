@@ -92,7 +92,7 @@
     "fetch-templates": "node scripts/fetch-templates.mjs",
     "test:studio:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/studio-browser-test.mjs",
     "test:history:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-browser-test.mjs",
-    "test:history": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-dom-e2e.mjs && node scripts/iteration-dom-e2e.mjs",
+    "test:history": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/history-dom-e2e.mjs && node scripts/iteration-dom-e2e.mjs && node scripts/model-picker-dom-e2e.mjs",
     "test:reference-reverse": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/reference-reverse-dom-e2e.mjs",
     "test:iterations": "node --test scripts/iteration-loop.test.mjs",
     "test:reference-reverse:browser": "pnpm exec tsdown --config scripts/studio-preview.config.ts && node scripts/reference-reverse-browser-test.mjs"

@@ -92,6 +92,24 @@ try {
   assert.equal(time, new Date(entries[0].createdAt).toISOString())
   assert.match(await row('text-a').innerText(), /2026-11-13/)
 
+  await page.locator('[data-dsh-imagegen-history-main]').filter({ hasText: 'Saved live task' }).click()
+  await expectImage('live')
+  await page.locator('[data-studio-run] [data-result-open]').click({ button: 'right' })
+  await page.getByRole('menuitem', { name: '继续编辑', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+
+  // Constrain the flyout so a real wheel gesture is required even with two models.
+  const picker = page.getByRole('button', { name: /^模型:/ })
+  await picker.click()
+  await page.getByRole('menuitemradio', { name: 'Provider A', exact: true }).click()
+  const flyout = page.getByRole('menu', { name: /^模型:/ })
+  await flyout.evaluate(element => { element.style.maxHeight = '55px' })
+  await flyout.hover()
+  await page.mouse.wheel(0, 300)
+  await page.waitForFunction(() => document.querySelector('[role="menu"][aria-label^="模型:"]')?.scrollTop > 0)
+  await flyout.getByRole('menuitemradio', { name: 'gpt-image-2.5-flare', exact: true }).click()
+  assert.match(await picker.getAttribute('aria-label'), /gpt-image-2\.5-flare/)
+
   // An older request completing last must not replace the latest selection.
   await row('text-a').click()
   await page.locator('[data-history-loading]').waitFor()
