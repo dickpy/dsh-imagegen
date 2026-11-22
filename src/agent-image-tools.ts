@@ -331,7 +331,7 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
       task_id: task.id,
       status: task.status,
       message: task.status === 'completed'
-        ? 'Generation completed. The images are shown beside this tool call and can be reused as source_image in edit_image.'
+        ? `Generation completed. The images are shown beside this tool call and can be reused as source_image in edit_image.${task.result?.partialError === undefined ? '' : ` ${task.result.partialError}`}`
         : task.status === 'failed'
           ? 'Generation failed.'
           : task.status === 'cancelled'

@@ -1148,7 +1148,7 @@ export function ImageGenPanel(props: {
               lostStudioTaskIdsRef.current.add(id)
               for (const run of Object.values(studioRunsRef.current)) {
                 const slot = run?.slots.find(slot => slot.taskId === id)
-                if (run !== null && slot !== undefined) return { id, request: { mode: run.mode, prompt: run.prompt, model: slot.model, channelId: slot.channelId, size: 'auto', quality: 'auto', detail: '', n: 1 }, status: 'failed' as const, createdAt: 0, error: tt('canvas.taskLost') }
+                if (run !== null && slot !== undefined) return { id, request: { mode: run.mode, prompt: run.prompt, model: slot.model, channelId: slot.channelId, size: 'auto', quality: 'auto', detail: '', n: 1 }, status: 'failed' as const, createdAt: 0, error: held?.error ?? tt('canvas.taskLost') }
               }
               return undefined
             }
@@ -1969,8 +1969,9 @@ export function ImageGenPanel(props: {
     setHistoryIds({ text: null, edit: null })
     try {
       setHistory(await api.historyClear())
-    } catch {
-      // Keep the cleared local state.
+    } catch (caught) {
+      setError(errorMessage(caught))
+      try { setHistory(await api.historyList()) } catch { /* keep the optimistic view */ }
     }
   }
 
@@ -2140,8 +2141,9 @@ export function ImageGenPanel(props: {
     setGalleryViewingId(null)
     try {
       setGallery(await api.galleryClear())
-    } catch {
-      // Keep the cleared local state.
+    } catch (caught) {
+      setError(errorMessage(caught))
+      try { setGallery(await api.galleryList()) } catch { /* keep the optimistic view */ }
     }
   }
 

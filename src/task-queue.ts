@@ -11,6 +11,12 @@ export type GenerationTaskListener = (task: GenerationTask) => void
  *  and an unbounded array kept every base64 result resident until restart. */
 export const RETAINED_TERMINAL_TASKS = 50
 
+/** Read the live status at call time: cancel() mutates the task object after
+ *  runTask started, which TypeScript's local narrowing cannot see. */
+function isCancelled(task: GenerationTask): boolean {
+  return task.status === 'cancelled'
+}
+
 export class GenerationTaskQueue {
   private readonly tasks: GenerationTask[] = []
   private readonly controllers = new Map<string, AbortController>()
@@ -104,7 +110,7 @@ export class GenerationTaskQueue {
     this.controllers.set(task.id, controller)
     try {
       const result = await this.run(task.request, controller.signal)
-      if (this.tasks.find(item => item.id === task.id)?.status !== 'cancelled') {
+      if (!isCancelled(task)) {
         task.status = 'completed'
         task.result = result
         task.finishedAt = Date.now()
@@ -112,7 +118,7 @@ export class GenerationTaskQueue {
         this.pruneTerminal()
       }
     } catch (error) {
-      if (this.tasks.find(item => item.id === task.id)?.status !== 'cancelled') {
+      if (!isCancelled(task)) {
         task.status = 'failed'
         task.error = error instanceof Error ? error.message : String(error)
         task.finishedAt = Date.now()

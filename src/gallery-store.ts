@@ -125,18 +125,36 @@ async function ensureDirs(): Promise<void> {
   await fs.mkdir(imagesDir(), { recursive: true })
 }
 
+/** Keep the newest backups only, so repeated corruption cannot grow unbounded. */
+async function trimQuarantine(dir: string, prefix: string, keep: number): Promise<void> {
+  try {
+    const names = (await fs.readdir(dir)).filter(name => name.startsWith(prefix)).sort()
+    for (const name of names.slice(0, Math.max(0, names.length - keep))) {
+      await fs.rm(path.join(dir, name), { force: true })
+    }
+  } catch {
+    // Best effort: pruning old backups must not block the read path.
+  }
+}
+
 /**
- * Move a corrupt index aside before the next write can overwrite it. The
- * backup is a copy (the original stays until the next successful write), and
- * only the first backup per corruption episode is kept — reading a corrupt
- * file repeatedly must not accumulate backups.
+ * Copy a corrupt index aside before the next write can overwrite it. Every
+ * distinct corruption episode gets its own backup (detected by file
+ * size+mtime), re-reads of the same corrupt file do not, and only the newest
+ * three backups are kept so repeated corruption cannot accumulate files.
  */
+let quarantineSignature = ''
+
 async function quarantineIndex(): Promise<void> {
   try {
-    const existing = await fs.readdir(galleryDir())
-    if (existing.some(name => name.startsWith('index.json.bad-'))) return
+    const stat = await fs.stat(indexPath())
+    const signature = `${indexPath()}:${stat.size}:${stat.mtimeMs}`
+    if (signature === quarantineSignature) return
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    await fs.copyFile(indexPath(), path.join(galleryDir(), `index.json.bad-${stamp}`))
+    const prefix = 'index.json.bad-'
+    await fs.copyFile(indexPath(), path.join(galleryDir(), `${prefix}${stamp}`))
+    quarantineSignature = signature
+    await trimQuarantine(galleryDir(), prefix, 3)
   } catch {
     // Best effort: a failing backup must not block the read path.
   }
@@ -144,13 +162,16 @@ async function quarantineIndex(): Promise<void> {
 
 /** Read the index, tolerating a missing/corrupt file. A corrupt file is backed
  *  up (see quarantineIndex) instead of being silently overwritten by the next
- *  write, so the previous gallery stays recoverable by hand. */
+ *  write, so the previous gallery stays recoverable by hand. A failed read
+ *  (EACCES, EBUSY, ...) is not "empty": reporting it as empty would let the
+ *  next append replace the index without a backup. */
 async function readIndex(): Promise<StoredEntry[]> {
   let raw: string
   try {
     raw = await fs.readFile(indexPath(), 'utf8')
-  } catch {
-    return []
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
   }
   let parsed: unknown
   try {

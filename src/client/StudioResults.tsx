@@ -188,7 +188,7 @@ export function StudioResults(props: {
           // names what happened, and retry resubmits just this position.
           <div className={css.error} role="status">
             <strong>{tt('tasks.failed')}</strong>
-            <span>{task?.result?.partialError ?? ''}</span>
+            <span>{task?.result?.partialError ?? tt('result.missingImage')}</span>
             <button type="button" className={css.retry} disabled={props.busy} onClick={() => props.onRetry(slot)}>{tt('tasks.retry')}</button>
           </div>
         ) : null}

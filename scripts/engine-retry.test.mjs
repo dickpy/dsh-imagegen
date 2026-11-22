@@ -114,3 +114,40 @@ test('an explicit failure status word still fails the poll immediately', async t
     return true
   })
 })
+
+test('a non-JSON 5xx body keeps its status and is retried', async t => {
+  let attempts = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    attempts += 1
+    if (attempts === 1) return new Response('<html>502 Bad Gateway</html>', { status: 502 })
+    return Response.json({ data: [{ b64_json: png }] })
+  })
+  const result = await generateImage(upstream, request)
+  assert.equal(result.images.length, 1)
+  assert.equal(attempts, 2)
+})
+
+test('a transient poll failure is retried without submitting a second task', async t => {
+  let posts = 0
+  let polls = 0
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    if ((init?.method ?? 'GET') === 'POST') {
+      posts += 1
+      return Response.json({ data: [{ task_id: 'task-1' }] })
+    }
+    polls += 1
+    if (polls === 1) return Response.json({ message: 'gateway hiccup' }, { status: 503 })
+    return Response.json({ data: [{ task_status: 'completed', result: { images: [{ b64_json: png }] } }] })
+  })
+  const result = await generateImage(upstream, request)
+  assert.equal(result.images.length, 1)
+  assert.equal(posts, 1, 'the accepted task is never re-submitted')
+  assert.equal(polls, 2)
+})
+
+test('a provider that returns fewer images than requested explains the shortfall', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ data: [{ b64_json: png }] }))
+  const result = await generateImage(upstream, { ...request, model: 'dall-e-3', n: 2 })
+  assert.equal(result.images.length, 1)
+  assert.match(result.partialError ?? '', /仅返回 1 张图片（请求 2 张）/)
+})

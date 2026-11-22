@@ -17,6 +17,11 @@ async function waitFor(predicate, budgetMs = 5000) {
 
 test('terminal tasks beyond the retention window are dropped from the queue', async () => {
   const queue = new GenerationTaskQueue(async () => ok, 4)
+  // The drain is LIFO (newest submission first), so "last submitted" is not
+  // "last finished". Record actual completion times and assert the contract:
+  // the retained window is the newest by finish time.
+  const finishedAt = new Map()
+  queue.subscribe(task => { if (task.status === 'completed') finishedAt.set(task.id, task.finishedAt) })
   const total = RETAINED_TERMINAL_TASKS + 10
   const ids = []
   for (let index = 0; index < total; index++) {
@@ -25,8 +30,13 @@ test('terminal tasks beyond the retention window are dropped from the queue', as
   await waitFor(() => queue.list().every(task => task.status === 'completed'))
   const listed = queue.list()
   assert.equal(listed.length, RETAINED_TERMINAL_TASKS)
-  assert.equal(queue.get(ids[0]), undefined, 'the oldest terminal task is dropped')
-  assert.notEqual(queue.get(ids[total - 1]), undefined, 'the newest terminal task is retained')
+  const retainedIds = ids.filter(id => queue.get(id) !== undefined)
+  const droppedIds = ids.filter(id => queue.get(id) === undefined)
+  assert.equal(retainedIds.length, RETAINED_TERMINAL_TASKS)
+  assert.equal(droppedIds.length, total - RETAINED_TERMINAL_TASKS)
+  const oldestRetained = Math.min(...retainedIds.map(id => finishedAt.get(id)))
+  const newestDropped = Math.max(...droppedIds.map(id => finishedAt.get(id)))
+  assert.ok(oldestRetained >= newestDropped, 'every dropped task finished before every retained one')
   const completed = queue.summaries().filter(task => task.status === 'completed')
   assert.equal(completed.length, RETAINED_TERMINAL_TASKS)
 })
