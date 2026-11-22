@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import type { GeneratedImage, GenerateRequest, GenerationTask } from '../protocol.ts'
 import type { ImageModelGroup } from './settings-scope.ts'
 import type { StudioRun, StudioSlot } from './studio-state.ts'
@@ -7,8 +7,8 @@ import { StudioActionButton } from './StudioActionButton.tsx'
 import { GenerationLoading } from './GenerationLoading.tsx'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { ImageActionMenu, type ImageMenuGroup } from './ImageActionMenu.tsx'
-import { planResultLayout, RESULT_CARD_CHROME, RESULT_LAYOUT_GAP } from './result-layout.ts'
-import { downloadImage, useBoardSize, useResultAspects } from './result-board.ts'
+import { planResultLayout } from './result-layout.ts'
+import { downloadImage } from './result-board.ts'
 import { tt } from './helpers.ts'
 import css from './studio-results.module.css'
 
@@ -68,7 +68,6 @@ export function StudioResults(props: {
   const [appendOpen, setAppendOpen] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; groups: ImageMenuGroup[] } | null>(null)
   const [choice, setChoice] = useState<ModelPickerValue>({ channelId: props.groups[0]?.id ?? '', model: props.groups[0]?.models[0] ?? '' })
-  const boardRef = useRef<HTMLDivElement>(null)
   const byId = new Map(props.tasks.map(task => [task.id, task]))
   const pending = props.run.slots.some(slot => {
     const task = byId.get(slot.taskId)
@@ -93,12 +92,7 @@ export function StudioResults(props: {
   const previewImages = cards.flatMap(card => card.display === undefined ? [] : [card.display])
   const previewIndexOf = (cardIndex: number): number => cards.slice(0, cardIndex).filter(card => card.display !== undefined).length
 
-  const aspectKeys = cards.map((card, index) => card.display === undefined
-    ? `empty:${index}`
-    : `${card.slot.id}|${card.display.width ?? 0}x${card.display.height ?? 0}|${card.display.b64.length}`)
-  const aspects = useResultAspects(aspectKeys, cards.map(card => card.display))
-  const boardSize = useBoardSize(boardRef)
-  const layout = planResultLayout({ count: cards.length, aspects, width: boardSize.width, height: boardSize.height, gap: RESULT_LAYOUT_GAP, chrome: RESULT_CARD_CHROME })
+  const layout = planResultLayout({ count: cards.length })
   // The planner always covers every card; this keeps a stale plan from hiding one.
   const rows = layout.rows.flat().length === cards.length ? layout.rows : cards.map((_, index) => [index])
 
@@ -114,16 +108,10 @@ export function StudioResults(props: {
     openMenuAt(event.clientX, event.clientY, cardIndex)
   }
 
-  const renderCard = (cardIndex: number, loneWidth: number | null, rowHeight: number | null): React.JSX.Element => {
+  const renderCard = (cardIndex: number): React.JSX.Element => {
     const { slot, task, status, display, waiting, failed, channel } = cards[cardIndex]!
     const elapsed = task?.startedAt === undefined ? 0 : Math.max(0, Math.floor((now - task.startedAt) / 1000))
-    // A lone card hugs its picture; an evenly shaped row stops where the
-    // pictures stop, so the empty space sits around the row, not inside cards.
-    const cardStyle = {
-      ...(loneWidth === null ? {} : { flex: '0 0 auto', width: `${loneWidth}px`, maxWidth: '100%' }),
-      ...(rowHeight === null ? {} : { height: `${rowHeight}px` }),
-    }
-    return <figure key={slot.id} className={css.card} style={Object.keys(cardStyle).length === 0 ? undefined : cardStyle} data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
+    return <figure key={slot.id} className={css.card} data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
       <div className={css.media} data-empty={display === undefined ? '' : undefined} data-failed={failed ? '' : undefined}>
         {display !== undefined ? (
           <button
@@ -213,25 +201,17 @@ export function StudioResults(props: {
       <span>{tt('studio.appendHint')}</span>
     </div>}
     <div
-      ref={boardRef}
       className={css.grid}
       data-count={cards.length <= 4 ? String(cards.length) : 'many'}
       data-result-preview-grid=""
       data-rows={rows.length}
       data-scroll={layout.scroll ? '' : undefined}
     >
-      {rows.map((row, rowIndex) => {
-        const loneWidth = layout.widths[rowIndex] ?? null
-        const rowHeight = layout.heights[rowIndex] ?? null
-        const rowStyle = loneWidth === null && rowHeight === null
-          ? undefined
-          : { ...(loneWidth === null ? {} : { justifyContent: 'center' }), ...(rowHeight === null ? {} : { alignItems: 'center' }) }
-        return (
-          <div className={css.row} key={`row-${rowIndex}`} data-result-row={rowIndex} style={rowStyle}>
-            {row.map(cardIndex => renderCard(cardIndex, loneWidth, rowHeight))}
-          </div>
-        )
-      })}
+      {rows.map((row, rowIndex) => (
+        <div className={css.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>
+          {row.map(cardIndex => renderCard(cardIndex))}
+        </div>
+      ))}
     </div>
     {menu !== null ? <ImageActionMenu x={menu.x} y={menu.y} groups={menu.groups} label={tt('result.more')} onClose={() => { setMenu(null) }} /> : null}
   </section>

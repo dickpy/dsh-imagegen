@@ -63,8 +63,8 @@ import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService }
 import { useConversationImageAttachment } from './use-conversation-image-attachment.tsx'
 import { ConversationSessionPicker } from './ConversationSessionPicker.tsx'
 import { Select } from './Select.tsx'
-import { planResultLayout, RESULT_CARD_CHROME, RESULT_LAYOUT_GAP } from './result-layout.ts'
-import { downloadImage, useBoardSize, useResultAspects } from './result-board.ts'
+import { planResultLayout } from './result-layout.ts'
+import { downloadImage } from './result-board.ts'
 import css from './panel.module.css'
 import resultCss from './studio-results.module.css'
 
@@ -2311,22 +2311,11 @@ export function ImageGenPanel(props: {
 
   /*
    * The plain result grid (history/gallery records and single-model results
-   * outside a studio run) packs with the same planner as the studio board, so
-   * the two surfaces cannot disagree about layout again (#97).
+   * outside a studio run) uses the same fixed sheet as the studio board, so the
+   * two surfaces cannot disagree about layout again (#97).
    */
-  const plainBoardRef = useRef<HTMLDivElement>(null)
-  const plainBoardSize = useBoardSize(plainBoardRef)
-  const plainAspectKeys = images.map((image, index) => `${index}|${image.width ?? 0}x${image.height ?? 0}|${image.b64.length}`)
-  const plainAspects = useResultAspects(plainAspectKeys, images)
-  const plainLayout = planResultLayout({
-    count: images.length,
-    aspects: plainAspects,
-    width: plainBoardSize.width,
-    height: plainBoardSize.height,
-    gap: RESULT_LAYOUT_GAP,
-    chrome: RESULT_CARD_CHROME,
-  })
-  const plainRows = plainLayout.rows.flat().length === images.length ? plainLayout.rows : images.map((_, index) => [index])
+  const plainLayout = planResultLayout({ count: images.length })
+  const plainRows = plainLayout.rows
 
   /** Drag the config panel's right edge to resize it (persisted per browser). */
   const onConfigResizeStart = (event: ReactPointerEvent<HTMLDivElement>): void => {
@@ -3552,32 +3541,20 @@ export function ImageGenPanel(props: {
                 ) : null}
               </div>
               <div
-                ref={plainBoardRef}
                 className={resultCss.grid}
                 data-count={images.length <= 4 ? String(images.length) : 'many'}
                 data-result-preview-grid=""
                 data-rows={plainRows.length}
                 data-scroll={plainLayout.scroll ? '' : undefined}
               >
-                {plainRows.map((row, rowIndex) => {
-                  const loneWidth = plainLayout.widths[rowIndex] ?? null
-                  const rowHeight = plainLayout.heights[rowIndex] ?? null
-                  const rowStyle = loneWidth === null && rowHeight === null
-                    ? undefined
-                    : { ...(loneWidth === null ? {} : { justifyContent: 'center' }), ...(rowHeight === null ? {} : { alignItems: 'center' }) }
-                  return (
-                    <div className={resultCss.row} key={`row-${rowIndex}`} data-result-row={rowIndex} style={rowStyle}>
-                      {row.map(index => {
-                        const image = images[index]!
-                        const cardStyle = {
-                          ...(loneWidth === null ? {} : { flex: '0 0 auto', width: `${loneWidth}px`, maxWidth: '100%' }),
-                          ...(rowHeight === null ? {} : { height: `${rowHeight}px` }),
-                        }
-                        return (
+                {plainRows.map((row, rowIndex) => (
+                  <div className={resultCss.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>
+                    {row.map(index => {
+                      const image = images[index]!
+                      return (
                           <figure
                             key={index}
                             className={css.imageCard}
-                            style={Object.keys(cardStyle).length === 0 ? undefined : cardStyle}
                             role="button"
                             tabIndex={0}
                             title={tt('preview.open')}
@@ -3622,10 +3599,9 @@ export function ImageGenPanel(props: {
                             </span>
                           </figure>
                         )
-                      })}
-                    </div>
-                  )
-                })}
+                    })}
+                  </div>
+                ))}
               </div>
             </div>
           ) : null}
