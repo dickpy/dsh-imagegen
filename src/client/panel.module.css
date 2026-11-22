@@ -291,20 +291,49 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
   text-overflow: ellipsis;
 }
 
-/* Session + Image Generation tabs share the shell's top action row. */
+/* Session + Image Generation switcher: a quiet two-segment control that reads
+ * as part of the shell sidebar. One thumb slides between the segments (surface
+ * + hairline ring + soft shadow) instead of a filled shell token, so it stays
+ * legible on wallpaper skins too. */
 .sessionTabs {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 2px;
   width: 100%;
   min-width: 0;
   padding: 3px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 9px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 84%, transparent);
+}
+
+.sessionTabs::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc(50% - 4px);
+  height: calc(100% - 6px);
+  border-radius: 8px;
   background: var(--dsw-alias-bg-layer-1);
+  box-shadow:
+    0 1px 2px rgb(15 18 24 / 12%),
+    0 0 0 1px color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
+  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
+  pointer-events: none;
+}
+
+.sessionTabs[data-active-tab='image']::before {
+  transform: translateX(calc(100% + 2px));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sessionTabs::before { transition: none; }
 }
 
 .sessionTab {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -313,13 +342,30 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
   height: 30px;
   padding: 0 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--dsw-alias-label-secondary);
   background: transparent;
   cursor: pointer;
   font: inherit;
   font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
   white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sessionTab:hover:not([data-active]) {
+  color: var(--dsw-alias-label-primary);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 62%, transparent);
+}
+
+.sessionTab[data-active] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.sessionTab:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
 }
 
 /* Collapsed sidebar rail: the injected tabs become plain stacked icon
@@ -330,27 +376,29 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
   gap: 6px;
   width: auto;
   padding: 0;
-  border: none;
   border-radius: 0;
   background: transparent;
+}
+
+[data-sidebar-collapsed] .sessionTabs::before {
+  display: none;
 }
 
 [data-sidebar-collapsed] .sessionTab {
   width: 34px;
   height: 34px;
+  gap: 0;
   padding: 0;
-  border-radius: 9px;
+  border-radius: 10px;
   font-size: 0;
+}
+
+[data-sidebar-collapsed] .sessionTab[data-active] {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);
 }
 
 [data-sidebar-collapsed] .sessionTabLabel {
   display: none;
-}
-
-.sessionTab:hover,
-.sessionTab[data-active] {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-specific-sidebar-nav-item-active);
 }
 
 .sessionTabIcon {
@@ -358,6 +406,16 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
   flex: none;
   align-items: center;
   justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+  transition: color 0.15s ease;
+}
+
+.sessionTab:hover:not([data-active]) .sessionTabIcon {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.sessionTab[data-active] .sessionTabIcon {
+  color: var(--dsw-alias-brand-primary);
 }
 
 .sessionTabLabel {

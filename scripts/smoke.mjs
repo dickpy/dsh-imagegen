@@ -4322,6 +4322,7 @@ await check('D3 sidebar entry mounts inside desktop and unknown sidebar shells, 
   for (const listener of [...listeners]) listener()
   assert.equal(tabs.querySelector('[data-dsh-imagegen-tab="image"]').hasAttribute('data-active'), true, 'the open panel marks the image tab')
   assert.equal(tabs.querySelector('[data-dsh-imagegen-tab="session"]').hasAttribute('data-active'), false)
+  assert.equal(tabs.getAttribute('data-active-tab'), 'image', 'the sliding thumb follows the active side')
   jsdomDocument.documentElement.setAttribute('data-dsh-imagegen-active', '')
   assert.notEqual(jsdomWindow.getComputedStyle(shellButton).display, 'none', 'the native New Session action stays visible under the shipped studio CSS')
   assert.equal(jsdomWindow.getComputedStyle(desktopRoot.querySelector('[data-other-sidebar-plugin]')).display, 'none', 'unrelated sidebar plugin entries remain hidden')

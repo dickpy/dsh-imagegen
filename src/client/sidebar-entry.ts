@@ -9,18 +9,13 @@
  */
 
 import type { ImageGenController } from './controller.ts'
+import { IMAGE_TAB_ICON, SESSION_TAB_ICON } from './sidebar-icons.ts'
 import css from './panel.module.css'
 
 /** Stable selector for the injected two-tab host. */
 export const ENTRY_SELECTOR = '[data-dsh-imagegen-session-tabs]'
 /** Stable selector for the history surface in the shell region area. */
 export const HISTORY_HOST_SELECTOR = '[data-dsh-imagegen-history-host]'
-
-/** Inline picture glyph kept deliberately small for the sidebar rail. */
-const IMAGE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><circle cx="5.6" cy="5.8" r="1"/><path d="M2.5 12.5l3.6-3.4 2.4 2.2 3-3 2 2.4"/></svg>'
-
-/** Inline conversation glyph for the session-view tab. */
-const SESSION_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3h11v8H7l-3 2.4V11H2.5z"/></svg>'
 
 /**
  * Sidebar column markers: the web shell names its grid column `sidebarCol`
@@ -161,11 +156,13 @@ function placeTabs(
   tabs.className = css.sessionTabs
   tabs.setAttribute('role', 'tablist')
   tabs.setAttribute('aria-label', imageTooltip)
+  // The sliding thumb reads this; the conversation view is the resting side.
+  tabs.dataset.activeTab = 'session'
 
-  const sessionTab = makeTab(sessionLabel, sessionTooltip, SESSION_ICON, () => {
+  const sessionTab = makeTab(sessionLabel, sessionTooltip, SESSION_TAB_ICON, () => {
     controller.close()
   })
-  const imageTab = makeTab(imageLabel, imageTooltip, IMAGE_ICON, () => {
+  const imageTab = makeTab(imageLabel, imageTooltip, IMAGE_TAB_ICON, () => {
     controller.open()
   })
   sessionTab.dataset.dshImagegenTab = 'session'
@@ -241,7 +238,9 @@ export function mountSidebarEntry(
     if (tabs === undefined) return
     const sessionTab = tabs.querySelector<HTMLElement>('[data-dsh-imagegen-tab="session"]')
     const imageTab = tabs.querySelector<HTMLElement>('[data-dsh-imagegen-tab="image"]')
-    if (controller.getSnapshot().panelOpen) {
+    const panelOpen = controller.getSnapshot().panelOpen
+    tabs.dataset.activeTab = panelOpen ? 'image' : 'session'
+    if (panelOpen) {
       if (sessionTab !== null) delete sessionTab.dataset.active
       if (imageTab !== null) imageTab.dataset.active = ''
     } else {
