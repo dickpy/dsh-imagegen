@@ -63,7 +63,10 @@ import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService }
 import { useConversationImageAttachment } from './use-conversation-image-attachment.tsx'
 import { ConversationSessionPicker } from './ConversationSessionPicker.tsx'
 import { Select } from './Select.tsx'
+import { planResultLayout, RESULT_CARD_CHROME, RESULT_LAYOUT_GAP } from './result-layout.ts'
+import { downloadImage, useBoardSize, useResultAspects } from './result-board.ts'
 import css from './panel.module.css'
+import resultCss from './studio-results.module.css'
 
 /** Re-check Releases while the panel stays open; the host caches for 15 minutes. */
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60_000
@@ -2306,6 +2309,25 @@ export function ImageGenPanel(props: {
   const previewFrameScale = Math.max(1, previewScale)
   const previewImageScale = previewScale / previewFrameScale
 
+  /*
+   * The plain result grid (history/gallery records and single-model results
+   * outside a studio run) packs with the same planner as the studio board, so
+   * the two surfaces cannot disagree about layout again (#97).
+   */
+  const plainBoardRef = useRef<HTMLDivElement>(null)
+  const plainBoardSize = useBoardSize(plainBoardRef)
+  const plainAspectKeys = images.map((image, index) => `${index}|${image.width ?? 0}x${image.height ?? 0}|${image.b64.length}`)
+  const plainAspects = useResultAspects(plainAspectKeys, images)
+  const plainLayout = planResultLayout({
+    count: images.length,
+    aspects: plainAspects,
+    width: plainBoardSize.width,
+    height: plainBoardSize.height,
+    gap: RESULT_LAYOUT_GAP,
+    chrome: RESULT_CARD_CHROME,
+  })
+  const plainRows = plainLayout.rows.flat().length === images.length ? plainLayout.rows : images.map((_, index) => [index])
+
   /** Drag the config panel's right edge to resize it (persisted per browser). */
   const onConfigResizeStart = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
@@ -3529,41 +3551,81 @@ export function ImageGenPanel(props: {
                   </span>
                 ) : null}
               </div>
-              <div className={css.grid} data-count={images.length} data-result-preview-grid="">
-                {images.map((image, index) => (
-                  <figure
-                    key={index}
-                    className={css.imageCard}
-                    role="button"
-                    tabIndex={0}
-                    title={tt('preview.open')}
-                    onClick={() => { openPreview(images, index) }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        openPreview(images, index)
-                      }
-                    }}
-                  >
-                    <img
-                      className={css.image}
-                      src={srcOf(image)}
-                      alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
-                      onContextMenu={event => openImageMenu(event, image, viewingEntry ?? viewingGalleryEntry ?? undefined)}
-                    />
-                    <GenerationDurationBadge durationMs={image.durationMs} />
-                    <ImageResultMeta image={image} model={image.model ?? viewingEntry?.model} channel={image.channel ?? viewingEntry?.channel} />
-                    {image.revisedPrompt !== undefined ? (
-                      <figcaption className={css.imageCaption} title={image.revisedPrompt}>
-                        {tt('revisedPrompt', { prompt: image.revisedPrompt })}
-                      </figcaption>
-                    ) : null}
-                    <span className={css.zoomHint}>
-                      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M13 13l-3.2-3.2"/><path d="M7 5.4v3.2M5.4 7h3.2"/></svg>
-                      {tt('preview.open')}
-                    </span>
-                  </figure>
-                ))}
+              <div
+                ref={plainBoardRef}
+                className={resultCss.grid}
+                data-count={images.length <= 4 ? String(images.length) : 'many'}
+                data-result-preview-grid=""
+                data-rows={plainRows.length}
+                data-scroll={plainLayout.scroll ? '' : undefined}
+              >
+                {plainRows.map((row, rowIndex) => {
+                  const loneWidth = plainLayout.widths[rowIndex] ?? null
+                  const rowHeight = plainLayout.heights[rowIndex] ?? null
+                  const rowStyle = loneWidth === null && rowHeight === null
+                    ? undefined
+                    : { ...(loneWidth === null ? {} : { justifyContent: 'center' }), ...(rowHeight === null ? {} : { alignItems: 'center' }) }
+                  return (
+                    <div className={resultCss.row} key={`row-${rowIndex}`} data-result-row={rowIndex} style={rowStyle}>
+                      {row.map(index => {
+                        const image = images[index]!
+                        const cardStyle = {
+                          ...(loneWidth === null ? {} : { flex: '0 0 auto', width: `${loneWidth}px`, maxWidth: '100%' }),
+                          ...(rowHeight === null ? {} : { height: `${rowHeight}px` }),
+                        }
+                        return (
+                          <figure
+                            key={index}
+                            className={css.imageCard}
+                            style={Object.keys(cardStyle).length === 0 ? undefined : cardStyle}
+                            role="button"
+                            tabIndex={0}
+                            title={tt('preview.open')}
+                            onClick={() => { openPreview(images, index) }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                openPreview(images, index)
+                              }
+                            }}
+                          >
+                            <div className={css.imageMedia}>
+                              <img
+                                className={css.image}
+                                src={srcOf(image)}
+                                alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
+                                onContextMenu={event => openImageMenu(event, image, viewingEntry ?? viewingGalleryEntry ?? undefined)}
+                              />
+                              <div className={resultCss.mediaCorner}>
+                                <button
+                                  type="button"
+                                  className={resultCss.cardDownload}
+                                  data-result-download=""
+                                  aria-label={tt('download')}
+                                  title={tt('download')}
+                                  onClick={(event) => { event.stopPropagation(); downloadImage(image, `dsh-image-${index + 1}`) }}
+                                >
+                                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3v6.5" /><path d="M5.2 7.2 8 10l2.8-2.8" /><path d="M3.4 12.6h9.2" /></svg>
+                                </button>
+                                <GenerationDurationBadge durationMs={image.durationMs} />
+                              </div>
+                            </div>
+                            <ImageResultMeta image={image} model={image.model ?? viewingEntry?.model} channel={image.channel ?? viewingEntry?.channel} />
+                            {image.revisedPrompt !== undefined ? (
+                              <figcaption className={css.imageCaption} title={image.revisedPrompt}>
+                                {tt('revisedPrompt', { prompt: image.revisedPrompt })}
+                              </figcaption>
+                            ) : null}
+                            <span className={css.zoomHint}>
+                              <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M13 13l-3.2-3.2"/><path d="M7 5.4v3.2M5.4 7h3.2"/></svg>
+                              {tt('preview.open')}
+                            </span>
+                          </figure>
+                        )
+                      })}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           ) : null}
