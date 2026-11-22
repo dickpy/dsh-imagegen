@@ -3555,6 +3555,7 @@ export function ImageGenPanel(props: {
                           <figure
                             key={index}
                             className={css.imageCard}
+                            data-result-card=""
                             role="button"
                             tabIndex={0}
                             title={tt('preview.open')}

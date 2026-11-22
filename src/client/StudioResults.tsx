@@ -111,7 +111,7 @@ export function StudioResults(props: {
   const renderCard = (cardIndex: number): React.JSX.Element => {
     const { slot, task, status, display, waiting, failed, channel } = cards[cardIndex]!
     const elapsed = task?.startedAt === undefined ? 0 : Math.max(0, Math.floor((now - task.startedAt) / 1000))
-    return <figure key={slot.id} className={css.card} data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
+    return <figure key={slot.id} className={css.card} data-result-card="" data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
       <div className={css.media} data-empty={display === undefined ? '' : undefined} data-failed={failed ? '' : undefined}>
         {display !== undefined ? (
           <button

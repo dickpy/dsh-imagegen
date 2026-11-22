@@ -240,6 +240,8 @@
 
 /*
  * Bottom-right corner of the picture: download first, then the duration badge.
+ * Both stay hidden until the pointer is on the card (or keyboard focus reaches
+ * the button), because a permanent pill row covers the picture it describes.
  * The badge keeps its own absolute position in panel.module.css (other surfaces
  * use it that way), so it is flattened back into this row here.
  */
@@ -251,6 +253,25 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+/* Both result surfaces mark their card, so one rule covers the studio board and
+   the plain history/gallery grid (their card classes come from other modules). */
+[data-result-card]:hover .mediaCorner,
+[data-result-card]:focus-within .mediaCorner {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Touch shells have no hover: keep the actions reachable. */
+@media (hover: none) {
+  .mediaCorner {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .mediaCorner [data-generation-duration] {
