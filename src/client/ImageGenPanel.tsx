@@ -3748,7 +3748,11 @@ export function ImageGenPanel(props: {
             title: tt('conversation.chooseSession'),
             hint: tt('conversation.chooseSessionHint'),
             target: tt('conversation.targetSession'),
-            placeholder: tt('conversation.selectSession'),
+            search: tt('conversation.pickerSearch'),
+            empty: tt('conversation.pickerEmpty'),
+            count: tt('conversation.pickerCount'),
+            running: tt('conversation.pickerRunning'),
+            jump: tt('conversation.pickerJumpHint'),
             confirm: tt('conversation.confirmAdd'),
             cancel: tt('conversation.cancel'),
           }}

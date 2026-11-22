@@ -34,17 +34,31 @@ try {
   const picker = page.locator('[data-dsh-imagegen-session-picker]')
   await page.getByRole('button', { name: 'Add image to chat' }).click()
   await picker.waitFor()
-  const select = page.getByLabel('Target conversation')
-  assert.equal(await select.inputValue(), '', 'no target is selected automatically')
-  assert.equal(await page.getByRole('button', { name: 'Add to selected conversation' }).isDisabled(), true)
+  const confirm = page.getByRole('button', { name: 'Add to selected conversation' })
+  const search = picker.getByLabel('Search titles or paths')
+  assert.equal(await picker.locator('[data-session-id]').count(), 2, 'every listed conversation is a row')
+  assert.equal(await picker.locator('[data-active]').count(), 0, 'no target is selected automatically')
+  assert.equal(await confirm.isDisabled(), true)
+  const latestRow = await picker.locator('[data-session-id="session-latest"]').innerText()
+  assert.match(latestRow, /Running/, 'a busy conversation says so')
+  assert.match(latestRow, /latest-project/, 'the workspace is a trailing hint')
+  await search.fill('older')
+  assert.equal(await picker.locator('[data-session-id]').count(), 1, 'search narrows the list')
+  assert.equal(await picker.locator('[data-session-id]').first().getAttribute('data-session-id'), 'session-older')
+  await search.fill('nothing matches this')
+  assert.equal(await picker.locator('[data-session-id]').count(), 0)
+  assert.equal(await picker.getByText('No matching conversations').count(), 1, 'an empty search says so')
+  await search.fill('')
+  assert.equal(await picker.locator('[data-session-id]').count(), 2)
   assert.equal(await page.locator('[data-attachment-events]').textContent(), '', 'opening the picker does not touch any session')
   await page.getByRole('button', { name: 'Cancel' }).click()
   assert.equal(await picker.count(), 0, 'cancel leaves the image unattached')
   assert.equal(await page.locator('[data-attachment-events]').textContent(), '')
 
   await page.getByRole('button', { name: 'Add image to chat' }).click()
-  await select.selectOption('session-older')
-  await page.getByRole('button', { name: 'Add to selected conversation' }).click()
+  await picker.locator('[data-session-id="session-older"]').click()
+  assert.equal(await confirm.isDisabled(), false, 'a picked row enables the confirm button')
+  await confirm.click()
   await page.getByRole('status').filter({ hasText: 'Image added' }).waitFor()
   assert.equal(await picker.count(), 0)
   assert.deepEqual((await page.locator('[data-attachment-events]').textContent()).trim().split('\n'), [
@@ -54,7 +68,8 @@ try {
     'addAttachments:session-older:draft-session-older',
     'attachConversationImage:session-older:dsh-image-1.png:data:image/png;base64,',
     'setDraft:session-older:sample generated image prompt',
-  ], 'explicitly selected session completes the full draft/composer/durable chain in order')
+    'open:session-older',
+  ], 'explicitly selected session completes the full draft/composer/durable chain and opens that conversation')
 
   await page.goto(`${baseUrl}?current=session-latest`)
   await page.getByRole('button', { name: 'Add image to chat' }).click()

@@ -10,13 +10,13 @@ import css from '../src/client/panel.module.css'
 const currentParam = new URLSearchParams(location.search).get('current')
 const sessionIds = ['session-older', 'session-latest'] as const
 
-function createSessionService(): ISessions {
+function createSessionService(record: (value: string) => void): ISessions {
   const snapshot = {
     ids: [...sessionIds] as SessionId[],
     current: currentParam === null ? undefined : currentParam as SessionId,
     byId: {
-      'session-older': { displayTitle: 'Older conversation' },
-      'session-latest': { displayTitle: 'Most recent conversation' },
+      'session-older': { displayTitle: 'Older conversation', updatedAt: Date.now() - 3 * 86_400_000, cwd: 'C:\\work\\older-project' },
+      'session-latest': { displayTitle: 'Most recent conversation', updatedAt: Date.now() - 5 * 60_000, running: true, cwd: 'C:\\work\\latest-project' },
     },
   }
   const listeners = new Set<() => void>()
@@ -26,6 +26,9 @@ function createSessionService(): ISessions {
       subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) },
     },
     scope: (id: SessionId) => snapshot.ids.includes(id) ? { sessionId: id } : undefined,
+    // The real service switches the active conversation; the fixture records it
+    // so the tests can assert that adding an image follows the picture.
+    open: (id: SessionId) => { record(`open:${id}`) },
   } as unknown as ISessions
 }
 
@@ -35,7 +38,7 @@ function Harness(): React.JSX.Element {
   const eventRef = useRef<(value: string) => void>(() => {})
   eventRef.current = value => { setEvents(previous => [...previous, value]) }
   const record = useCallback((value: string) => { eventRef.current(value) }, [])
-  const sessions = useMemo(createSessionService, [])
+  const sessions = useMemo(() => createSessionService(record), [record])
   const conversation = useMemo(() => ({
     createDrafts(sessionId: SessionId, files: readonly File[]) {
       record(`createDrafts:${sessionId}:${files[0]?.name ?? ''}`)
@@ -76,7 +79,7 @@ function Harness(): React.JSX.Element {
       {attachment.pending !== null ? (
         <ConversationSessionPicker
           options={attachment.targets}
-          labels={{ title: 'Choose a conversation', hint: 'Choose exactly where the generated image should go.', target: 'Target conversation', placeholder: 'Select a conversation', confirm: 'Add to selected conversation', cancel: 'Cancel' }}
+          labels={{ title: 'Choose a conversation', hint: 'Choose exactly where the generated image should go.', target: 'Target conversation', search: 'Search titles or paths', empty: 'No matching conversations', count: '{count} conversations', running: 'Running', jump: 'The conversation opens once the image is added', confirm: 'Add to selected conversation', cancel: 'Cancel' }}
           onSelect={attachment.selectTarget}
           onCancel={attachment.cancelPicker}
         />

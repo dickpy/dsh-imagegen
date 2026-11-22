@@ -51,10 +51,10 @@ try {
   await waitFor(() => window.document.querySelector('[data-add-image-to-conversation]') !== null, 'the real React action button')
   click('[data-add-image-to-conversation]')
   await waitFor(() => window.document.querySelector('[data-dsh-imagegen-session-picker]') !== null, 'explicit target picker')
-  const selector = window.document.querySelector('select[aria-label="Target conversation"]')
-  const confirm = [...window.document.querySelectorAll('button')].find(button => button.textContent === 'Add to selected conversation')
-  assert.equal(selector.value, '', 'the first listed or most recent session is not preselected')
-  assert.equal(confirm.disabled, true, 'confirm stays disabled until the user chooses a target')
+  const confirmButton = () => [...window.document.querySelectorAll('button')].find(button => button.textContent === 'Add to selected conversation')
+  assert.equal(window.document.querySelectorAll('[data-session-id]').length, 2, 'every listed conversation is offered as a row')
+  assert.equal(window.document.querySelector('[data-active]'), null, 'no row is preselected')
+  assert.equal(confirmButton().disabled, true, 'confirm stays disabled until the user chooses a target')
   assert.equal(window.document.querySelector('[data-attachment-events]').textContent, '', 'opening the picker does not alter a conversation')
   clickText('Cancel')
   await waitFor(() => window.document.querySelector('[data-dsh-imagegen-session-picker]') === null, 'cancelled picker close')
@@ -62,10 +62,8 @@ try {
 
   click('[data-add-image-to-conversation]')
   await waitFor(() => window.document.querySelector('[data-dsh-imagegen-session-picker]') !== null, 'picker reopen')
-  const targetSelect = window.document.querySelector('select[aria-label="Target conversation"]')
-  targetSelect.value = 'session-older'
-  targetSelect.dispatchEvent(new window.Event('change', { bubbles: true }))
-  await waitFor(() => ![...window.document.querySelectorAll('button')].find(button => button.textContent === 'Add to selected conversation').disabled, 'explicit target selection')
+  click('[data-session-id="session-older"]')
+  await waitFor(() => !confirmButton().disabled, 'explicit target selection')
   clickText('Add to selected conversation')
   await waitFor(() => window.document.querySelector('[data-attachment-message]')?.textContent === 'Image added', 'attachment completion')
   assert.deepEqual(window.document.querySelector('[data-attachment-events]').textContent.trim().split('\n'), [
@@ -75,6 +73,7 @@ try {
     'addAttachments:session-older:draft-session-older',
     'attachConversationImage:session-older:dsh-image-1.png:data:image/png;base64,',
     'setDraft:session-older:sample generated image prompt',
+    'open:session-older',
   ])
   const runtimeCss = [...window.document.querySelectorAll('style')].map(style => style.textContent).join('\n')
   // The minifier is free to merge rules that share a declaration block, so the

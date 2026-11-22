@@ -79,6 +79,10 @@ export function useConversationImageAttachment(options: {
         unavailableMessage: options.messages.unavailable,
         busyMessage: options.messages.busy,
       })
+      // Follow the picture. Without this the image lands in a conversation the
+      // user cannot see from the studio, which reads as "nothing happened";
+      // opening the target session is exactly the sidebar click they expected.
+      try { sessions.open(sessionId) } catch { /* navigation is best-effort */ }
       options.onAdded()
     } catch (error) {
       options.onError(error)

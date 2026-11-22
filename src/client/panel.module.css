@@ -1022,16 +1022,171 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 .configGuideBody { display: flex; width: min(360px, 100%); flex-direction: column; gap: 12px; padding: 18px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); box-shadow: 0 14px 40px rgb(0 0 0 / 20%); }
 .configGuideBody span { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.55; }
 .configGuideBody button { align-self: flex-end; min-height: 30px; padding: 0 12px; border: 0; border-radius: 7px; color: var(--dsw-alias-bg-layer-1); background: var(--dsw-alias-brand-primary); cursor: pointer; font: inherit; font-size: 12px; }
-.conversationPicker { position: fixed; z-index: 1150; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(0 0 0 / 38%); }
-.conversationPickerBody { display: flex; width: min(420px, 100%); flex-direction: column; gap: 12px; padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); box-shadow: 0 16px 48px rgb(0 0 0 / 24%); }
-.conversationPickerBody h2 { margin: 0; font-size: 16px; font-weight: 650; }
-.conversationPickerBody p { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.5; }
-.conversationPickerBody label { display: flex; flex-direction: column; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.conversationPickerBody select { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); font: inherit; }
-.conversationPickerBody footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
-.conversationPickerBody footer button { min-height: 32px; padding: 0 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); cursor: pointer; font: inherit; font-size: 12px; }
-.conversationPickerBody footer button:last-child { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base)); background: var(--dsw-alias-brand-primary); }
-.conversationPickerBody footer button:disabled { cursor: not-allowed; opacity: .5; }
+/* --- conversation target picker --------------------------------------------- */
+
+.conversationPicker {
+  position: fixed;
+  z-index: 1150;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 42%);
+  backdrop-filter: blur(3px);
+}
+
+/* Same opaque-surface guard as the dropdowns: a wallpaper skin tints
+   --dsw-alias-bg-base, and a modal must not let the workspace show through. */
+.conversationPickerBody {
+  display: flex;
+  width: min(460px, 100%);
+  max-height: min(560px, calc(100dvh - 40px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 14px;
+  color: var(--dsw-alias-label-primary);
+  background-color: Canvas;
+  background-image:
+    linear-gradient(var(--dsw-alias-bg-base, transparent), var(--dsw-alias-bg-base, transparent)),
+    linear-gradient(var(--dsw-alias-bg-layer-1, Canvas), var(--dsw-alias-bg-layer-1, Canvas));
+  box-shadow: 0 22px 60px rgb(0 0 0 / 32%);
+}
+
+.conversationPickerHeader { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px 10px; }
+.conversationPickerHeader h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.conversationPickerHeader p { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.5; }
+
+.conversationPickerSearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  margin: 0 18px 10px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-bg-layer-2);
+  transition: border-color 0.15s ease;
+}
+
+.conversationPickerSearch:focus-within { border-color: var(--dsw-alias-brand-primary); }
+
+.conversationPickerSearch input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.conversationPickerSearch input::-webkit-search-cancel-button { cursor: pointer; }
+
+.conversationPickerList {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 8px;
+  scrollbar-width: thin;
+}
+
+.conversationPickerRow {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversationPickerRow:hover { background: var(--dsw-alias-interactive-bg-hover, var(--dsw-alias-bg-layer-2)); }
+
+.conversationPickerRow[data-active] {
+  border-color: var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
+}
+
+.conversationPickerRow:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+
+.conversationPickerRowTitle {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversationPickerRowMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.4; }
+
+.conversationPickerPath { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85; }
+
+.conversationPickerRunning {
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--dsw-alias-state-business-primary, #16a34a);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #22c55e) 18%, transparent);
+  font-weight: 600;
+}
+
+.conversationPickerEmpty { margin: 14px 4px; color: var(--dsw-alias-label-tertiary); font-size: 12px; text-align: center; }
+
+.conversationPickerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+.conversationPickerFooterInfo { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+
+.conversationPickerCount { color: var(--dsw-alias-label-tertiary); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+.conversationPickerJump { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.4; opacity: 0.85; }
+
+.conversationPickerActions { display: flex; flex: none; gap: 8px; }
+
+.conversationPickerActions button {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.conversationPickerActions button:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
+
+.conversationPickerActions button:last-child {
+  border-color: transparent;
+  color: var(--dsw-alias-label-primary-foreground, #fff);
+  background: var(--dsw-alias-brand-primary);
+  font-weight: 600;
+}
+
+.conversationPickerActions button:last-child:hover:not(:disabled) { filter: brightness(1.06); }
+
+.conversationPickerActions button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 /* --- history surface (rendered into the shell sidebar) ----------------------- */
 
