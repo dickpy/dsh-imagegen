@@ -3067,6 +3067,17 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   background: rgba(255, 255, 255, 0.04);
 }
 
+/* Drag-to-pan (#97): once the image is larger than the stage the drag reads as
+   a grab, so the gesture is discoverable without a tooltip. */
+.lightboxStage[data-pan] {
+  cursor: grab;
+}
+
+.lightboxStage[data-panning] {
+  cursor: grabbing;
+  user-select: none;
+}
+
 .lightboxScaleFrame {
   display: flex;
   align-items: center;

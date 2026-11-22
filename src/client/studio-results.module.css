@@ -93,47 +93,41 @@
 }
 
 /*
- * The board is a photo sheet, not a scrolling list: one image owns the whole
- * canvas, two split it left/right, four split it into a 2×2. Each cell keeps
- * the image fully visible (contain, never cropped).
+ * The board is a photo sheet, not a scrolling list: it fills the panel, and the
+ * row split comes from result-layout.ts, which measures the board and the image
+ * shapes (two side by side, three portraits in a row, otherwise a balanced
+ * sheet). Each row divides its width evenly; each cell keeps the image fully
+ * visible (contain, never cropped).
  */
 .grid {
   flex: 1;
   min-height: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
-.grid[data-count='1'] {
-  grid-template-columns: minmax(0, 1fr);
-  grid-auto-rows: minmax(0, 1fr);
+.row {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 12px;
 }
 
-.grid[data-count='2'] {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
-}
-
-.grid[data-count='3'] {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
-}
-
-.grid[data-count='4'] {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
-}
-
-/* Appended models past four keep a readable minimum and scroll instead. */
-.grid[data-count='many'] {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: minmax(220px, 1fr);
-  overflow: auto;
+/* Too many cards for one screen: rows keep a readable height and the board scrolls. */
+.grid[data-scroll] {
+  overflow-y: auto;
   scrollbar-gutter: stable;
+}
+
+.grid[data-scroll] .row {
+  flex: none;
+  min-height: 220px;
 }
 
 .card {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   margin: 0;
   min-width: 0;
@@ -244,6 +238,51 @@
   .imageButton::after { display: none; }
 }
 
+/*
+ * Bottom-right corner of the picture: download first, then the duration badge.
+ * The badge keeps its own absolute position in panel.module.css (other surfaces
+ * use it that way), so it is flattened back into this row here.
+ */
+.mediaCorner {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mediaCorner [data-generation-duration] {
+  position: static;
+  right: auto;
+  bottom: auto;
+}
+
+.cardDownload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #fff;
+  background: rgb(15 18 24 / 78%);
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.cardDownload:hover {
+  background: rgb(15 18 24 / 92%);
+}
+
+.cardDownload:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
 .pending {
   position: absolute;
   inset: 0;
@@ -347,12 +386,10 @@
   .board {
     padding: 48px 10px 12px;
   }
-  .grid {
+  /* The planner already drops to narrower sheets on a narrow board; only the
+     gap needs to shrink with it. */
+  .grid,
+  .row {
     gap: 10px;
-  }
-  /* Two columns is the narrowest useful split; three across would be tiny. */
-  .grid[data-count='3'],
-  .grid[data-count='many'] {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

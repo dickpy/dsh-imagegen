@@ -67,13 +67,18 @@
 .divider { color: var(--dsw-alias-label-tertiary); flex: none; }
 .model { color: inherit; flex: 1 1 auto; }
 
+/* Same guard as the select menu (#98): a skin that tints layer-2 with alpha
+   must not let the workspace show through the model flyout. */
 .menu,
 .modelFlyout {
   position: fixed;
   z-index: 130;
   max-height: 278px;
   overflow: hidden;
-  background: var(--dsw-alias-bg-layer-2);
+  background-color: Canvas;
+  background-image:
+    linear-gradient(var(--dsw-alias-bg-layer-2, transparent), var(--dsw-alias-bg-layer-2, transparent)),
+    linear-gradient(var(--dsw-alias-bg-layer-1, Canvas), var(--dsw-alias-bg-layer-1, Canvas));
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);

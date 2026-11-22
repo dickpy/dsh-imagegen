@@ -1,3 +1,10 @@
+/*
+ * Skins may hand us a translucent --dsw-alias-bg-base (wallpaper skins do, e.g.
+ * #0a08067a), and a surface painted with that token alone lets the page show
+ * through — the model filter used to reveal the history list behind it (#98).
+ * Stacking the skin tint over an opaque layer keeps the skin's colour while
+ * nothing bleeds through; the panel hosts already use the same trick.
+ */
 .trigger {
   display: inline-flex;
   align-items: center;
@@ -11,7 +18,10 @@
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 8px;
   color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-base);
+  background-color: Canvas;
+  background-image:
+    linear-gradient(var(--dsw-alias-bg-base, transparent), var(--dsw-alias-bg-base, transparent)),
+    linear-gradient(var(--dsw-alias-bg-layer-1, Canvas), var(--dsw-alias-bg-layer-1, Canvas));
   font: inherit;
   font-size: 12px;
   line-height: 1.35;
@@ -20,7 +30,11 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.trigger:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.trigger:hover {
+  background-image:
+    linear-gradient(var(--dsw-alias-interactive-bg-hover, transparent), var(--dsw-alias-interactive-bg-hover, transparent)),
+    linear-gradient(var(--dsw-alias-bg-layer-1, Canvas), var(--dsw-alias-bg-layer-1, Canvas));
+}
 .trigger:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .trigger[data-open] { border-color: var(--dsw-alias-brand-primary); }
 .trigger:disabled { opacity: 0.55; cursor: default; }
@@ -40,7 +54,10 @@
   padding: 5px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
-  background: var(--dsw-alias-bg-base);
+  background-color: Canvas;
+  background-image:
+    linear-gradient(var(--dsw-alias-bg-base, transparent), var(--dsw-alias-bg-base, transparent)),
+    linear-gradient(var(--dsw-alias-bg-layer-1, Canvas), var(--dsw-alias-bg-layer-1, Canvas));
   box-shadow: 0 12px 30px rgb(0 0 0 / 16%);
   color: var(--dsw-alias-label-primary);
   font-family: var(--dsw-font-family, inherit);

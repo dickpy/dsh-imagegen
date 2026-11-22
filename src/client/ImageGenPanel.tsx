@@ -895,6 +895,9 @@ export function ImageGenPanel(props: {
     : modelGroups
   const modeModels = [...new Set(modeGroups.flatMap(group => group.models))]
   const previewStage = useRef<HTMLDivElement>(null)
+  /** Live drag state for the lightbox: pointer id plus the scroll origin. */
+  const previewPan = useRef<{ pointerId: number; x: number; y: number; left: number; top: number } | null>(null)
+  const [previewPanning, setPreviewPanning] = useState(false)
   const activeTasks = tasks.filter(task => task.status === 'queued' || task.status === 'running')
   const viewActiveTasks = workspace === 'normal'
     ? activeTasks.filter(task => task.request.mode === generationMode && task.request.canvas === undefined && task.request.workflow === undefined)
@@ -1696,6 +1699,8 @@ export function ImageGenPanel(props: {
     setPreview(null)
     setPreviewScale(1)
     setPromptCopied(false)
+    previewPan.current = null
+    setPreviewPanning(false)
   }
 
   /** Step the preview by ±1, wrapping around. */
@@ -1723,6 +1728,38 @@ export function ImageGenPanel(props: {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [preview])
+
+  /**
+   * Drag to pan the zoomed preview (#97).
+   *
+   * Zoom used to be the only control, so inspecting a 4K render meant fighting
+   * the browser's scrollbar. The stage really scrolls, so a pointer drag moves
+   * its scroll offsets; while the image still fits there is nothing to pan and
+   * the drag is ignored, which keeps plain clicks working.
+   */
+  const startPreviewPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    const stage = previewStage.current
+    if (stage === null) return
+    if (stage.scrollWidth <= stage.clientWidth && stage.scrollHeight <= stage.clientHeight) return
+    try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* capture is a nicety, the drag still works inside the stage */ }
+    previewPan.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop }
+    setPreviewPanning(true)
+  }
+  const movePreviewPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const pan = previewPan.current
+    const stage = previewStage.current
+    if (pan === null || stage === null || pan.pointerId !== event.pointerId) return
+    stage.scrollLeft = pan.left - (event.clientX - pan.x)
+    stage.scrollTop = pan.top - (event.clientY - pan.y)
+  }
+  const endPreviewPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const pan = previewPan.current
+    if (pan === null || pan.pointerId !== event.pointerId) return
+    previewPan.current = null
+    setPreviewPanning(false)
+    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
+  }
 
   // A scaled image owns real scrollable space, rather than being visually
   // transformed and clipped. Recenter the viewport after every zoom or slide.
@@ -3446,7 +3483,7 @@ export function ImageGenPanel(props: {
           ) : null}
           {liveBoardCurrent && studioRun !== null && isGeneration ? <StudioResults key={studioRun.id} run={studioRun} tasks={tasks} groups={modeGroups} busy={studioBusy} privacyMode={privacyMode}
             onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
-            onPreview={image => openPreview([image], 0)} onCopy={image => { void copyImage(image) }}
+            onPreview={(images, index) => openPreview(images, index)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
             onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)}
             toolbarAction={<TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => { setLibraryOpen(true) }} />} /> : null}
@@ -3618,6 +3655,12 @@ export function ImageGenPanel(props: {
               <div
                 ref={previewStage}
                 className={css.lightboxStage}
+                data-pan={previewScale > 1 ? '' : undefined}
+                data-panning={previewPanning ? '' : undefined}
+                onPointerDown={startPreviewPan}
+                onPointerMove={movePreviewPan}
+                onPointerUp={endPreviewPan}
+                onPointerCancel={endPreviewPan}
                 onWheel={(event) => {
                   event.preventDefault()
                   setPreviewScale(current => clampPreviewScale(current + (event.deltaY < 0 ? PREVIEW_SCALE_STEP : -PREVIEW_SCALE_STEP)))
@@ -3632,6 +3675,7 @@ export function ImageGenPanel(props: {
                     style={{ width: `${previewImageScale * 100}%`, height: `${previewImageScale * 100}%` }}
                     src={srcOf(previewImage)}
                     alt={previewImage.revisedPrompt ?? tt('preview.title')}
+                    draggable={false}
                     onContextMenu={event => openImageMenu(event, previewImage, viewingEntry ?? viewingGalleryEntry ?? undefined, { inPreview: true })}
                   />
                 </div>
