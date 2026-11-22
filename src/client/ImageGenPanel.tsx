@@ -1921,8 +1921,13 @@ export function ImageGenPanel(props: {
       let next = history
       for (const id of ids) next = await api.historyRemove(id)
       setHistory(next)
-    } catch {
-      // Keep the optimistic local removal.
+    } catch (caught) {
+      // The host kept (part of) the group: an optimistic removal that stays
+      // would silently resurrect it on the next background sync. Refetch the
+      // authoritative list; when even that fails, keep the optimistic view
+      // but say why instead of discarding the error.
+      setError(errorMessage(caught))
+      try { setHistory(await api.historyList()) } catch { /* keep the optimistic removal */ }
     }
   }
 
@@ -2120,8 +2125,11 @@ export function ImageGenPanel(props: {
     if (galleryViewingId === id) setGalleryViewingId(null)
     try {
       setGallery(await api.galleryRemove(id))
-    } catch {
-      // Keep the optimistic local removal.
+    } catch (caught) {
+      // The host kept the entry: restore the authoritative list instead of
+      // letting the next gallery refresh silently resurrect it.
+      setError(errorMessage(caught))
+      try { setGallery(await api.galleryList()) } catch { /* keep the optimistic removal */ }
     }
   }
 

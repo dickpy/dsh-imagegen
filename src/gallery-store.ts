@@ -125,18 +125,56 @@ async function ensureDirs(): Promise<void> {
   await fs.mkdir(imagesDir(), { recursive: true })
 }
 
-/** Read the index, tolerating a missing/corrupt file. */
-async function readIndex(): Promise<StoredEntry[]> {
+/**
+ * Move a corrupt index aside before the next write can overwrite it. The
+ * backup is a copy (the original stays until the next successful write), and
+ * only the first backup per corruption episode is kept — reading a corrupt
+ * file repeatedly must not accumulate backups.
+ */
+async function quarantineIndex(): Promise<void> {
   try {
-    const raw = await fs.readFile(indexPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed === null || typeof parsed !== 'object') return []
-    const entries = (parsed as { entries?: unknown }).entries
-    if (!Array.isArray(entries)) return []
-    return entries.filter(isStoredEntry)
+    const existing = await fs.readdir(galleryDir())
+    if (existing.some(name => name.startsWith('index.json.bad-'))) return
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    await fs.copyFile(indexPath(), path.join(galleryDir(), `index.json.bad-${stamp}`))
+  } catch {
+    // Best effort: a failing backup must not block the read path.
+  }
+}
+
+/** Read the index, tolerating a missing/corrupt file. A corrupt file is backed
+ *  up (see quarantineIndex) instead of being silently overwritten by the next
+ *  write, so the previous gallery stays recoverable by hand. */
+async function readIndex(): Promise<StoredEntry[]> {
+  let raw: string
+  try {
+    raw = await fs.readFile(indexPath(), 'utf8')
   } catch {
     return []
   }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    await quarantineIndex()
+    return []
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    await quarantineIndex()
+    return []
+  }
+  const entries = (parsed as { entries?: unknown }).entries
+  if (!Array.isArray(entries)) {
+    await quarantineIndex()
+    return []
+  }
+  const valid = entries.filter(isStoredEntry)
+  if (valid.length !== entries.length) {
+    // Partial corruption: keep serving the valid rows, but preserve what was
+    // on disk before the next write drops the invalid ones.
+    await quarantineIndex()
+  }
+  return valid
 }
 
 /** Persist the index. */
@@ -144,8 +182,13 @@ async function writeIndex(entries: StoredEntry[]): Promise<void> {
   await ensureDirs()
   const payload: IndexFile = { entries }
   const tmp = `${indexPath()}.tmp-${process.pid}`
-  await fs.writeFile(tmp, JSON.stringify(payload), 'utf8')
-  await fs.rename(tmp, indexPath())
+  try {
+    await fs.writeFile(tmp, JSON.stringify(payload), 'utf8')
+    await fs.rename(tmp, indexPath())
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 /** Structural guard for a stored entry. */
