@@ -22,6 +22,7 @@ import type { ImageGenController } from './controller.ts'
 import { ImageGenPanel } from './ImageGenPanel.tsx'
 import type { ImageGenScope } from './settings-scope.ts'
 import type { ConversationService } from './conversation-sync.ts'
+import { HISTORY_HOST_SELECTOR } from './sidebar-entry.ts'
 import css from './panel.module.css'
 
 /** The injected panel container (kept in the DOM, hidden when inactive). */
@@ -181,7 +182,15 @@ export function mountPanel(
   }
 
   const renderPanel = (): void => {
-    root?.render(<ImageGenPanel api={api} scope={scope} active={panelActive} {...services} />)
+    root?.render(
+      <ImageGenPanel
+        api={api}
+        scope={scope}
+        active={panelActive}
+        onExit={() => { controller.close() }}
+        {...services}
+      />,
+    )
   }
 
   const ensure = (): void => {
@@ -229,28 +238,55 @@ export function mountPanel(
   }
   const onOtherActivate = (event: Event): void => {
     const detail = (event as CustomEvent).detail
-    if ((detail === 'ssh' || detail === 'taskboard') && controller.getSnapshot().panelOpen) {
+    if (!controller.getSnapshot().panelOpen) return
+    // A skin's home control asks for the conversation. The studio is not a
+    // `main` panel, so `selectPanel(null)` alone means nothing to it; the
+    // activation event with no panel is how it hears the request (the Islands
+    // skin dispatches it from its rail).
+    if (detail === null || detail === 'conversation') {
       controller.close()
+      return
     }
+    if (detail === 'ssh' || detail === 'taskboard') controller.close()
   }
-  // Jump out on sidebar context clicks: clicking a session/workspace row
-  // hands the center column back to the conversation. Capture phase.
-  const SIDEBAR_ROW_SELECTOR = '[class*="sessionRow"], [class*="projectRow"], [class*="searchResultRow"], [class*="searchResultWorkspace"], [class*="newSession"], [data-dsh-imagegen-new-session]'
-  const onClickSidebarRow = (event: MouseEvent): void => {
+  // Jump out on sidebar navigation: any click in the sidebar column that is not
+  // the studio's own history surface and not the launcher itself hands the
+  // column back to the conversation. Row class names are not a contract (skins
+  // restyle and re-render them), so the column — a frame grid item in every
+  // layout — is the anchor. Capture phase, so the shell's own handler still runs.
+  const SIDEBAR_COLUMN_SELECTOR = '[data-pane="sidebar"], [class*="sidebarCol"]'
+  const LAUNCHER_ICON_SELECTOR = '[data-dsh-imagegen-panel-icon]'
+  const onClickSidebar = (event: MouseEvent): void => {
     if (!controller.getSnapshot().panelOpen) return
     const target = event.target as HTMLElement | null
     if (target === null) return
-    if (target.closest(SIDEBAR_ROW_SELECTOR) !== null) controller.close()
+    if (target.closest(HISTORY_HOST_SELECTOR) !== null) return
+    // The launcher's own click toggles the studio; closing here first would make
+    // that toggle reopen it instead.
+    if (target.closest('button')?.querySelector(LAUNCHER_ICON_SELECTOR) != null) return
+    if (target.closest(SIDEBAR_COLUMN_SELECTOR) === null) return
+    controller.close()
   }
-  document.addEventListener('click', onClickSidebarRow, true)
+  // Switching sessions (a row, a pinned session, a search result) leaves the
+  // studio as well: the chat it sits beside is now another conversation.
+  const sessionList = services.sessions?.list
+  let currentSession = sessionList?.getSnapshot().current
+  const unsubscribeSessions = sessionList?.subscribe(() => {
+    const next = sessionList.getSnapshot().current
+    if (next === currentSession) return
+    currentSession = next
+    if (controller.getSnapshot().panelOpen) controller.close()
+  })
+  document.addEventListener('click', onClickSidebar, true)
   document.addEventListener(ACTIVATE_EVENT, onOtherActivate)
   const unsubscribe = controller.subscribe(applyActive)
   applyActive()
   ensure()
 
   return () => {
-    document.removeEventListener('click', onClickSidebarRow, true)
+    document.removeEventListener('click', onClickSidebar, true)
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
+    unsubscribeSessions?.()
     waitObserver.disconnect()
     unsubscribe()
     document.documentElement.removeAttribute(ACTIVE_ATTR)

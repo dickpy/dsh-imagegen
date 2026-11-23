@@ -1,19 +1,25 @@
 /**
- * Add a two-tab switcher above the shell's own New Session affordance:
- * Session (the conversation view) and Image Generation. The shell button stays
- * visible underneath, so creating a new session keeps its old position and the
- * switcher never doubles as the only way out of the studio. When image
- * generation is active, the plugin also uses the shell's region area as a
- * dedicated history surface; the original workspace/session tree remains
- * underneath and is restored when the panel closes.
+ * Sidebar DOM surfaces the studio needs from the shipped shell.
+ *
+ * The launcher itself is NOT here: it is registered as a real global panel
+ * (`sidebar.panellist` + a `main` shim, see sidebar-panel.tsx), because every
+ * sidebar implementation — the shipped shell, the Islands skin, the next one —
+ * builds its navigation from that slot, while an injected row only exists in
+ * the implementation it was written against.
+ *
+ * What remains is the history surface and the two markers that keep the shell's
+ * own controls visible while the studio takes over the center column:
+ *
+ * - the history host, an overlay over the workspace/session region;
+ * - `data-dsh-imagegen-sidebar-keep` on the wrapper chain, so the allow-list in
+ *   panel.module.css never hides the ancestors that carry that host (0.2.x
+ *   added scrollRegion > scrollArea around the region);
+ * - `data-dsh-imagegen-new-session` on the shell's New Session button, which
+ *   stays a native control throughout.
  */
 
-import type { ImageGenController } from './controller.ts'
-import { IMAGE_TAB_ICON, SESSION_TAB_ICON } from './sidebar-icons.ts'
 import css from './panel.module.css'
 
-/** Stable selector for the injected two-tab host. */
-export const ENTRY_SELECTOR = '[data-dsh-imagegen-session-tabs]'
 /** Stable selector for the history surface in the shell region area. */
 export const HISTORY_HOST_SELECTOR = '[data-dsh-imagegen-history-host]'
 
@@ -47,7 +53,7 @@ function sidebarRoot(): HTMLElement | undefined {
   if (logoRow !== null) {
     // Walk out of the brand row until an ancestor also owns the shell button:
     // desktop shells put a wrapper surface between the two, so the row parent is
-    // not always the root the tabs have to live in (#20).
+    // not always the root the surfaces have to live in (#20).
     for (let candidate = logoRow.parentElement; candidate !== null; candidate = candidate.parentElement) {
       if (candidate === document.body) break
       if (newSessionButton(candidate, false) !== undefined) return candidate
@@ -55,8 +61,7 @@ function sidebarRoot(): HTMLElement | undefined {
       if (column !== null && !column.contains(candidate)) break
     }
     // Legacy shape: with no recognisable shell button anywhere above the brand
-    // row its parent stays the mount point, which is where the web shell has
-    // always kept the tabs (#20).
+    // row its parent stays the mount point (#20).
     return logoRow.parentElement ?? column ?? undefined
   }
   if (column === null) return undefined
@@ -92,7 +97,7 @@ function regionArea(root: HTMLElement): HTMLElement | undefined {
 /**
  * Mark every wrapper between the sidebar root and the workspace region.
  *
- * The studio keeps only a few sidebar children (brand row, switcher, New
+ * The studio keeps only a few sidebar children (brand row, the panel list, New
  * Session, the workspace region, the foot); everything else is hidden by an
  * allow-list. A shell is free to wrap that region in extra scroll containers —
  * 0.2.x added scrollRegion > scrollArea around it — and then the allow-list
@@ -107,101 +112,25 @@ function markKeepChain(root: HTMLElement, region: HTMLElement): void {
   }
 }
 
-function makeTab(
-  label: string,
-  tooltip: string,
-  icon: string,
-  onClick: () => void,
-): HTMLButtonElement {
-  const tab = document.createElement('button')
-  tab.type = 'button'
-  tab.className = css.sessionTab
-  tab.setAttribute('aria-label', label)
-  tab.setAttribute('title', tooltip)
-  tab.innerHTML = `<span class="${css.sessionTabIcon}">${icon}</span><span class="${css.sessionTabLabel}">${label}</span>`
-  tab.addEventListener('click', onClick)
-  return tab
-}
-
-/**
- * Mount or repair the two-tab switcher directly above the shell's New Session
- * button, which stays visible: the switcher only moves between the conversation
- * and the studio, it never creates a session.
- */
-function placeTabs(
-  root: HTMLElement,
-  controller: ImageGenController,
-  sessionLabel: string,
-  sessionTooltip: string,
-  imageLabel: string,
-  imageTooltip: string,
-): HTMLDivElement | undefined {
-  const button = newSessionButton(root)
-  if (button === undefined) return undefined
-
-  // The action can live in a fixed-height horizontal row (DSH 0.2.2+),
-  // possibly inside more shell wrappers. Keep the switcher in the sidebar
-  // column, before the entire action carrier, so it cannot shrink the button.
-  let anchor: HTMLElement = button
-  while (anchor.parentElement !== null && anchor.parentElement !== root) anchor = anchor.parentElement
-  if (anchor.parentElement !== root) return undefined
-  const existing = root.querySelector<HTMLDivElement>(ENTRY_SELECTOR)
-  if (existing !== null) {
-    if (existing.parentElement !== root || existing.nextElementSibling !== anchor) root.insertBefore(existing, anchor)
-    return existing
-  }
-
-  const tabs = document.createElement('div')
-  tabs.dataset.dshImagegenSessionTabs = ''
-  tabs.className = css.sessionTabs
-  tabs.setAttribute('role', 'tablist')
-  tabs.setAttribute('aria-label', imageTooltip)
-  // The sliding thumb reads this; the conversation view is the resting side.
-  tabs.dataset.activeTab = 'session'
-
-  const sessionTab = makeTab(sessionLabel, sessionTooltip, SESSION_TAB_ICON, () => {
-    controller.close()
-  })
-  const imageTab = makeTab(imageLabel, imageTooltip, IMAGE_TAB_ICON, () => {
-    controller.open()
-  })
-  sessionTab.dataset.dshImagegenTab = 'session'
-  imageTab.dataset.dshImagegenTab = 'image'
-  tabs.append(sessionTab, imageTab)
-
-  // The shell button keeps its own slot below the switcher, untouched.
-  root.insertBefore(tabs, anchor)
-  return tabs
-}
-
 /** Mount an overlay host over the workspace/session tree for image history. */
-function placeHistoryHost(root: HTMLElement): HTMLDivElement | undefined {
+function placeHistoryHost(root: HTMLElement): void {
   const region = regionArea(root)
-  if (region === undefined) return undefined
-  const existing = region.querySelector<HTMLDivElement>(HISTORY_HOST_SELECTOR)
-  if (existing !== null) return existing
+  if (region === undefined) return
+  if (region.querySelector<HTMLElement>(HISTORY_HOST_SELECTOR) !== null) return
   const host = document.createElement('div')
   host.dataset.dshImagegenHistoryHost = ''
   host.className = css.sidebarHistoryHost
   region.append(host)
-  return host
 }
 
 /**
- * Mount the two tabs and self-heal after React rebuilds the sidebar. The
- * shell-owned New Session button keeps its native behavior. A temporary marker
- * preserves its visibility and identifies context clicks across shell layouts.
+ * Mount the studio's sidebar surfaces and self-heal after React rebuilds the
+ * sidebar. The shell keeps owning the New Session button and the panel list.
+ * @returns disposer removing every injected surface and marker.
  */
-export function mountSidebarEntry(
-  controller: ImageGenController,
-  sessionLabel: string,
-  sessionTooltip: string,
-  imageLabel: string,
-  imageTooltip: string,
-): () => void {
+export function mountSidebarSurfaces(): () => void {
   let root: HTMLElement | undefined
-  let tabs: HTMLDivElement | undefined
-  let historyHost: HTMLDivElement | undefined
+  let historyHost: HTMLElement | undefined
   let markedButton: HTMLButtonElement | undefined
   let warnedUnmounted = false
 
@@ -226,65 +155,48 @@ export function mountSidebarEntry(
   // A shell we have never seen must not fail silently: the reporter of #20 had
   // no console output at all to work from.
   const warnUnmounted = (): void => {
-    if (warnedUnmounted || tabs !== undefined) return
+    if (warnedUnmounted || historyHost !== undefined) return
     warnedUnmounted = true
-    const reason = root === undefined ? 'sidebar root not found' : 'new-session button not found'
-    console.warn(`[dsh-imagegen] sidebar entry stayed unmounted (${reason}); shell probe: ${describeShell()}`)
+    const reason = root === undefined ? 'sidebar root not found' : 'workspace region not found'
+    console.warn(`[dsh-imagegen] sidebar surfaces stayed unmounted (${reason}); shell probe: ${describeShell()}`)
   }
 
   const unmountedTimer = window.setTimeout(warnUnmounted, 5000)
-
-  const syncActive = (): void => {
-    if (tabs === undefined) return
-    const sessionTab = tabs.querySelector<HTMLElement>('[data-dsh-imagegen-tab="session"]')
-    const imageTab = tabs.querySelector<HTMLElement>('[data-dsh-imagegen-tab="image"]')
-    const panelOpen = controller.getSnapshot().panelOpen
-    tabs.dataset.activeTab = panelOpen ? 'image' : 'session'
-    if (panelOpen) {
-      if (sessionTab !== null) delete sessionTab.dataset.active
-      if (imageTab !== null) imageTab.dataset.active = ''
-    } else {
-      if (sessionTab !== null) sessionTab.dataset.active = ''
-      if (imageTab !== null) delete imageTab.dataset.active
-    }
-  }
 
   const ensure = (): void => {
     if (root !== undefined && !root.isConnected) {
       markedButton?.removeAttribute('data-dsh-imagegen-new-session')
       markedButton = undefined
       root = undefined
-      tabs = undefined
       historyHost = undefined
     }
     root ??= sidebarRoot()
     if (root === undefined) return
     root.dataset.dshImagegenSidebarRoot = ''
     const button = newSessionButton(root)
-    if (button === undefined) return
-    if (markedButton !== button) markedButton?.removeAttribute('data-dsh-imagegen-new-session')
-    markedButton = button
-    if (!button.hasAttribute('data-dsh-imagegen-new-session')) {
-      button.setAttribute('data-dsh-imagegen-new-session', '')
+    if (button !== undefined) {
+      if (markedButton !== button) markedButton?.removeAttribute('data-dsh-imagegen-new-session')
+      markedButton = button
+      if (!button.hasAttribute('data-dsh-imagegen-new-session')) {
+        button.setAttribute('data-dsh-imagegen-new-session', '')
+      }
     }
-    tabs = placeTabs(root, controller, sessionLabel, sessionTooltip, imageLabel, imageTooltip)
-    historyHost = placeHistoryHost(root)
+    placeHistoryHost(root)
     const region = regionArea(root)
-    if (region !== undefined) markKeepChain(root, region)
-    syncActive()
+    if (region !== undefined) {
+      markKeepChain(root, region)
+      historyHost = region.querySelector<HTMLElement>(HISTORY_HOST_SELECTOR) ?? undefined
+    }
   }
 
   const bodyObserver = new MutationObserver(ensure)
   bodyObserver.observe(document.body, { childList: true, subtree: true })
-  const unsubscribe = controller.subscribe(syncActive)
   ensure()
 
   return () => {
     window.clearTimeout(unmountedTimer)
     bodyObserver.disconnect()
-    unsubscribe()
-    tabs?.remove()
-    historyHost?.remove()
+    for (const element of document.querySelectorAll<HTMLElement>(HISTORY_HOST_SELECTOR)) element.remove()
     markedButton?.removeAttribute('data-dsh-imagegen-new-session')
     for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_KEEP_ATTR}]`)) {
       element.removeAttribute(SIDEBAR_KEEP_ATTR)
@@ -295,11 +207,11 @@ export function mountSidebarEntry(
 
 /**
  * Internals re-exported for the standalone smoke test: the browser bundle is
- * the only consumer of the entry, so the check has to drive these directly to
- * cover a shell layout the jsdom studio fixture does not render (#20).
+ * the only consumer of these surfaces, so the check has to drive them directly
+ * to cover a shell layout the jsdom studio fixture does not render (#20).
  */
 export const sidebarEntryTestHooks = {
   findSidebarRoot: sidebarRoot,
   findNewSessionButton: newSessionButton,
-  mount: mountSidebarEntry,
+  mount: mountSidebarSurfaces,
 }

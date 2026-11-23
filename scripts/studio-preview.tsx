@@ -4,7 +4,7 @@ import { ImageGenPanel } from '../src/client/ImageGenPanel.tsx'
 import { ImageGenApi } from '../src/client/api.ts'
 import type { ImageGenScope } from '../src/client/settings-scope.ts'
 import { compositeMaskedResult, loadRaster } from '../src/client/image-ops.ts'
-import { mountSidebarEntry } from '../src/client/sidebar-entry.ts'
+import { mountSidebarSurfaces } from '../src/client/sidebar-entry.ts'
 import { ImageGenController } from '../src/client/controller.ts'
 import { ImageGenSettingsCardController, ImageGenSettingsSurface, type ImageGenSettingsCardState } from '../src/client/SettingsCard.tsx'
 import { bindImageGenScope } from '../src/client/settings-scope.ts'
@@ -18,9 +18,9 @@ const scope = { getSnapshot: () => ({ value, writable: true, status: 'ready' }),
 const api = new ImageGenApi()
 function Fixture(): React.JSX.Element {
   const [key, setKey] = useState(0), [visible, setVisible] = useState(true)
-  return <><nav className="fixture-controls"><button onClick={() => setKey(key + 1)}>Remount studio</button><button onClick={() => setVisible(!visible)}>Toggle workspace</button></nav><div style={{ height: 'calc(100% - 36px)', display: visible ? 'block' : 'none' }}><ImageGenPanel key={key} api={api} scope={scope} /></div></>
+  return <><nav className="fixture-controls"><button onClick={() => setKey(key + 1)}>Remount studio</button><button onClick={() => setVisible(!visible)}>Toggle workspace</button></nav><div style={{ height: 'calc(100% - 36px)', display: visible ? 'block' : 'none' }}><ImageGenPanel key={key} api={api} scope={scope} onExit={() => {}} /></div></>
 }
-Object.assign(window, { studioRaster: { compositeMaskedResult, loadRaster }, studioSidebar: { mount: mountSidebarEntry, Controller: ImageGenController } })
+Object.assign(window, { studioRaster: { compositeMaskedResult, loadRaster }, studioSidebar: { mount: mountSidebarSurfaces, Controller: ImageGenController } })
 const root = createRoot(document.getElementById('root')!)
 if (new URLSearchParams(location.search).has('settings')) {
   const face = new ImageGenSettingsCardController(bindImageGenScope()).inject()

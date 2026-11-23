@@ -1,6 +1,7 @@
 /** Actual React panel, history API client and sidebar mount in Chromium. */
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { addPaginatedHistory, startHistoryFixture } from './history-fixture.mjs'
 const require = createRequire(import.meta.url)
@@ -54,18 +55,19 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await historyList.evaluate(element => { element.scrollTop = 0 })
 
-  // #75: use real flex and container-query geometry, not DOM shape alone.
+  // #75: the launcher is a registered panel row, so the studio never competes
+  // with the native New Session action for its track; the history surface is an
+  // overlay inside the workspace region.
   for (const width of [260, 220]) {
     await page.locator('.host_sidebarCol').evaluate((element, value) => { element.style.width = `${value}px` }, width)
     const geometry = await page.evaluate(() => {
-      const tabs = document.querySelector('[data-dsh-imagegen-session-tabs]'), row = document.querySelector('.host_newSessionRow'), button = document.querySelector('.host_newSession')
+      const region = document.querySelector('.host_regionArea'), button = document.querySelector('.host_newSession')
       const style = getComputedStyle(button), rect = button.getBoundingClientRect(), label = button.firstElementChild.lastElementChild.getBoundingClientRect()
       const horizontalChrome = ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth'].reduce((total, name) => total + parseFloat(style[name]), 0)
-      return { directChild: tabs.parentElement.classList.contains('host_root'), above: tabs.getBoundingClientRect().bottom <= row.getBoundingClientRect().top, width: rect.width, innerWidth: rect.width - horizontalChrome, contentWidth: button.firstElementChild.getBoundingClientRect().width, labelFits: label.left >= rect.left && label.right <= rect.right }
+      return { historyHostInRegion: document.querySelector('[data-dsh-imagegen-history-host]')?.parentElement === region, width: rect.width, innerWidth: rect.width - horizontalChrome, contentWidth: button.firstElementChild.getBoundingClientRect().width, labelFits: label.left >= rect.left && label.right <= rect.right }
     })
     console.log('Sidebar geometry:', JSON.stringify({ sidebarWidth: width, ...geometry }))
-    assert.equal(geometry.directChild, true)
-    assert.equal(geometry.above, true)
+    assert.equal(geometry.historyHostInRegion, true, 'the history surface lives in the workspace region')
     assert.ok(geometry.width >= width - 60, JSON.stringify(geometry))
     assert.ok(Math.abs(geometry.innerWidth - geometry.contentWidth) < 1, 'container-query content fills the button content box')
     assert.equal(geometry.labelFits, true, 'the full native action label stays inside the button')
@@ -76,9 +78,9 @@ try {
     const row = document.querySelector('.host_newSessionRow'), wrapper = document.createElement('section')
     row.before(wrapper); wrapper.append(row)
   })
-  await page.waitForFunction(() => document.querySelector('[data-dsh-imagegen-session-tabs]').nextElementSibling?.tagName === 'SECTION')
-  await page.waitForTimeout(50)
-  assert.equal(await page.locator('[data-dsh-imagegen-session-tabs]').count(), 1, 'observer repair stays idempotent')
+  await page.waitForTimeout(80)
+  assert.equal(await page.locator('[data-dsh-imagegen-history-host]').count(), 1, 'observer repair stays idempotent')
+  assert.equal(await page.evaluate(() => document.querySelector('[data-dsh-imagegen-history-host]').parentElement.classList.contains('host_regionArea')), true, 'a rewrapped native action never moves the history surface')
   await page.locator('.host_sidebarCol').evaluate(element => { element.style.width = '260px' })
 
   // #72: clear a live board before hydrating a selected history record.
@@ -160,7 +162,7 @@ try {
   mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true })
   await row('text-b').click()
   await expectImage('text-b')
-  await page.screenshot({ path: new URL('../.test-artifacts/history-sidebar.png', import.meta.url).pathname })
+  await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/history-sidebar.png', import.meta.url)) })
   console.log('PASS history/sidebar Chromium: independent mode results, exact selection, async races, restart, load failure, reset, timestamps, DSH 0.2.2 flex geometry and wrapper repair')
 
   addPaginatedHistory(entries)
@@ -185,7 +187,7 @@ try {
   await archivedRow.waitFor()
   assert.equal(await historyRows.count(), 1)
   assert.equal(await nextPage.isDisabled(), true)
-  await page.screenshot({ path: new URL('../.test-artifacts/history-pagination.png', import.meta.url).pathname })
+  await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/history-pagination.png', import.meta.url)) })
 
   const query = page.getByRole('textbox', { name: '搜索提示词或模型…' })
   await query.fill('Archive record 16')
@@ -224,7 +226,7 @@ try {
   dialog = page.getByRole('dialog', { name: '渠道 · SenseNova relay', exact: true })
   assert.equal(await dialog.getByLabel('图片添加「AI 生成」水印', { exact: true }).isChecked(), false)
   assert.equal(await dialog.getByLabel('上游自动优化提示词', { exact: true }).isChecked(), false)
-  await page.screenshot({ path: new URL('../.test-artifacts/sensenova-settings.png', import.meta.url).pathname })
+  await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/sensenova-settings.png', import.meta.url)) })
   await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   await page.getByRole('button', { name: /OpenAI channel/ }).click()
   dialog = page.getByRole('dialog', { name: '渠道 · OpenAI channel', exact: true })
@@ -232,6 +234,6 @@ try {
   assert.deepEqual(errors, [])
   console.log('PASS channel settings Chromium: capability-aware hints, SenseNova switches, saved HTTP payload, reload persistence and unrelated model isolation')
 } catch (error) {
-  if (page) { mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true }); await page.screenshot({ path: new URL('../.test-artifacts/history-failure.png', import.meta.url).pathname }) }
+  if (page) { mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true }); await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/history-failure.png', import.meta.url)) }) }
   throw error
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)) }

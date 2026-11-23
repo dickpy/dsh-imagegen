@@ -9,7 +9,7 @@ const runtime = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
   : require
 const { chromium } = runtime('playwright')
 
-const css = `:root{--dsw-alias-bg-base:#fff;--dsw-alias-bg-layer-1:#fafafd;--dsw-alias-bg-layer-2:#f2f2f6;--dsw-alias-border-l1:#dddde4;--dsw-alias-border-l2:#c8c8d2;--dsw-alias-label-primary:#25252a;--dsw-alias-label-secondary:#60606b;--dsw-alias-label-tertiary:#85858f;--dsw-alias-brand-primary:#6241cf}*{box-sizing:border-box}html,body,#root{height:100%;margin:0;font:14px system-ui,sans-serif}.conversationE2e{display:flex;height:100%;flex-direction:column;gap:12px;padding:16px}.conversationE2e button{width:max-content;padding:7px 12px}.conversationE2e pre{white-space:pre-wrap}[data-layout-tests]{display:flex;gap:20px}[data-layout-tests]>div{width:180px}[data-host-sidebar]{display:flex;height:240px;flex-direction:column;border:1px solid #aaa}[data-host-top-strip]{flex:none;display:flex;align-items:center;padding-left:16px;background:#eee}[data-host-logo]{height:40px;flex:none;display:flex;align-items:center;padding-left:12px}[data-dsh-imagegen-session-tabs],[class*=regionArea],[class*=footArea],[data-host-hidden]{min-height:32px;flex:none;padding:4px;border-bottom:1px solid #ddd}`
+const css = `:root{--dsw-alias-bg-base:#fff;--dsw-alias-bg-layer-1:#fafafd;--dsw-alias-bg-layer-2:#f2f2f6;--dsw-alias-border-l1:#dddde4;--dsw-alias-border-l2:#c8c8d2;--dsw-alias-label-primary:#25252a;--dsw-alias-label-secondary:#60606b;--dsw-alias-label-tertiary:#85858f;--dsw-alias-brand-primary:#6241cf}*{box-sizing:border-box}html,body,#root{height:100%;margin:0;font:14px system-ui,sans-serif}.conversationE2e{display:flex;height:100%;flex-direction:column;gap:12px;padding:16px}.conversationE2e button{width:max-content;padding:7px 12px}.conversationE2e pre{white-space:pre-wrap}[data-layout-tests]{display:flex;gap:20px}[data-layout-tests]>div{width:180px}[data-host-sidebar]{display:flex;height:240px;flex-direction:column;border:1px solid #aaa}[data-host-top-strip]{flex:none;display:flex;align-items:center;padding-left:16px;background:#eee}[data-host-logo]{height:40px;flex:none;display:flex;align-items:center;padding-left:12px}[class*=panelList],[class*=regionArea],[class*=footArea],[data-host-hidden]{min-height:32px;flex:none;padding:4px;border-bottom:1px solid #ddd}`
 
 const server = createServer((req, res) => {
   if (req.url === '/preview.js') {
@@ -82,7 +82,8 @@ try {
     return [...document.querySelectorAll('[data-layout]')].map(layout => {
       const strip = layout.querySelector('[data-host-top-strip]')
       const logo = layout.querySelector('[data-host-logo]')
-      const tabs = layout.querySelector('[data-dsh-imagegen-session-tabs]')
+      const list = layout.querySelector('.host_panelList')
+      const otherPanel = layout.querySelector('[data-host-panel]')
       const region = layout.querySelector('[class*=regionArea]')
       const footer = layout.querySelector('[class*=footArea]')
       const hidden = layout.querySelector('[data-host-hidden]')
@@ -93,7 +94,8 @@ try {
         logoDisplay: getComputedStyle(logo).display,
         logoTop: logo.getBoundingClientRect().top,
         stripBottom: strip?.getBoundingClientRect().bottom ?? 0,
-        tabsDisplay: getComputedStyle(tabs).display,
+        listDisplay: getComputedStyle(list).display,
+        otherPanelDisplay: getComputedStyle(otherPanel).display,
         regionDisplay: getComputedStyle(region).display,
         footerDisplay: getComputedStyle(footer).display,
         unrelatedDisplay: getComputedStyle(hidden).display,
@@ -103,7 +105,8 @@ try {
   assert.deepEqual(layouts.map(item => item.platform), ['web', 'windows', 'macos'])
   for (const layout of layouts) {
     assert.notEqual(layout.logoDisplay, 'none', `${layout.platform}: logo remains visible`)
-    assert.notEqual(layout.tabsDisplay, 'none', `${layout.platform}: tab switcher remains visible`)
+    assert.notEqual(layout.listDisplay, 'none', `${layout.platform}: the panel list stays visible in the studio`)
+    assert.notEqual(layout.otherPanelDisplay, 'none', `${layout.platform}: the launcher's sibling panel rows stay reachable`)
     assert.notEqual(layout.regionDisplay, 'none', `${layout.platform}: workspace region remains visible`)
     assert.notEqual(layout.footerDisplay, 'none', `${layout.platform}: footer remains visible`)
     assert.equal(layout.unrelatedDisplay, 'none', `${layout.platform}: unrelated sidebar entry remains hidden`)
@@ -115,7 +118,7 @@ try {
     if (layout.platform === 'windows') assert.notEqual(layout.stripDisplay, 'none', 'a Windows title strip, if present, remains rendered')
   }
   assert.deepEqual(errors, [])
-  console.log('PASS conversation regression: no implicit target; current and explicit target attach correctly; Web/Windows/macOS sidebar CSS preserves topStrip and hides unrelated rows')
+  console.log('PASS conversation regression: no implicit target; current and explicit target attach correctly; Web/Windows/macOS sidebar CSS preserves topStrip, the panel list and the workspace region')
 } finally {
   await browser?.close()
   await new Promise(resolve => server.close(resolve))

@@ -24,7 +24,8 @@ import { ImageGenController } from './controller.ts'
 import { tt, applyHostLocale } from './helpers.ts'
 import { en, ru, zh, type ImageGenKey } from './locales.ts'
 import { mountPanel } from './mount.tsx'
-import { mountSidebarEntry } from './sidebar-entry.ts'
+import { mountSidebarSurfaces } from './sidebar-entry.ts'
+import { ImageGenPanelEntry, ImageGenPanelIcon, IMAGEGEN_PANEL_ID, setSidebarPanelRuntime } from './sidebar-panel.tsx'
 import { ImageGenSettingsSection, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { ImageGenPluginsTab } from './PluginsTab.tsx'
 import { IMAGE_GEN_SECTION_ID, OPEN_IMAGE_GEN_CONFIG_EVENT } from './config-entry.tsx'
@@ -41,7 +42,7 @@ import { CLIENT_BOOT_API, PLUGIN_VERSION } from '../protocol.ts'
  * the difference - the host keeps the last one and support can read it back.
  */
 const bootReport = {
-  slots: ['settings.section', 'plugins.tab', 'settings.plugins.tab'],
+  slots: ['settings.section', 'plugins.bundle.config', 'sidebar.panellist', 'main'],
   registered: [] as string[],
   errors: [] as string[],
 }
@@ -81,6 +82,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** Image-generation results render their durable image blocks inline. */
     'tool.call.toolview': { kind: 'keyed'; scope: 'session'; owner: ImageToolViewOwnerProps }
+    /**
+     * Global panel launchers. Declared here because this bundle does not import
+     * ui-sidebar's types: the contract is a list whose rows render the
+     * registrant's icon at the row's own size and report selection. Every
+     * sidebar implementation (shipped shell, Islands skin, …) reads this slot.
+     */
+    'sidebar.panellist': { kind: 'list'; scope: 'root'; owner: { size: number; active: boolean } }
+    /** The keyed center-column slot the launcher's shim body registers into. */
+    'main': { kind: 'keyed'; scope: 'root' }
   }
 }
 
@@ -252,7 +262,7 @@ export function apply(ctx: ClientContext): void {
     return () => { window.removeEventListener(OPEN_IMAGE_GEN_CONFIG_EVENT, onOpenConfig) }
   }, 'dsh-imagegen: open settings section')
 
-  // The sidebar entry and studio mount once the settings scope settles; while
+  // The sidebar launcher and studio mount once the settings scope settles; while
   // the scope is still loading, the composition default is unknown, so nothing
   // mounts yet. Only an unavailable scope falls back to the default (enabled).
   let uiDisposer: (() => void) | undefined
@@ -272,6 +282,52 @@ export function apply(ctx: ClientContext): void {
       }
     },
   }
+  /** The layout service's outward face, read lazily (it may mount later). */
+  interface LayoutFace {
+    selectPanel?: (panelId: null) => void
+    panelInfo?: {
+      getSnapshot(): { activePanelId: string | null }
+      subscribe(listener: () => void): () => void
+    }
+  }
+
+  /**
+   * Read the layout service without requiring it: older shells may not provide
+   * it, and this plugin must keep working when they do not.
+   * @returns the service face, or undefined.
+   */
+  const layoutFace = (): LayoutFace | undefined => {
+    try {
+      return (ctx as unknown as { get(name: string): unknown }).get('layout') as LayoutFace | undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Close the studio when the shell selects another global panel: the
+   * Conversation leaves the center column and the studio's chat half goes with
+   * it. The launcher's own id is not "another panel" — it is the shim that hands
+   * the column straight back.
+   * @param target - the studio's open/closed owner.
+   * @returns disposer for the selection subscription.
+   */
+  const watchPanelSelection = (target: ImageGenController): (() => void) => {
+    const panelInfo = layoutFace()?.panelInfo
+    if (panelInfo === undefined) return () => {}
+    const sync = (): void => {
+      const active = panelInfo.getSnapshot().activePanelId
+      if (active !== null && active !== IMAGEGEN_PANEL_ID) target.close()
+    }
+    sync()
+    try {
+      return panelInfo.subscribe(sync)
+    } catch (error) {
+      console.warn('[dsh-imagegen] global panel watch unavailable:', error)
+      return () => {}
+    }
+  }
+
   const mountUi = (): void => {
     if (uiLeaseReleased) return
     if (uiDisposer !== undefined) return
@@ -281,40 +337,54 @@ export function apply(ctx: ClientContext): void {
     const conversation = ctx.get('conversation') as ConversationService | undefined
     const disposers: Array<() => void> = []
     try {
-      disposers.push(mountSidebarEntry(
+      // The launcher is a registered global panel, not an injected row: every
+      // sidebar implementation (shipped shell, Islands skin, …) builds its
+      // navigation from `sidebar.panellist`. Its `main` body is a shim that
+      // toggles the studio and hands the center column back to the Conversation,
+      // because the studio shares that column with the native chat.
+      const layout = layoutFace()
+      setSidebarPanelRuntime({
         controller,
-        tt('entry.session'),
-        tt('entry.sessionTooltip'),
-        tt('entry.image'),
-        tt('entry.tooltip'),
-      ))
-      disposers.push(mountPanel(controller, api, scope, { sessions, conversation }))
-      // The imperative sidebar tabs render their labels once; relabel them on
-      // every DSH language switch so the entry follows the interface too.
-      disposers.push(ctx.locale.subscribe(() => {
-        const root = document.querySelector('[data-dsh-imagegen-sidebar-root]')
-        if (root === null) return
-        const labels: Array<[string, string, string]> = [
-          ['session', tt('entry.session'), tt('entry.sessionTooltip')],
-          ['image', tt('entry.image'), tt('entry.tooltip')],
-        ]
-        for (const [tab, label, tooltip] of labels) {
-          const button = root.querySelector<HTMLButtonElement>(`[data-dsh-imagegen-tab="${tab}"]`)
-          if (button === null) continue
-          button.setAttribute('aria-label', label)
-          button.setAttribute('title', tooltip)
-          const labelSpan = button.querySelector('span:nth-child(2)')
-          if (labelSpan !== null) labelSpan.textContent = label
-        }
-        const tablist = root.querySelector<HTMLDivElement>('[role="tablist"][data-dsh-imagegen-session-tabs]')
-        tablist?.setAttribute('aria-label', tt('entry.tooltip'))
+        selectConversation: () => {
+          try {
+            layout?.selectPanel?.call(layout, null)
+          } catch (error) {
+            console.warn('[dsh-imagegen] could not return the main panel to the conversation:', error)
+          }
+        },
+      })
+      disposers.push(ctx.slots.inject('sidebar.panellist', () => {
+        bootReport.registered.push('sidebar.panellist')
+        return ctx.slots.register({
+          name: 'sidebar.panellist',
+          id: IMAGEGEN_PANEL_ID,
+          order: 20,
+          locale: NS,
+          label: () => tt('entry.image'),
+        }, ImageGenPanelIcon)
       }))
+      disposers.push(ctx.slots.inject('main', () => {
+        bootReport.registered.push('main')
+        return ctx.slots.register({
+          name: 'main',
+          key: IMAGEGEN_PANEL_ID,
+          locale: NS,
+        }, ImageGenPanelEntry)
+      }))
+      // Another global panel (插件 / 自动化任务) takes the Conversation out of the
+      // center column, so the studio must close instead of keeping a chat-less
+      // takeover. Read the layout's own selection: the panel id we are looking
+      // at is the authoritative one, not a DOM marker.
+      disposers.push(watchPanelSelection(controller))
+      disposers.push(mountSidebarSurfaces())
+      disposers.push(mountPanel(controller, api, scope, { sessions, conversation }))
     } catch (error) {
       // DOM failures degrade the studio, never the GUI.
       console.warn('[dsh-imagegen] mount failed:', error)
     }
     uiDisposer = () => {
       for (const dispose of disposers.splice(0)) dispose()
+      setSidebarPanelRuntime(undefined)
       uiDisposer = undefined
     }
   }

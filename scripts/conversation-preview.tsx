@@ -88,7 +88,7 @@ function Harness(): React.JSX.Element {
         <div data-layout="web">
           <div data-dsh-imagegen-sidebar-root data-host-sidebar>
             <div className="host_logoRow" data-host-logo>Web logo</div>
-            <div data-dsh-imagegen-session-tabs>Session / Image</div>
+            <nav className="host_panelList"><button type="button" className="host_panelRow" data-host-panel>插件</button><button type="button" className="host_panelRow" data-host-panel>自动化任务</button></nav>
             <div className="host_regionArea">Workspaces</div>
             <div className="host_footArea">Account</div>
             <div className="host_pluginEntry" data-host-hidden>Other plugin</div>
@@ -98,7 +98,7 @@ function Harness(): React.JSX.Element {
           <div data-dsh-imagegen-sidebar-root data-host-sidebar>
             <div className="host_topStrip" data-host-top-strip style={{ height: 40 }}>Windows title strip</div>
             <div className="host_logoRow" data-host-logo>Windows logo</div>
-            <div data-dsh-imagegen-session-tabs>Session / Image</div>
+            <nav className="host_panelList"><button type="button" className="host_panelRow" data-host-panel>插件</button><button type="button" className="host_panelRow" data-host-panel>自动化任务</button></nav>
             <div className="host_regionArea">Workspaces</div>
             <div className="host_footArea">Account</div>
             <div className="host_pluginEntry" data-host-hidden>Other plugin</div>
@@ -108,7 +108,7 @@ function Harness(): React.JSX.Element {
           <div data-dsh-imagegen-sidebar-root data-host-sidebar>
             <div className="host_topStrip" data-host-top-strip style={{ height: 52 }}>Traffic lights and collapse control</div>
             <div className="host_logoRow" data-host-logo>macOS logo</div>
-            <div data-dsh-imagegen-session-tabs>Session / Image</div>
+            <nav className="host_panelList"><button type="button" className="host_panelRow" data-host-panel>插件</button><button type="button" className="host_panelRow" data-host-panel>自动化任务</button></nav>
             <div className="host_regionArea">Workspaces</div>
             <div className="host_footArea">Account</div>
             <div className="host_pluginEntry" data-host-hidden>Other plugin</div>

@@ -538,8 +538,15 @@ export function ImageGenPanel(props: {
   conversation?: ConversationService
   /** The panel is visible; inactive panels keep state but defer optional work. */
   active?: boolean
+  /**
+   * Return to the conversation. The studio shares the center column with the
+   * native chat, so leaving it is the plugin's own action; every sidebar
+   * implementation (shipped shell, skins) exposes the launcher, but an explicit
+   * control inside the studio is what users look for first.
+   */
+  onExit?: () => void
 }) {
-  const { api, scope, sessions, conversation, active = true } = props
+  const { api, scope, sessions, conversation, active = true, onExit } = props
   const config = useConfig(scope)
   // The plugin language follows the DSH interface (bridged from ctx.locale);
   // this tick re-renders the tree so every tt() switches live — the template
@@ -2561,6 +2568,18 @@ export function ImageGenPanel(props: {
     <div className={css.panel} data-dsh-imagegen-panel data-imagegen-private={privacyMode ? 'true' : undefined}>
       <header className={css.panelHeader} data-dsh-imagegen-panel-header>
         <span className={css.panelHeading}>
+          {onExit !== undefined ? (
+            <button
+              type="button"
+              className={css.exitButton}
+              data-imagegen-exit=""
+              aria-label={tt('panel.exit')}
+              title={tt('panel.exit')}
+              onClick={onExit}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5" /></svg>
+            </button>
+          ) : null}
           <h2 className={css.panelTitle}>{tt('panel.title')}</h2>
           <a
             className={css.githubLink}

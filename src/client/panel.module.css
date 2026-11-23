@@ -186,21 +186,15 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
   display: none !important;
 }
 
-/* Keep the Session/Image switcher and the native New Session action visible,
-   including shells that wrap the action in a container. Other plugin entries
-   between the switcher and workspace region stay hidden in the studio. */
+/* Keep the native New Session action and the global panel list visible,
+   including shells that wrap the action in a container. The launcher row lives
+   in that list now, and the history surface sits underneath it. */
 /* 0.2.x nests the workspace/session region inside its own scroll wrappers
    (scrollRegion > scrollArea > regionArea), so those wrappers are marked with
    data-dsh-imagegen-sidebar-keep at mount time instead of being named here:
    the allow-list must not hide the ancestor chain that carries the history
    surface, or the sidebar goes blank (the 0.2.x regression this guards). */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh-imagegen-session-tabs]):not([data-dsh-imagegen-new-session]):not(:has([data-dsh-imagegen-new-session])):not([data-dsh-imagegen-sidebar-keep]):not([class*='logoRow']):not([class*='regionArea']):not([class*='footArea']):not([class*='topStrip']) {
-  display: none !important;
-}
-
-/* Other panels' sidebar navigation rows (插件 / 素材 / 自动化 ...) step aside in
-   the studio: the workspace region underneath them is the history surface. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] nav[class*='panelList'] {
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh-imagegen-new-session]):not(:has([data-dsh-imagegen-new-session])):not([data-dsh-imagegen-sidebar-keep]):not([class*='logoRow']):not([class*='regionArea']):not([class*='footArea']):not([class*='topStrip']):not([class*='panelList']) {
   display: none !important;
 }
 
@@ -250,178 +244,20 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
   padding-top: max(0px, calc(var(--dsh-frame-top-clearance, 0px) - 14px));
 }
 
-/* --- sidebar entry row ------------------------------------------------------- */
+/* --- launcher icon ----------------------------------------------------------
+ * The sidebar row itself belongs to the shell (or the active skin): both render
+ * the icon registered in `sidebar.panellist` and own its size, hover chrome and
+ * label. The only thing this stylesheet adds is the lit state, because the
+ * studio is not a `main` panel the shell could mark as selected. */
 
-.entry {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 0 12px;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.entry:hover {
-  background: var(--dsw-specific-sidebar-nav-item-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.entry[data-active] {
-  background: var(--dsw-specific-sidebar-nav-item-active);
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-}
-
-.entryIcon {
+.panelIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
 }
 
-.entryLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Session + Image Generation switcher: a quiet two-segment control that reads
- * as part of the shell sidebar. One thumb slides between the segments (surface
- * + hairline ring + soft shadow) instead of a filled shell token, so it stays
- * legible on wallpaper skins too. */
-.sessionTabs {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 2px;
-  width: 100%;
-  min-width: 0;
-  padding: 3px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 84%, transparent);
-}
-
-.sessionTabs::before {
-  content: '';
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: calc(50% - 4px);
-  height: calc(100% - 6px);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  box-shadow:
-    0 1px 2px rgb(15 18 24 / 12%),
-    0 0 0 1px color-mix(in srgb, var(--dsw-alias-border-l2) 72%, transparent);
-  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
-  pointer-events: none;
-}
-
-.sessionTabs[data-active-tab='image']::before {
-  transform: translateX(calc(100% + 2px));
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sessionTabs::before { transition: none; }
-}
-
-.sessionTab {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 8px;
-  color: var(--dsw-alias-label-secondary);
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.sessionTab:hover:not([data-active]) {
-  color: var(--dsw-alias-label-primary);
-  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 62%, transparent);
-}
-
-.sessionTab[data-active] {
-  color: var(--dsw-alias-label-primary);
-}
-
-.sessionTab:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
-}
-
-/* Collapsed sidebar rail: the injected tabs become plain stacked icon
- * buttons that match the shell's native rail entries. */
-[data-sidebar-collapsed] .sessionTabs {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: auto;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-[data-sidebar-collapsed] .sessionTabs::before {
-  display: none;
-}
-
-[data-sidebar-collapsed] .sessionTab {
-  width: 34px;
-  height: 34px;
-  gap: 0;
-  padding: 0;
-  border-radius: 10px;
-  font-size: 0;
-}
-
-[data-sidebar-collapsed] .sessionTab[data-active] {
-  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);
-}
-
-[data-sidebar-collapsed] .sessionTabLabel {
-  display: none;
-}
-
-.sessionTabIcon {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  color: var(--dsw-alias-label-tertiary);
-  transition: color 0.15s ease;
-}
-
-.sessionTab:hover:not([data-active]) .sessionTabIcon {
-  color: var(--dsw-alias-label-secondary);
-}
-
-.sessionTab[data-active] .sessionTabIcon {
+.panelIcon[data-active] {
   color: var(--dsw-alias-brand-primary);
-}
-
-.sessionTabLabel {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* The history surface occupies the shell's workspace/session region while
@@ -460,17 +296,6 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 }
 
 [data-dsh-frame][data-sidebar-collapsed] .sidebarHistoryHost {
-  display: none;
-}
-
-/* Collapsed rail: icon-only, centered, matching the shell's 56px rail. */
-[data-dsh-frame][data-sidebar-collapsed] .entry {
-  justify-content: center;
-  padding: 0;
-  width: 100%;
-}
-
-[data-dsh-frame][data-sidebar-collapsed] .entryLabel {
   display: none;
 }
 
@@ -554,6 +379,35 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 .githubLink:hover {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-2);
+}
+
+/* Return to the conversation: the studio shares the center column with the
+   native chat, so leaving it is an explicit control rather than a shell tab. */
+.exitButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.exitButton:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.exitButton:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary));
+  outline-offset: 1px;
 }
 
 /* --- connection status and update notice -------------------------------------- */
