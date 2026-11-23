@@ -36,12 +36,98 @@ export interface UpstreamConfig {
 export class ImageGenError extends Error {
   /** Stable wire code. */
   readonly code: string
+  /** HTTP status when the failure came from a response; drives retry decisions. */
+  readonly status?: number
 
-  constructor(message: string, code = 'generate-failed') {
+  constructor(message: string, code = 'generate-failed', status?: number) {
     super(message)
     this.name = 'ImageGenError'
     this.code = code
+    this.status = status
   }
+}
+
+/**
+ * Upstream responses worth a transparent second attempt: the request never
+ * reached the model (connection refused, gateway hiccup, origin overload,
+ * Cloudflare edge error) or the gateway flagged temporary trouble. Auth,
+ * validation and content-policy rejections are final — retrying them would
+ * just burn quota. A 5xx can in theory follow a generation the origin already
+ * finished; that residual double-bill risk is accepted for synchronous calls
+ * (the user still gets an image), but polling is retried in place instead of
+ * re-submitting the task (see pollAsyncTask).
+ */
+const TRANSIENT_RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524])
+
+/** One initial attempt plus this many retries, with a growing sleep between. */
+const TRANSIENT_RETRY_MAX_ATTEMPTS = 3
+const TRANSIENT_RETRY_BASE_DELAY_MS = 1_500
+
+/**
+ * Re-run one upstream call while the failure looks transient. Every failed
+ * attempt has already been recorded by the request site's diagnostics, so the
+ * panel shows each attempt; the retry only decides how many attempts a caller
+ * gets before the task fails. The caller's cancellation always wins: an
+ * aborted signal rethrows the in-flight failure instead of sleeping past it.
+ */
+async function withTransientRetry<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await run()
+    } catch (error) {
+      const retryable = error instanceof ImageGenError
+        && signal?.aborted !== true
+        && (error.code === 'upstream-unreachable'
+          || (error.status !== undefined && TRANSIENT_RETRY_STATUSES.has(error.status)))
+      if (!retryable || attempt >= TRANSIENT_RETRY_MAX_ATTEMPTS) throw error
+      await waitForPoll(TRANSIENT_RETRY_BASE_DELAY_MS * attempt, signal)
+    }
+  }
+}
+
+/**
+ * Flatten the parallel single-image requests behind one task. Every fulfilled
+ * batch keeps its images (compacted in order — the images are independent
+ * variations of the same prompt, so a surviving image may take an earlier
+ * position); the task only fails when nothing succeeded. A partial result
+ * stays a completed task and names the failures in `partialError`, which the
+ * board renders on the positions that lost their request.
+ */
+function fanOutResult(settled: Array<PromiseSettledResult<GeneratedImage[]>>, requested: number): GenerateResult {
+  const images: GeneratedImage[] = []
+  let firstFailure: ImageGenError | undefined
+  let firstReason: unknown
+  let failedCount = 0
+  for (const outcome of settled) {
+    if (outcome.status === 'fulfilled') images.push(...outcome.value)
+    else {
+      failedCount += 1
+      if (firstReason === undefined) firstReason = outcome.reason
+      if (firstFailure === undefined && outcome.reason instanceof ImageGenError) firstFailure = outcome.reason
+    }
+  }
+  if (images.length === 0) {
+    if (firstFailure !== undefined) throw firstFailure
+    throw firstReason instanceof Error ? firstReason : new ImageGenError('上游并行请求全部失败', 'generate-failed')
+  }
+  if (failedCount > 0) {
+    return { images, partialError: `${failedCount}/${requested} 张图片生成失败：${firstFailure?.message ?? '未知错误'}` }
+  }
+  return { images }
+}
+
+/**
+ * Name a short result even when no fan-out request rejected: dall-e-3 and the
+ * classic Qwen series return a single image by design, and some gateways
+ * silently drop extras. The board creates one card per requested image (capped
+ * at 4); without this the empty positions would render as unexplained
+ * failures.
+ */
+function finalizeResult(result: GenerateResult, request: GenerateRequest): GenerateResult {
+  if (result.partialError !== undefined) return result
+  const expected = clampCount(request.n)
+  if (result.images.length >= expected) return result
+  return { ...result, partialError: `该模型本次仅返回 ${result.images.length} 张图片（请求 ${expected} 张）` }
 }
 
 /** Total budget for the upstream generation call (image models are slow). */
@@ -710,9 +796,8 @@ function chatErrorTextOf(payload: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-const ASYNC_PENDING_STATUSES = new Set(['submitted', 'pending', 'processing', 'running', 'in_progress', 'queued'])
 const ASYNC_COMPLETED_STATUSES = new Set(['completed', 'succeeded', 'succeed', 'success', 'done'])
-const ASYNC_FAILED_STATUSES = new Set(['failed', 'failure', 'cancelled', 'canceled', 'error'])
+const ASYNC_FAILED_STATUSES = new Set(['failed', 'failure', 'cancelled', 'canceled', 'error', 'expired', 'timed_out', 'timeout', 'stopped', 'revoked'])
 const ASYNC_POLL_MAX_MS = 240_000
 const ASYNC_POLL_REQUEST_TIMEOUT_MS = 30_000
 
@@ -764,6 +849,17 @@ function waitForPoll(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
+ * Whether one failed poll deserves another poll. These never escape
+ * pollAsyncTask: re-submitting the generation would bill a task the provider
+ * already accepted. The loop's own deadline bounds the retries.
+ */
+function isTransientPollFailure(error: ImageGenError): boolean {
+  return error.code === 'upstream-unreachable'
+    || error.code === 'upstream-timeout'
+    || (error.status !== undefined && TRANSIENT_RETRY_STATUSES.has(error.status))
+}
+
+/**
  * Poll an asynchronous provider task until it yields image records (including ModelScope response fields).
  * The total deadline is shared by every poll and the final image downloads;
  * local task cancellation propagates through every request and sleep.
@@ -777,6 +873,11 @@ async function pollAsyncTask(
 ): Promise<Array<Record<string, unknown>>> {
   const deadline = Date.now() + ASYNC_POLL_MAX_MS
   let delay = 1000
+  // The last status word (and poll error) the provider answered with, reported
+  // when the deadline runs out so the user can tell "still generating" from
+  // "stuck" or "network down".
+  let lastStatus = ''
+  let lastPollError = ''
   const pollUrl = `${baseUrl}/tasks/${encodeURIComponent(taskId)}`
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now()
@@ -819,12 +920,12 @@ async function pollAsyncTask(
       } catch (error) {
         const failure = isBudgetTimeout(error)
           ? new ImageGenError('上游异步任务轮询超时', 'upstream-timeout')
-          : new ImageGenError(`上游任务接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+          : new ImageGenError(`上游任务接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid', response.status)
         recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
         throw failure
       }
       if (!response.ok || payload === null || typeof payload !== 'object') {
-        const failure = new ImageGenError(asyncErrorMessage(payload, `上游任务轮询失败（HTTP ${response.status}）`), 'upstream-rejected')
+        const failure = new ImageGenError(asyncErrorMessage(payload, `上游任务轮询失败（HTTP ${response.status}）`), 'upstream-rejected', response.status)
         recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
         throw failure
       }
@@ -835,8 +936,9 @@ async function pollAsyncTask(
         ? ((statusRecord as Record<string, unknown>).task_status ?? (statusRecord as Record<string, unknown>).status)
         : undefined
       const status = typeof statusValue === 'string' ? statusValue.toLowerCase() : ''
+      if (status !== '') lastStatus = status
       if (ASYNC_FAILED_STATUSES.has(status)) {
-        throw new ImageGenError(asyncErrorMessage(payload, `上游异步任务失败（${status || 'unknown'}）`), 'upstream-rejected')
+        throw new ImageGenError(asyncErrorMessage(payload, `上游异步任务失败（${status || 'unknown'}）`), 'upstream-rejected', response.status)
       }
       const nested = statusRecord !== null && typeof statusRecord === 'object' ? statusRecord as Record<string, unknown> : record
       const result = nested.result ?? (nested.output !== null && typeof nested.output === 'object' ? (nested.output as Record<string, unknown>).result : undefined) ?? record.result
@@ -852,16 +954,24 @@ async function pollAsyncTask(
         if (items.length > 0) return items
         if (ASYNC_COMPLETED_STATUSES.has(status)) throw new ImageGenError('上游异步任务完成但没有图片结果', 'upstream-empty')
       }
-      if (status !== '' && !ASYNC_PENDING_STATUSES.has(status) && !ASYNC_COMPLETED_STATUSES.has(status)) {
-        throw new ImageGenError(`上游返回了未知异步任务状态：${status}`, 'upstream-invalid')
-      }
+      // A status word outside the known sets is treated as "still working":
+      // providers invent their own vocabulary, and aborting the poll here
+      // would abandon a paid task that upstream is still running. The deadline
+      // below is the bound; only explicit failure words fail early.
+    } catch (error) {
+      // A failed poll is not a failed task: the provider already accepted (and
+      // billed) the job, so handing this to the outer retry wrapper would
+      // re-submit it. Transient poll trouble is absorbed here under the same
+      // 240 s deadline; only final classifications escape to the task.
+      if (!(error instanceof ImageGenError) || signal?.aborted === true || !isTransientPollFailure(error)) throw error
+      lastPollError = error.message
     } finally {
       budget.dispose()
     }
     await waitForPoll(Math.min(delay, Math.max(1, deadline - Date.now())), signal)
     delay = Math.min(5000, delay * 2)
   }
-  throw new ImageGenError('上游异步任务轮询超时（240 秒）', 'upstream-timeout')
+  throw new ImageGenError(`上游异步任务轮询超时（240 秒${lastStatus === '' ? '' : `，最后状态：${lastStatus}`}${lastPollError === '' ? '' : `，最后错误：${lastPollError}`}）`, 'upstream-timeout')
 }
 
 /**
@@ -1029,7 +1139,7 @@ async function requestOneImage(
         ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
         : signal?.aborted === true
           ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid', response.status)
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
     }
@@ -1040,6 +1150,7 @@ async function requestOneImage(
       const failure = new ImageGenError(
         `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
         'upstream-rejected',
+        response.status,
       )
       recordFailure(context, failure, {
         status: response.status,
@@ -1158,7 +1269,7 @@ async function generateQwenImage(
         ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
         : options.signal?.aborted === true
           ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid', response.status)
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
     }
@@ -1166,6 +1277,7 @@ async function generateQwenImage(
       const failure = new ImageGenError(
         `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
         'upstream-rejected',
+        response.status,
       )
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
@@ -1289,7 +1401,7 @@ async function generateMiniMaxImage(
         ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
         : options.signal?.aborted === true
           ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid', response.status)
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
     }
@@ -1297,6 +1409,7 @@ async function generateMiniMaxImage(
       const failure = new ImageGenError(
         `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
         'upstream-rejected',
+        response.status,
       )
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
@@ -1313,7 +1426,7 @@ async function generateMiniMaxImage(
         )
       }
     }
-    if (!response.ok) throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected')
+    if (!response.ok) throw new ImageGenError(upstreamMessage(payload, response.status), 'upstream-rejected', response.status)
 
     const data = record.data
     const b64s = data !== null && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).image_base64)
@@ -1407,7 +1520,7 @@ async function requestOneChatImage(
         ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
         : signal?.aborted === true
           ? new ImageGenError('任务已取消', 'cancelled')
-          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid')
+          : new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid', response.status)
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
     }
@@ -1415,6 +1528,7 @@ async function requestOneChatImage(
       const failure = new ImageGenError(
         `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
         'upstream-rejected',
+        response.status,
       )
       recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
       throw failure
@@ -1439,12 +1553,12 @@ async function generateChatCompletionImages(
   baseUrl: string,
   request: GenerateRequest,
   signal?: AbortSignal,
-): Promise<GeneratedImage[]> {
+): Promise<GenerateResult> {
   const count = effectiveCount(request)
-  const batches = await Promise.all(
-    Array.from({ length: count }, () => requestOneChatImage(upstream, baseUrl, request, signal)),
+  const settled = await Promise.allSettled(
+    Array.from({ length: count }, () => withTransientRetry(() => requestOneChatImage(upstream, baseUrl, request, signal), signal)),
   )
-  return batches.flat()
+  return fanOutResult(settled, count)
 }
 
 /**
@@ -1462,7 +1576,7 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
     throw new ImageGenError('当前模型或渠道协议不支持原生遮罩，请选择支持 images/edits 遮罩的 GPT Image 等 API 模型', 'mask-unsupported')
   }
   if (resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions') {
-    return { images: await generateChatCompletionImages(upstream, baseUrl, request, options.signal) }
+    return finalizeResult(await generateChatCompletionImages(upstream, baseUrl, request, options.signal), request)
   }
   // A complete URL is an explicit escape hatch to the exact provider endpoint:
   // use the generic OpenAI-compatible request shape instead of native family
@@ -1470,18 +1584,22 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   if (upstream.apiUrlFull !== true) {
     // ModelScope exposes Qwen models through the OpenAI-compatible image API,
     // not DashScope's native multimodal-generation contract.
-    if (!isModelScopeInference(baseUrl) && isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
-    if (isMiniMaxImage(wireModel(request))) return generateMiniMaxImage(baseUrl, upstream, request, options)
+    if (!isModelScopeInference(baseUrl) && isQwenImage(wireModel(request))) {
+      return finalizeResult(await withTransientRetry(() => generateQwenImage(baseUrl, upstream, request, options), options.signal), request)
+    }
+    if (isMiniMaxImage(wireModel(request))) {
+      return finalizeResult(await withTransientRetry(() => generateMiniMaxImage(baseUrl, upstream, request, options), options.signal), request)
+    }
     if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
       throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
     }
   }
   const params = effectiveParams(request, upstream)
   const count = effectiveCount(request)
-  const batches = await Promise.all(
-    Array.from({ length: count }, () => requestOneImage(baseUrl, upstream, request, params, options.signal)),
+  const settled = await Promise.allSettled(
+    Array.from({ length: count }, () => withTransientRetry(() => requestOneImage(baseUrl, upstream, request, params, options.signal), options.signal)),
   )
-  return { images: batches.flat() }
+  return finalizeResult(fanOutResult(settled, count), request)
 }
 
 /**

@@ -72,7 +72,11 @@ export function StudioResults(props: {
   const pending = props.run.slots.some(slot => {
     const task = byId.get(slot.taskId)
     const status = task?.status ?? slot.status ?? 'queued'
-    return status === 'queued' || status === 'running' || (status === 'completed' && task?.result?.images[slot.imageIndex] === undefined)
+    // The board clock runs while an image can still arrive: active tasks, or a
+    // completed task whose result has not been hydrated yet. A completed task
+    // with a loaded result but no image at this index lost that parallel
+    // request (partial fan-out) — it is rendered as a failed card below.
+    return status === 'queued' || status === 'running' || (status === 'completed' && task?.result === undefined)
   })
   const now = useBoardClock(pending)
 
@@ -82,10 +86,12 @@ export function StudioResults(props: {
     const image = task?.result?.images[slot.imageIndex]
     const previous = slot.previous === undefined ? undefined : byId.get(slot.previous.taskId)?.result?.images[slot.previous.imageIndex]
     const display = image ?? previous
-    const waiting = status === 'queued' || status === 'running' || (status === 'completed' && image === undefined)
+    const missing = status === 'completed' && task?.result !== undefined && image === undefined
+    const waiting = status === 'queued' || status === 'running'
+      || (status === 'completed' && image === undefined && task?.result === undefined)
     const failed = !waiting && (status === 'failed' || status === 'cancelled')
     const channel = task?.request.channel ?? image?.channel ?? props.groups.find(group => group.id === slot.channelId)?.name
-    return { slot, task, status, display, waiting, failed, channel }
+    return { slot, task, status, display, waiting, failed, missing, channel }
   })
 
   /** Only finished pictures reach the lightbox, in board order. */
@@ -109,7 +115,7 @@ export function StudioResults(props: {
   }
 
   const renderCard = (cardIndex: number): React.JSX.Element => {
-    const { slot, task, status, display, waiting, failed, channel } = cards[cardIndex]!
+    const { slot, task, status, display, waiting, failed, missing, channel } = cards[cardIndex]!
     const elapsed = task?.startedAt === undefined ? 0 : Math.max(0, Math.floor((now - task.startedAt) / 1000))
     return <figure key={slot.id} className={css.card} data-result-card="" data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
       <div className={css.media} data-empty={display === undefined ? '' : undefined} data-failed={failed ? '' : undefined}>
@@ -173,6 +179,16 @@ export function StudioResults(props: {
           <div className={css.error} role="status">
             <strong>{tt(`tasks.${status}`)}</strong>
             <span>{task?.error ?? slot.error}</span>
+            <button type="button" className={css.retry} disabled={props.busy} onClick={() => props.onRetry(slot)}>{tt('tasks.retry')}</button>
+          </div>
+        ) : null}
+        {!failed && display === undefined && missing ? (
+          // Partial fan-out: the task completed but this slot's parallel
+          // request failed. Same treatment as a failed card — the message
+          // names what happened, and retry resubmits just this position.
+          <div className={css.error} role="status">
+            <strong>{tt('tasks.failed')}</strong>
+            <span>{task?.result?.partialError ?? tt('result.missingImage')}</span>
             <button type="button" className={css.retry} disabled={props.busy} onClick={() => props.onRetry(slot)}>{tt('tasks.retry')}</button>
           </div>
         ) : null}

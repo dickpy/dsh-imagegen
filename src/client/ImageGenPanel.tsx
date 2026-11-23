@@ -1155,7 +1155,7 @@ export function ImageGenPanel(props: {
               lostStudioTaskIdsRef.current.add(id)
               for (const run of Object.values(studioRunsRef.current)) {
                 const slot = run?.slots.find(slot => slot.taskId === id)
-                if (run !== null && slot !== undefined) return { id, request: { mode: run.mode, prompt: run.prompt, model: slot.model, channelId: slot.channelId, size: 'auto', quality: 'auto', detail: '', n: 1 }, status: 'failed' as const, createdAt: 0, error: tt('canvas.taskLost') }
+                if (run !== null && slot !== undefined) return { id, request: { mode: run.mode, prompt: run.prompt, model: slot.model, channelId: slot.channelId, size: 'auto', quality: 'auto', detail: '', n: 1 }, status: 'failed' as const, createdAt: 0, error: held?.error ?? tt('canvas.taskLost') }
               }
               return undefined
             }
@@ -1928,8 +1928,13 @@ export function ImageGenPanel(props: {
       let next = history
       for (const id of ids) next = await api.historyRemove(id)
       setHistory(next)
-    } catch {
-      // Keep the optimistic local removal.
+    } catch (caught) {
+      // The host kept (part of) the group: an optimistic removal that stays
+      // would silently resurrect it on the next background sync. Refetch the
+      // authoritative list; when even that fails, keep the optimistic view
+      // but say why instead of discarding the error.
+      setError(errorMessage(caught))
+      try { setHistory(await api.historyList()) } catch { /* keep the optimistic removal */ }
     }
   }
 
@@ -1971,8 +1976,9 @@ export function ImageGenPanel(props: {
     setHistoryIds({ text: null, edit: null })
     try {
       setHistory(await api.historyClear())
-    } catch {
-      // Keep the cleared local state.
+    } catch (caught) {
+      setError(errorMessage(caught))
+      try { setHistory(await api.historyList()) } catch { /* keep the optimistic view */ }
     }
   }
 
@@ -2127,8 +2133,11 @@ export function ImageGenPanel(props: {
     if (galleryViewingId === id) setGalleryViewingId(null)
     try {
       setGallery(await api.galleryRemove(id))
-    } catch {
-      // Keep the optimistic local removal.
+    } catch (caught) {
+      // The host kept the entry: restore the authoritative list instead of
+      // letting the next gallery refresh silently resurrect it.
+      setError(errorMessage(caught))
+      try { setGallery(await api.galleryList()) } catch { /* keep the optimistic removal */ }
     }
   }
 
@@ -2139,8 +2148,9 @@ export function ImageGenPanel(props: {
     setGalleryViewingId(null)
     try {
       setGallery(await api.galleryClear())
-    } catch {
-      // Keep the cleared local state.
+    } catch (caught) {
+      setError(errorMessage(caught))
+      try { setGallery(await api.galleryList()) } catch { /* keep the optimistic view */ }
     }
   }
 

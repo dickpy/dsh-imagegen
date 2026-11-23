@@ -80,11 +80,12 @@ export class ImageGenApi {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     })
-    const body = await readEnvelope<{ ok: true; images: GenerateResult['images']; history?: HistoryEntry[]; historyError?: string }>(response)
+    const body = await readEnvelope<{ ok: true; images: GenerateResult['images']; history?: HistoryEntry[]; historyError?: string; partialError?: string }>(response)
     return {
       images: body.images,
       ...body.history === undefined ? {} : { history: body.history },
       ...body.historyError === undefined ? {} : { historyError: body.historyError },
+      ...body.partialError === undefined ? {} : { partialError: body.partialError },
     }
   }
 

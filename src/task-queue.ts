@@ -5,16 +5,35 @@ import type { GenerateRequest, GenerateResult, GenerationTask, GenerationTaskSum
 
 export type GenerationTaskListener = (task: GenerationTask) => void
 
+/** Terminal tasks kept in memory with their full results. Older terminal
+ *  tasks are dropped from the queue entirely: their images live in the
+ *  history store on disk, the poll feed only ever surfaced the newest rows,
+ *  and an unbounded array kept every base64 result resident until restart. */
+export const RETAINED_TERMINAL_TASKS = 50
+
+/** Read the live status at call time: cancel() mutates the task object after
+ *  runTask started, which TypeScript's local narrowing cannot see. */
+function isCancelled(task: GenerationTask): boolean {
+  return task.status === 'cancelled'
+}
+
 export class GenerationTaskQueue {
   private readonly tasks: GenerationTask[] = []
   private readonly controllers = new Map<string, AbortController>()
   private readonly listeners = new Set<GenerationTaskListener>()
   private running = 0
+  // Plain fields assigned in the constructor body: parameter properties are
+  // not expressible under Node's strip-only TS mode, which the unit tests use.
+  private readonly run: (request: GenerateRequest, signal: AbortSignal) => Promise<GenerateResult>
+  private readonly concurrency: number
 
   constructor(
-    private readonly run: (request: GenerateRequest, signal: AbortSignal) => Promise<GenerateResult>,
-    private readonly concurrency = 1,
-  ) {}
+    run: (request: GenerateRequest, signal: AbortSignal) => Promise<GenerateResult>,
+    concurrency = 1,
+  ) {
+    this.run = run
+    this.concurrency = concurrency
+  }
 
   list(): GenerationTask[] {
     return this.tasks.map(task => this.snapshot(task))
@@ -58,6 +77,7 @@ export class GenerationTaskQueue {
     task.finishedAt = Date.now()
     this.controllers.get(id)?.abort()
     this.publish(task)
+    this.pruneTerminal()
     this.drain()
     return this.snapshot(task)
   }
@@ -90,21 +110,52 @@ export class GenerationTaskQueue {
     this.controllers.set(task.id, controller)
     try {
       const result = await this.run(task.request, controller.signal)
-      if (this.tasks.find(item => item.id === task.id)?.status !== 'cancelled') {
+      if (!isCancelled(task)) {
         task.status = 'completed'
         task.result = result
         task.finishedAt = Date.now()
         this.publish(task)
+        this.pruneTerminal()
       }
     } catch (error) {
-      if (this.tasks.find(item => item.id === task.id)?.status !== 'cancelled') {
+      if (!isCancelled(task)) {
         task.status = 'failed'
         task.error = error instanceof Error ? error.message : String(error)
         task.finishedAt = Date.now()
         this.publish(task)
+        this.pruneTerminal()
       }
     } finally {
       this.controllers.delete(task.id)
+    }
+  }
+
+  /**
+   * Drop terminal tasks beyond the retention window, keeping the most
+   * recently finished ones. Active tasks are never touched; a dropped id
+   * simply stops appearing in summaries and answers `undefined` from `get`,
+   * which the panel already treats the same way as a task pushed out of the
+   * bounded poll feed.
+   */
+  private pruneTerminal(): void {
+    const terminal: number[] = []
+    for (let index = 0; index < this.tasks.length; index++) {
+      const task = this.tasks[index]!
+      if (task.status !== 'queued' && task.status !== 'running') terminal.push(index)
+    }
+    if (terminal.length <= RETAINED_TERMINAL_TASKS) return
+    // Oldest finished first. The tasks array is newest-submission-first, so
+    // the reversed index run breaks full timestamp ties toward dropping the
+    // oldest submissions (never the task that just finished on screen).
+    const finishedAtOf = (index: number): number => {
+      const task = this.tasks[index]!
+      return task.finishedAt ?? task.createdAt
+    }
+    const ordered = terminal.reverse().sort((a, b) =>
+      (finishedAtOf(a) - finishedAtOf(b)) || (this.tasks[a]!.createdAt - this.tasks[b]!.createdAt))
+    const drop = new Set(ordered.slice(0, ordered.length - RETAINED_TERMINAL_TASKS))
+    for (let index = this.tasks.length - 1; index >= 0; index--) {
+      if (drop.has(index)) this.tasks.splice(index, 1)
     }
   }
 

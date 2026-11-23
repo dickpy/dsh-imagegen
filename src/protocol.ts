@@ -1127,6 +1127,10 @@ export interface GenerateResult {
   history?: HistoryEntry[]
   /** Persistence failure after images were successfully generated. */
   historyError?: string
+  /** Set when some of the parallel requests behind one task failed but at
+   *  least one succeeded: the surviving images are kept (compacted in order)
+   *  and this message names what happened to the rest. */
+  partialError?: string
 }
 
 /**
