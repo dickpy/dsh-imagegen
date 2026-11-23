@@ -403,6 +403,8 @@ let maxGenerationRequests = 0
 // A second listener = a different origin (port) from the API base. It stands in
 // for a malicious relay pointing image URLs at an attacker-controlled host.
 const foreignAuthHeaders = []
+// Reference-image parts per edit request, so the Agent tool layer is checked end to end.
+const editImagePartCounts = []
 const resultAuthHeaders = []
 const foreignHost = createServer((req, res) => {
   foreignAuthHeaders.push(req.headers.authorization)
@@ -496,7 +498,10 @@ const upstream = createServer(async (req, res) => {
       assert.equal(form.get('size'), form.get('quality') === 'high' ? '3456x2304' : '2592x1728', 'edit resolution must follow the clarity tier')
     }
     assert.ok(!body.includes('name="n"'), 'n must not be sent (batch param rejected)')
-    assert.ok(body.includes('name="image"'), 'image part missing')
+    assert.ok(body.includes('name="image"') || body.includes('name="image[]"'), 'image part missing')
+    // One reference uploads as `image`; several repeat `image[]` for all of them.
+    const bracketed = [...body.matchAll(/name="image\[\]"/g)].length
+    editImagePartCounts.push(bracketed > 0 ? bracketed : [...body.matchAll(/name="image"/g)].length)
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
     return
@@ -2335,6 +2340,20 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
     const editedRendered = tools.get('edit_image').output.render({ prompt: 'edit this' }, edited)
     assert.equal(editedRendered.filter(block => block.type === 'image').length, 0, 'edit_image output stays out of model-visible image context')
     assert.equal(saved.size, 5)
+    assert.equal(editImagePartCounts.at(-1), 1, 'a single-reference edit sends one image part')
+
+    // #99: reference_images forwards up to four extra references to providers
+    // that accept several; the source stays in `image`.
+    const referenced = await tools.get('edit_image').execute({
+      prompt: 'edit this',
+      source_image: complete.images[0],
+      reference_images: [complete.images[1], complete.images[1]],
+      size: '3:2',
+      quality: '2k',
+    }, { signal: new AbortController().signal })
+    assert.equal(referenced.status, 'completed', 'multi-reference edits complete')
+    assert.equal(saved.size, 6)
+    assert.equal(editImagePartCounts.at(-1), 3, 'the tool forwards source plus both extra references')
 
     const commands = new Map()
     const pending = new Map()

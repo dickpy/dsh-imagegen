@@ -381,10 +381,15 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
     })),
     ctx.tools.register(defineTool({
       name: 'edit_image',
-      description: 'Edit an image. By default this tool call stays pending until the task reaches a final state; completed images are shown beside this tool call, while the model receives their attachment references, without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. source_image must be an image reference returned by a completed generation or get_image_generation_task; pass that entire object unchanged. Only configured image models are allowed; omit model to use the configured default image model (or the first model when none is configured).',
+      description: 'Edit an image. By default this tool call stays pending until the task reaches a final state; completed images are shown beside this tool call, while the model receives their attachment references, without creating a user message. Set wait_for_completion to false for background mode, then use get_image_generation_task explicitly. source_image must be an image reference returned by a completed generation or get_image_generation_task; pass that entire object unchanged. reference_images adds up to four more references for models that accept several (gpt-image, seedream and SenseNova families send them all); other families (grok-imagine, nanobanana, minimax, dall-e, qwen) use source_image alone. Only configured image models are allowed; omit model to use the configured default image model (or the first model when none is configured).',
       parameters: {
         prompt: { type: 'string', required: true, description: 'How to transform the source image.' },
         source_image: { ...imageRefSchema, required: true, description: 'Image reference returned by get_image_generation_task.' },
+        reference_images: {
+          type: 'array',
+          items: imageRefSchema,
+          description: 'Up to four additional reference images (product shots, style references, extra angles). Only gpt-image, seedream and SenseNova families send every reference; other providers use source_image alone.',
+        },
         model: { type: 'string', description: 'One of the configured image models. Defaults to the configured default image model, or the first model when none is configured.' },
         size: { type: 'string', description: 'Aspect ratio such as 1:1, 16:9, 9:16, or auto.' },
         quality: { type: 'string', description: 'auto, 1k, 2k, or 4k.' },
@@ -400,7 +405,13 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
       presentResult: presentImageResult,
       async execute(args, exec) {
         const picked = resolveModel(args.model)
-        const reference = await ctx.attachments.readImage(restoreRef(args.source_image), exec.signal)
+        // Read every reference before submitting: a missing attachment must fail
+        // the call, not the task the provider has already been billed for.
+        const [reference, ...extra] = await Promise.all([
+          ctx.attachments.readImage(restoreRef(args.source_image), exec.signal),
+          ...(args.reference_images ?? []).slice(0, 4)
+            .map(item => ctx.attachments.readImage(restoreRef(item), exec.signal)),
+        ])
         const task = runtime.queue.submit({
           mode: 'edit',
           model: picked.alias,
@@ -412,8 +423,9 @@ export function registerAgentImageTools(ctx: Context, runtime: ImageGenerationRu
           quality: args.quality ?? 'auto',
           n: Math.min(4, Math.max(1, args.count ?? 1)),
           detail: args.detail ?? '',
-          image: imageDataUrl(reference),
-          ...reference.ref.name === undefined ? {} : { refName: reference.ref.name },
+          image: imageDataUrl(reference!),
+          ...extra.length === 0 ? {} : { images: extra.map(image => imageDataUrl(image)) },
+          ...reference!.ref.name === undefined ? {} : { refName: reference!.ref.name },
         })
         return taskResult(args.wait_for_completion === false ? task : await waitForTask(task.id, exec.signal))
       },
