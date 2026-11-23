@@ -78,8 +78,9 @@ try {
   const runtimeCss = [...window.document.querySelectorAll('style')].map(style => style.textContent).join('\n')
   // The minifier is free to merge rules that share a declaration block, so the
   // guard on the host's topStrip row is matched as a selector, not as a whole rule.
-  assert.match(runtimeCss, /:not\(\[class\*=topStrip\]\)[,{]/, 'the sidebar hiding rule explicitly preserves host topStrip rows')
+  assert.match(runtimeCss, /:not\(\[class\*=topStrip\]\)/, 'the sidebar hiding rule explicitly preserves host topStrip rows')
   assert.match(runtimeCss, /:not\(\[class\*=topStrip\]\)[^{}]*\{display:none!important\}/, 'the sidebar hiding rule still hides everything else')
+  assert.ok(runtimeCss.includes(':not([class*=\'panelList\'])') || runtimeCss.includes(':not([class*=panelList])'), 'the panel list itself is kept: the launcher row lives there')
   assert.ok(runtimeCss.includes(':not([data-dsh-imagegen-sidebar-keep])'), 'the sidebar keep-chain marker is part of the allow-list')
   assert.ok(runtimeCss.includes('data-shell-leading'), 'the collapsed sidebar opener is raised above the studio')
   assert.ok(runtimeCss.includes('[class*=mainPanel]'), 'the 0.2.x main panel wrapper is recognised')
