@@ -30,9 +30,20 @@ export function useSheetSize(): [(node: HTMLElement | null) => void, { width: nu
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
+    // A drag of the panel edge fires many observer callbacks; fold them into one
+    // measurement per frame so the board is not re-planned dozens of times.
+    let frame = 0
+    const schedule = (): void => {
+      if (typeof requestAnimationFrame !== 'function') { measure(); return }
+      if (frame !== 0) return
+      frame = requestAnimationFrame(() => { frame = 0; measure() })
+    }
+    const observer = new ResizeObserver(schedule)
     observer.observe(node)
-    return () => { observer.disconnect() }
+    return () => {
+      observer.disconnect()
+      if (frame !== 0) cancelAnimationFrame(frame)
+    }
   }, [node])
   return [attach, size]
 }
@@ -44,6 +55,10 @@ export function useSheetSize(): [(node: HTMLElement | null) => void, { width: nu
  * for a guessed square would letterbox a 16:9 render again. Missing sizes are
  * measured once here (the bytes are already in memory) and the sheet re-plans
  * with the real shapes.
+ *
+ * `keys` must identify each picture, not just its slot: a retried slot keeps
+ * its id but receives a different picture, and a cached ratio from the old one
+ * would size the new card wrongly.
  */
 export function useResultAspects(keys: string[], images: (GeneratedImage | undefined)[]): (number | undefined)[] {
   const [measured, setMeasured] = useState<Record<string, number>>({})

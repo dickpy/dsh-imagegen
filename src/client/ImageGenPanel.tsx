@@ -3584,18 +3584,18 @@ export function ImageGenPanel(props: {
                 data-count={images.length <= 4 ? String(images.length) : 'many'}
                 data-result-preview-grid=""
                 data-rows={plainRows.length}
-                data-scroll={plainLayout.scroll ? '' : undefined}
               >
                 {plainRows.map((row, rowIndex) => (
                   <div className={resultCss.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>
                     {row.map((index, columnIndex) => {
                       const image = images[index]!
-                      const box = plainLayout.boxes[rowIndex]?.[columnIndex] ?? null
+                      const boxWidth = plainLayout.boxes[rowIndex]?.[columnIndex] ?? null
+                      const ratio = pictureAspect(image)
                       return (
                           <figure
                             key={index}
                             className={css.imageCard}
-                            style={box === null ? undefined : { flex: 'none', width: box.width }}
+                            style={boxWidth === null ? undefined : { flex: 'none', width: boxWidth }}
                             data-result-card=""
                             role="button"
                             tabIndex={0}
@@ -3611,7 +3611,7 @@ export function ImageGenPanel(props: {
                             <div
                               className={css.imageMedia}
                               data-result-media=""
-                              style={box === null ? (pictureAspect(image) === undefined ? undefined : { aspectRatio: String(pictureAspect(image)) }) : { flex: 'none', aspectRatio: String(pictureAspect(image) ?? 1) }}
+                              style={boxWidth === null ? (ratio === undefined ? undefined : { aspectRatio: String(ratio) }) : { flex: 'none', aspectRatio: String(ratio ?? 1) }}
                             >
                               <img
                                 className={css.image}

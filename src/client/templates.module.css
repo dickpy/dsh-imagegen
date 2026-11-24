@@ -634,6 +634,5 @@
   .detail { height: 100%; }
   .detailActions { gap: 6px; }
   .footer { flex-wrap: wrap; padding: 8px 12px; }
-  .floatingEntry { padding: 11px 15px; }
 }
 @media (prefers-reduced-motion: reduce) { .card { transition: none; } }

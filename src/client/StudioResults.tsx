@@ -7,7 +7,7 @@ import { StudioActionButton } from './StudioActionButton.tsx'
 import { GenerationLoading } from './GenerationLoading.tsx'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { ImageActionMenu, type ImageMenuGroup } from './ImageActionMenu.tsx'
-import { pictureAspect, planResultLayout, type ResultCardBox } from './result-layout.ts'
+import { pictureAspect, planResultLayout } from './result-layout.ts'
 import { useResultAspects, useSheetSize } from './result-measure.ts'
 import { downloadImage } from './result-board.ts'
 import { tt } from './helpers.ts'
@@ -100,10 +100,12 @@ export function StudioResults(props: {
   const previewIndexOf = (cardIndex: number): number => cards.slice(0, cardIndex).filter(card => card.display !== undefined).length
 
   const [attachSheet, sheetSize] = useSheetSize()
-  const aspects = useResultAspects(cards.map(card => card.slot.id), cards.map(card => card.display))
+  // The key must name the picture, not just its slot: a retried slot keeps its id
+  // but gets a new task, and a cached ratio from the old picture would size the
+  // new one wrongly.
+  const aspects = useResultAspects(cards.map(card => card.slot.id + ':' + card.slot.taskId), cards.map(card => card.display))
   const layout = planResultLayout({ count: cards.length, aspects, width: sheetSize.width })
-  // The planner always covers every card; this keeps a stale plan from hiding one.
-  const rows = layout.rows.flat().length === cards.length ? layout.rows : cards.map((_, index) => [index])
+  const rows = layout.rows
 
   const openMenuAt = (x: number, y: number, cardIndex: number): void => {
     const card = cards[cardIndex]
@@ -117,18 +119,15 @@ export function StudioResults(props: {
     openMenuAt(event.clientX, event.clientY, cardIndex)
   }
 
-  const renderCard = (cardIndex: number, box: ResultCardBox | null): React.JSX.Element => {
+  const renderCard = (cardIndex: number, boxWidth: number | null): React.JSX.Element => {
     const { slot, task, status, display, waiting, failed, missing, channel } = cards[cardIndex]!
     const elapsed = task?.startedAt === undefined ? 0 : Math.max(0, Math.floor((now - task.startedAt) / 1000))
-    // Every row is exactly as tall as its tallest picture: the picture area
-    // takes the payload's own shape, so the card never adds an empty band
-    // around it. The stylesheet keeps 16:9 for a size that has not arrived yet.
-    // A measured card fixes its width; the picture area then takes the
-    // picture's own ratio, so the border (which eats 2 px of the card's width)
-    // can never leave a band under the picture. The stylesheet keeps 16:9 for
-    // a size that has not arrived yet.
-    const shape = box === null ? shapeOf(display) : { flex: 'none' as const, aspectRatio: String(pictureAspect(display) ?? 1) }
-    return <figure key={slot.id} className={css.card} style={box === null ? undefined : { flex: 'none', width: box.width }} data-result-card="" data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
+    // A measured card fixes its width and the picture area takes the payload's
+    // own shape, so the row is exactly as tall as its tallest picture and the
+    // border (which eats 2 px of the card's width) cannot leave a band under
+    // it. The stylesheet keeps 16:9 for a size that has not arrived yet.
+    const shape = boxWidth === null ? shapeOf(display) : { flex: 'none' as const, aspectRatio: String(pictureAspect(display) ?? 1) }
+    return <figure key={slot.id} className={css.card} style={boxWidth === null ? undefined : { flex: 'none', width: boxWidth }} data-result-card="" data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
       <div className={css.media} data-result-media="" style={shape} data-empty={display === undefined ? '' : undefined} data-failed={failed ? '' : undefined}>
         {display !== undefined ? (
           <button
@@ -233,7 +232,6 @@ export function StudioResults(props: {
       data-count={cards.length <= 4 ? String(cards.length) : 'many'}
       data-result-preview-grid=""
       data-rows={rows.length}
-      data-scroll={layout.scroll ? '' : undefined}
     >
       {rows.map((row, rowIndex) => (
         <div className={css.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>

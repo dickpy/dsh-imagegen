@@ -1,5 +1,5 @@
 /**
- * Row plan and card boxes for the result surfaces.
+ * Row plan and card widths for the result surfaces.
  *
  * The arrangement follows the pictures, not a fixed count table: the panel
  * width decides how many equal columns fit, the picture shapes decide whether
@@ -7,23 +7,23 @@
  * render never swallows the whole panel.
  *
  * The rules, in order:
- *  - a landscape set (16:9 / 3:2 / 4:3) keeps the arrangement people expect:
- *    one picture owns the area, two stack, three sit as a 品 (one over two),
- *    four make a 2×2 grid;
+ *  - a set of landscape pictures (16:9 / 3:2 / 4:3) keeps the arrangement people
+ *    expect: one picture owns the area, two stack, three sit as a 品 (one over
+ *    two), four make a 2×2 grid;
  *  - every other set (portraits, squares, mixed) takes the widest column count
  *    that keeps each picture readable — at least `MIN_COLUMN_WIDTH` wide, and
- *    tall enough that it does not flatten into a strip;
+ *    tall enough (200–560 px) that it does not flatten into a strip;
  *  - a row that ends up with a single picture caps its width at
  *    `MAX_MEDIA_HEIGHT` picture heights, so a lone 9:16 render is a tall
  *    centred picture instead of a full-width wall.
  *
- * Row heights are the pictures' own: every box carries the media height its
- * picture needs, so no card is framed by a band of empty space (#97) and the
- * board scrolls instead of squashing.
+ * A card carries only its width: the picture area then takes the picture's own
+ * aspect ratio, so no card is framed by a band of empty space (#97) and the
+ * board scrolls instead of squashing the pictures.
  */
 
 /** Gap between rows and between cards, in CSS pixels (matches the stylesheet). */
-export const RESULT_GAP = 12
+const RESULT_GAP = 12
 
 /** A column narrower than this reads as a thumbnail strip, not a picture. */
 const MIN_COLUMN_WIDTH = 180
@@ -54,21 +54,11 @@ export interface ResultLayoutInput {
   gap?: number
 }
 
-/** One card's measured box: card width and the picture area height it needs. */
-export interface ResultCardBox {
-  width: number
-  mediaHeight: number
-}
-
 export interface ResultLayout {
   /** Slot indices per row, top to bottom. Every index appears exactly once. */
   rows: number[][]
-  /** Per row and slot: the measured box, or null before the first measurement. */
-  boxes: (ResultCardBox | null)[][]
-  /** True when more than one row is laid out, so the board may have to scroll. */
-  scroll: boolean
-  /** True when the sheet was measured, so the cards carry their own size. */
-  measured: boolean
+  /** Card width per row and slot in CSS pixels, or null before the first measurement. */
+  boxes: (number | null)[][]
 }
 
 /** width / height of a picture whose payload carries its pixel size. */
@@ -79,10 +69,10 @@ export function pictureAspect(size: { width?: number; height?: number } | undefi
   return width / height
 }
 
-/** Plan the sheet: the rows, and the box every card owns inside them. */
+/** Plan the sheet: the rows, and the width every card owns inside them. */
 export function planResultLayout(input: ResultLayoutInput): ResultLayout {
   const count = Math.max(0, Math.trunc(input.count))
-  if (count === 0) return { rows: [], boxes: [], scroll: false, measured: false }
+  if (count === 0) return { rows: [], boxes: [] }
   const aspects = Array.from({ length: count }, (_, index) => normalizeAspect(input.aspects?.[index]))
   const width = Math.max(0, input.width ?? 0)
   const gap = input.gap ?? RESULT_GAP
@@ -94,20 +84,19 @@ export function planResultLayout(input: ResultLayoutInput): ResultLayout {
     const columnWidth = rowWidth / row.length
     // A lone picture is capped so one render never swallows the panel; a full
     // row shares the width evenly.
-    const boxWidth = row.length === 1
-      ? Math.min(columnWidth, aspects[index]! * MAX_MEDIA_HEIGHT)
-      : columnWidth
-    return { width: boxWidth, mediaHeight: boxWidth / aspects[index]! }
+    return row.length === 1 ? Math.min(columnWidth, aspects[index]! * MAX_MEDIA_HEIGHT) : columnWidth
   }))
-  return { rows, boxes, scroll: rows.length > 1, measured }
+  return { rows, boxes }
 }
 
 /** The row split for this count and these shapes. */
 function planRows(count: number, aspects: readonly number[], width: number, gap: number): number[][] {
   if (count === 1) return [[0]]
-  const landscape = aspects.some(aspect => aspect >= WIDE_ASPECT)
-  // The arrangement people expect from landscape renders: two stack, three sit
-  // as a 品, four make a 2×2. Side by side they would be two slivers.
+  // Only a set made entirely of landscape pictures keeps the count table. A mix
+  // of landscape and portrait cards is planned by shape instead, because the
+  // shorter card would be stretched to the taller one and leave a band of empty
+  // card under it.
+  const landscape = aspects.every(aspect => aspect >= WIDE_ASPECT)
   if (landscape && count === 2) return [[0], [1]]
   if (landscape && count === 3) return [[0], [1, 2]]
   if (landscape && count === 4) return [[0, 1], [2, 3]]
