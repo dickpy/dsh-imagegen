@@ -586,23 +586,22 @@
   }
 }
 
-/* Floating entry stays within the active studio, with a quiet neutral surface. */
+/* Sits in the result corner, to the left of the task tray, with a quiet
+   neutral surface. */
 .floatingEntry {
-  position: absolute;
-  right: 24px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 40;
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  padding: 12px 18px;
+  gap: 6px;
+  /* Sized to the result tabs' 12 px line, so the pill sits on the same baseline
+     instead of towering over the row. */
+  padding: 4px 11px;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 999px;
   background: var(--dsw-alias-bg-base);
   color: var(--dsw-alias-label-primary);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, .12);
-  font: 600 13px var(--dsw-font-family);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+  font: 600 12px var(--dsw-font-family);
   cursor: pointer;
 }
 .floatingEntry:hover { background: var(--dsw-alias-bg-layer-1); }
@@ -635,6 +634,6 @@
   .detail { height: 100%; }
   .detailActions { gap: 6px; }
   .footer { flex-wrap: wrap; padding: 8px 12px; }
-  .floatingEntry { right: 16px; padding: 11px 15px; }
+  .floatingEntry { padding: 11px 15px; }
 }
 @media (prefers-reduced-motion: reduce) { .card { transition: none; } }

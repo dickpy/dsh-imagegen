@@ -93,11 +93,16 @@
 }
 
 /*
- * The board is a photo sheet, not a scrolling list: it fills the panel, and the
- * row split comes from result-layout.ts, which measures the board and the image
- * shapes (two side by side, three portraits in a row, otherwise a balanced
- * sheet). Each row divides its width evenly; each cell keeps the image fully
- * visible (contain, never cropped).
+ * The board is a photo sheet, not a form: the row split comes from
+ * result-layout.ts (one picture owns the area, two stack, three sit as a 品,
+ * four make a 2×2 grid, longer runs keep rows of three), every row divides its
+ * width evenly, and every picture keeps its whole frame (contain, never
+ * cropped).
+ *
+ * A row is exactly as tall as its tallest picture — the picture area takes the
+ * picture's own shape (the media rule at the end of this file) — so no picture
+ * is framed by a band of empty space (#97), and the board scrolls instead of
+ * squashing the pictures.
  */
 .grid {
   flex: 1;
@@ -105,24 +110,19 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.row {
-  display: flex;
-  flex: 1 1 0;
-  min-height: 0;
-  gap: 12px;
-}
-
-/* Too many cards for one screen: rows keep a readable height and the board scrolls. */
-.grid[data-scroll] {
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
 
-.grid[data-scroll] .row {
+.row {
+  display: flex;
   flex: none;
-  min-height: 220px;
+  /* A lone picture is capped by its max-width (see result-layout.ts), so the
+     row centres whatever width the cards end up with instead of leaving a hole
+     on the right. */
+  justify-content: center;
+  min-height: 0;
+  gap: 12px;
 }
 
 .card {
@@ -132,6 +132,9 @@
   margin: 0;
   min-width: 0;
   min-height: 0;
+  /* The shell has no global border-box reset: a card that owns its width must
+     count its own border, or a measured 620 px card overflows a 620 px sheet. */
+  box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
   border-radius: 14px;
   overflow: hidden;
@@ -414,3 +417,19 @@
     gap: 10px;
   }
 }
+
+/*
+ * A picture area takes its picture's own shape, so the card is exactly as tall
+ * as the picture plus its footer and the row never surrounds a picture with a
+ * band of empty space (#97). The fallback keeps a 16:9 box for a picture whose
+ * size has not arrived yet.
+ *
+ * The selector uses the data attribute both result surfaces emit, because the
+ * history grid's card chrome (and its flexible .imageMedia) lives in
+ * panel.module.css, and this rule has to win over that class as well.
+ */
+[data-result-preview-grid] [data-result-media] {
+  flex: none;
+  aspect-ratio: 16 / 9;
+}
+

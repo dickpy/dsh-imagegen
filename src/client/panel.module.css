@@ -760,11 +760,44 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   overflow: hidden;
 }
 
-.taskTray {
+/* The corner holds the template entry and the task tray, in that order, so the
+   template button always sits to the left of "生成任务" even when the tray is
+   collapsed to its header. It starts slightly higher than the old floating
+   tray so it does not sit on the result tabs' text. */
+.resultCorner {
   position: absolute;
   z-index: 6;
-  top: 12px;
+  /* On the result line, to the right of its tabs; 5px puts the pills' centre on
+     the 12px text line's centre. */
+  top: 5px;
   right: 12px;
+  display: flex;
+  /* max-content + wrap: the template pill and the tray stay on one line while
+     they fit, and stack instead of spilling over the corner's left edge when
+     they do not. */
+  width: max-content;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+}
+
+/* E-commerce results carry their own header (title + actions) inside the
+   canvas, so the corner moves to the bottom-right there instead of covering
+   the header's buttons. */
+.resultCorner[data-ecommerce] {
+  top: auto;
+  bottom: 12px;
+}
+
+/* A narrow canvas (marked from the measured width) keeps only the template
+   icon: the full pill would push the corner into "生成任务". */
+.resultCorner[data-compact] [data-template-library-trigger] { padding: 4px 8px; }
+.resultCorner[data-compact] [data-template-library-trigger] span { display: none; }
+
+.taskTray {
+  flex: none;
   width: min(360px, calc(100% - 24px));
   max-height: calc(100% - 24px);
   display: flex;
@@ -783,7 +816,7 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 .taskTrayToggle { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding: 8px 10px; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; font-size: inherit; font-weight: inherit; text-align: left; }
 .taskTrayToggle:hover { background: var(--dsw-alias-bg-layer-2); }
 .taskTrayCount { min-width: 18px; padding: 1px 5px; border-radius: 999px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); font-size: 11px; font-weight: 500; text-align: center; }
-.taskTrayChevron { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-size: 12px; font-weight: 400; }
+.taskTrayChevron { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-size: 12px; font-weight: 400; line-height: 1; transform: translateY(-1px); }
 .taskTrayClose { width: 32px; border: 0; border-left: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-tertiary); background: transparent; cursor: pointer; font: inherit; font-size: 17px; }
 .taskTrayClose:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); }
 .taskTray[data-open='false'] .taskTrayToggle { min-height: 34px; }
@@ -1841,10 +1874,10 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 .ecommerceResults {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
   margin: 0 auto;
-  padding: 16px 18px;
+  padding: 12px 16px;
   overflow-y: auto;
   font-size: 12px;
   line-height: 1.5;
@@ -2908,6 +2941,7 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 .canvasMeta {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: 12px;
@@ -2946,6 +2980,8 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   flex: 1 1 0;
   flex-direction: column;
   margin: 0;
+  /* See studio-results.module.css .card: a measured card counts its border. */
+  box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 12px;
   overflow: hidden;

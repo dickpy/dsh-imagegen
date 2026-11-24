@@ -63,7 +63,8 @@ import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService }
 import { useConversationImageAttachment } from './use-conversation-image-attachment.tsx'
 import { ConversationSessionPicker } from './ConversationSessionPicker.tsx'
 import { Select } from './Select.tsx'
-import { planResultLayout } from './result-layout.ts'
+import { pictureAspect, planResultLayout } from './result-layout.ts'
+import { useResultAspects, useSheetSize } from './result-measure.ts'
 import { downloadImage } from './result-board.ts'
 import css from './panel.module.css'
 import resultCss from './studio-results.module.css'
@@ -2331,7 +2332,10 @@ export function ImageGenPanel(props: {
    * outside a studio run) uses the same fixed sheet as the studio board, so the
    * two surfaces cannot disagree about layout again (#97).
    */
-  const plainLayout = planResultLayout({ count: images.length })
+  const [attachCanvas, canvasSize] = useSheetSize()
+  const [attachPlainSheet, plainSheet] = useSheetSize()
+  const plainAspects = useResultAspects(images.map(image => image === undefined ? '' : image.b64.length + ':' + image.b64.slice(0, 24)), images)
+  const plainLayout = planResultLayout({ count: images.length, aspects: plainAspects, width: plainSheet.width })
   const plainRows = plainLayout.rows
 
   /** Drag the config panel's right edge to resize it (persisted per browser). */
@@ -3241,7 +3245,7 @@ export function ImageGenPanel(props: {
           ) : null}
 
           {/* ------------------------------------------------------- canvas */}
-          <section className={css.canvas} data-gallery={isGallery ? 'true' : undefined}>
+          <section ref={attachCanvas} className={css.canvas} data-gallery={isGallery ? 'true' : undefined}>
           {isGallery ? (
             <div className={css.galleryWorkspace}>
               <header className={css.galleryToolbar}>
@@ -3448,7 +3452,10 @@ export function ImageGenPanel(props: {
               )}
             </div>
           ) : null}
-          {!isGallery && tasks.length > 0 ? (
+          {!isGallery ? (
+            <div className={css.resultCorner} data-result-corner="" data-compact={canvasSize.width > 0 && canvasSize.width < 430 ? '' : undefined} data-ecommerce={workspace === 'ecommerce' ? '' : undefined}>
+              {workspace === 'ecommerce' || (isGeneration && !liveBoardCurrent) ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => { setLibraryOpen(true) }} /> : null}
+              {tasks.length > 0 ? (
             <section className={css.taskTray} data-open={taskTrayOpen ? 'true' : 'false'} aria-label={tt('tasks.title')}>
               <header className={css.taskTrayHeader}>
                 <button type="button" className={css.taskTrayToggle} aria-expanded={taskTrayOpen} onClick={() => { setTaskTrayOpen(open => !open) }}>
@@ -3484,6 +3491,8 @@ export function ImageGenPanel(props: {
                 ))}
               </div>
             </section>
+              ) : null}
+            </div>
           ) : null}
           {workspace === 'normal' && tab !== 'gallery' && comparison !== null ? (
             <section className={css.comparisonBoard} aria-label={tt('compare.title')}>
@@ -3570,6 +3579,7 @@ export function ImageGenPanel(props: {
                 ) : null}
               </div>
               <div
+                ref={attachPlainSheet}
                 className={resultCss.grid}
                 data-count={images.length <= 4 ? String(images.length) : 'many'}
                 data-result-preview-grid=""
@@ -3578,12 +3588,14 @@ export function ImageGenPanel(props: {
               >
                 {plainRows.map((row, rowIndex) => (
                   <div className={resultCss.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>
-                    {row.map(index => {
+                    {row.map((index, columnIndex) => {
                       const image = images[index]!
+                      const box = plainLayout.boxes[rowIndex]?.[columnIndex] ?? null
                       return (
                           <figure
                             key={index}
                             className={css.imageCard}
+                            style={box === null ? undefined : { flex: 'none', width: box.width }}
                             data-result-card=""
                             role="button"
                             tabIndex={0}
@@ -3596,7 +3608,11 @@ export function ImageGenPanel(props: {
                               }
                             }}
                           >
-                            <div className={css.imageMedia}>
+                            <div
+                              className={css.imageMedia}
+                              data-result-media=""
+                              style={box === null ? (pictureAspect(image) === undefined ? undefined : { aspectRatio: String(pictureAspect(image)) }) : { flex: 'none', aspectRatio: String(pictureAspect(image) ?? 1) }}
+                            >
                               <img
                                 className={css.image}
                                 src={srcOf(image)}
@@ -3635,7 +3651,6 @@ export function ImageGenPanel(props: {
               </div>
             </div>
           ) : null}
-          {workspace === 'ecommerce' || (isGeneration && !liveBoardCurrent) ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
           </section>
         </div>
 
