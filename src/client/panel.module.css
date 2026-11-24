@@ -3544,8 +3544,16 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 .sidebarHistoryHost .historyPrompt { -webkit-line-clamp: 1; }
 
 /* The native session region may have an intrinsic content height or its own
-   scrolling wrappers. Fill the remaining sidebar instead of that short tree. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep] {
+   scrolling wrappers. Fill the remaining sidebar instead of that short tree.
+
+   The shell's own scrollport is the exception. It lays the middle section out
+   as a grid — an 8px spacer row, the launcher list, a 2px spacer row and the
+   session region — inside a 4px gutter column. Forcing flex onto it discarded
+   those rows and the gutter, so the launcher list jumped 8px up and 4px left
+   the instant the studio opened (which is also why the row under the pointer
+   became a different one). Keep the shell's grid for that element and give the
+   region's row the leftover height instead. */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep]:not([data-sidebar-scrollport]) {
   display: flex !important;
   flex: 1 1 0% !important;
   flex-direction: column;
@@ -3553,6 +3561,11 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep] {
   height: auto;
   max-height: none !important;
   overflow: hidden !important;
+}
+
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep][data-sidebar-scrollport] {
+  display: grid !important;
+  grid-template-rows: 8px max-content 2px minmax(0, 1fr) !important;
 }
 
 /* Iteration branches remain accessible in both host themes. */
