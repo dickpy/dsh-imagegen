@@ -249,6 +249,14 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
  * the icon registered in `sidebar.panellist` and own its size, hover chrome and
  * label. The only thing this stylesheet adds is the lit state, because the
  * studio is not a `main` panel the shell could mark as selected. */
+/* Selecting the launcher arms a `main` shim that hands the column straight back
+ * to the Conversation, so the shell never sees the row as the active panel and
+ * it stayed unlit while every other panel row stayed lit after selection. Paint
+ * it with the shell's own active token from the icon's open state, which
+ * survives the hand-off (the icon already tracks it). */
+html[data-dsh-imagegen-active] [class*='panelEntry']:has([data-dsh-imagegen-panel-icon][data-active]) {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
 
 .panelIcon {
   display: inline-flex;

@@ -91,6 +91,7 @@ try {
   // that grid instead of forcing flex over it.
   assert.ok(runtimeCss.includes('[data-dsh-imagegen-sidebar-keep]:not([data-sidebar-scrollport])'), 'the sidebar fill rule skips the shell scrollport')
   assert.match(runtimeCss, /\[data-dsh-imagegen-sidebar-keep\]\[data-sidebar-scrollport\][^{]*\{[^}]*grid-template-rows/, 'the scrollport keeps its grid so the launcher list stays put')
+  assert.ok(runtimeCss.includes('[data-dsh-imagegen-panel-icon][data-active]'), 'the launcher row is painted as the selected panel while the studio is open')
   assert.deepEqual(page.errors, [])
   page.dom.window.close()
 
