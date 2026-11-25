@@ -16,7 +16,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
+import { CardForm, booleanField, numberField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
@@ -59,6 +59,10 @@ export interface ImageGenSettings {
   /** Channel reused for the chat model; empty means the automatic order. */
   promptChannelId?: string
   localStoragePath?: string
+  /** Budget for downloading one result image, in seconds (10-600). */
+  downloadTimeoutSeconds?: number
+  /** Whether the studio claims the whole left column while it is open. */
+  sidebarTakeover?: boolean
   storageEnabled?: boolean
   storageEndpoint?: string
   storageRegion?: string
@@ -97,6 +101,8 @@ export interface ImageGenSettingsCardState extends CardShell {
   promptModel: CardFieldState
   promptChannelId: CardFieldState
   localStoragePath: CardFieldState
+  downloadTimeoutSeconds: CardFieldState
+  sidebarTakeover: CardFieldState
   storageEnabled: CardFieldState
   storageEndpoint: CardFieldState
   storageRegion: CardFieldState
@@ -158,6 +164,8 @@ export class ImageGenSettingsCardController {
       textField('promptModel'),
       textField('promptChannelId'),
       textField('localStoragePath'),
+      numberField('downloadTimeoutSeconds', { min: 10, max: 600 }),
+      booleanField('sidebarTakeover'),
       booleanField('storageEnabled'),
       textField('storageEndpoint'),
       textField('storageRegion'),
@@ -170,12 +178,12 @@ export class ImageGenSettingsCardController {
       booleanField('allowHeavySkills'),
       textField('skillAllowlist'),
       textField('skillOutputDir'),
-      textField('skillHeavyTimeoutMinutes'),
+      numberField('skillHeavyTimeoutMinutes', { min: 0, max: 1440 }),
       textField('skillAgentPreset'),
       textField('pptExecutionMode'),
-      textField('pptConcurrency'),
+      numberField('pptConcurrency', { min: 1, max: 3 }),
       textField('pptVisualMode'),
-      textField('pptPageBudgetMinutes'),
+      numberField('pptPageBudgetMinutes', { min: 1, max: 120 }),
     ], {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
@@ -196,6 +204,8 @@ export class ImageGenSettingsCardController {
       promptModel: this.form.field('promptModel'),
       promptChannelId: this.form.field('promptChannelId'),
       localStoragePath: this.form.field('localStoragePath'),
+      downloadTimeoutSeconds: this.form.field('downloadTimeoutSeconds'),
+      sidebarTakeover: this.form.field('sidebarTakeover'),
       storageEnabled: this.form.field('storageEnabled'),
       storageEndpoint: this.form.field('storageEndpoint'),
       storageRegion: this.form.field('storageRegion'),
@@ -944,6 +954,18 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
           <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</button>
         </div>
         </div>
+        {/* A gateway that returns a large result over a slow link outlived the
+            old fixed 60 s budget; only the user knows how slow their line is. */}
+        <ValueField
+          id="dsh-imagegen-settings-download-timeout"
+          label={t('settings.downloadTimeout')}
+          hint={t('settings.downloadTimeoutHint')}
+          placeholder="60"
+          {...fieldProps}
+          {...state.downloadTimeoutSeconds}
+          onEdit={(text) => { props.edit('downloadTimeoutSeconds', text) }}
+          onReset={() => { props.resetField('downloadTimeoutSeconds') }}
+        />
       </SettingsGroup>
 
       <SettingsGroup
@@ -1403,6 +1425,18 @@ export function ImageGenSettingsSurface(props: ImageGenSettingsSurfaceProps & { 
         {...state.allowAgentImageGeneration}
         onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
         onReset={() => { props.resetField('allowAgentImageGeneration') }}
+      />
+      <BooleanField
+        id="dsh-imagegen-settings-sidebar-takeover"
+        label={t('settings.sidebarTakeover')}
+        hint={t('settings.sidebarTakeoverHint')}
+        inheritLabel={t('settings.inherit')}
+        onLabel={t('settings.on')}
+        offLabel={t('settings.off')}
+        {...fieldProps}
+        {...state.sidebarTakeover}
+        onEdit={(text) => { props.edit('sidebarTakeover', text) }}
+        onReset={() => { props.resetField('sidebarTakeover') }}
       />
       </SettingsGroup>
       <div className={css.footer} ref={commitBarRef}>

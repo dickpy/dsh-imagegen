@@ -23,6 +23,7 @@ import { ImageGenPanel } from './ImageGenPanel.tsx'
 import type { ImageGenScope } from './settings-scope.ts'
 import type { ConversationService } from './conversation-sync.ts'
 import { HISTORY_HOST_SELECTOR } from './sidebar-entry.ts'
+import { applySidebarMode, sidebarModeOf } from './sidebar-mode.ts'
 import css from './panel.module.css'
 
 /** The injected panel container (kept in the DOM, hidden when inactive). */
@@ -234,6 +235,11 @@ export function mountPanel(
     } else {
       document.documentElement.removeAttribute(ACTIVE_ATTR)
     }
+    // The left column follows the same switch: with the takeover on, the open
+    // studio hides the shell's brand row / New Session / panel list so the
+    // history surface owns the height (#101). Closing restores them, which is
+    // why this is re-applied on every open/close rather than at mount.
+    applySidebarMode(sidebarModeOf(scope.getSnapshot().value as { sidebarTakeover?: boolean } | undefined), panelActive)
     renderPanel()
   }
   const onOtherActivate = (event: Event): void => {
@@ -280,6 +286,11 @@ export function mountPanel(
   document.addEventListener('click', onClickSidebar, true)
   document.addEventListener(ACTIVATE_EVENT, onOtherActivate)
   const unsubscribe = controller.subscribe(applyActive)
+  // A settings save that flips the takeover applies without reopening the
+  // studio; the panel re-renders itself through the same scope subscription.
+  const unsubscribeScope = scope.subscribe(() => {
+    applySidebarMode(sidebarModeOf(scope.getSnapshot().value as { sidebarTakeover?: boolean } | undefined), panelActive)
+  })
   applyActive()
   ensure()
 
@@ -288,6 +299,7 @@ export function mountPanel(
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
     unsubscribeSessions?.()
     waitObserver.disconnect()
+    unsubscribeScope()
     unsubscribe()
     document.documentElement.removeAttribute(ACTIVE_ATTR)
     markedCarrier?.removeAttribute(CHAT_COLUMN_ATTR)

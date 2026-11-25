@@ -45,6 +45,10 @@ export interface ImageGenConfig {
   promptModel?: string
   /** Channel reused for the chat model; empty means the automatic order. */
   promptChannelId?: string
+  /** Budget for downloading one result image, in seconds (10-600). */
+  downloadTimeoutSeconds?: number
+  /** Whether the open studio claims the whole left column for image history. */
+  sidebarTakeover?: boolean
   /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
   apiUrl?: string
   apiKey?: string

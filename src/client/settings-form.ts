@@ -115,6 +115,40 @@ export function stringListField(field: string): FieldSpec {
   }
 }
 
+/**
+ * A numeric field.
+ *
+ * The stored shape is a number, not the draft text: the namespace schema
+ * declares `z.number()`, and a write of `"2"` fails validation there — which the
+ * card can only report as "not saved". Text that is not a number (or falls
+ * outside the field's range) yields no write, so the save refuses instead of
+ * storing a value the Host would reject.
+ * @param field - field name inside the namespace section.
+ * @param bounds - inclusive range the stored number must stay in.
+ */
+export function numberField(field: string, bounds: { min?: number; max?: number } = {}): FieldSpec {
+  const { min, max } = bounds
+  return {
+    field,
+    format: (value) => {
+      if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+      // Older documents stored these as text; show them as they are instead of
+      // blanking the control, so the user can correct the value in place.
+      if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return value.trim()
+      return ''
+    },
+    parse: (text) => {
+      const trimmed = text.trim()
+      if (trimmed === '') return { kind: 'clear' }
+      const parsed = Number(trimmed)
+      if (!Number.isFinite(parsed)) return undefined
+      if (min !== undefined && parsed < min) return undefined
+      if (max !== undefined && parsed > max) return undefined
+      return { kind: 'set', value: parsed }
+    },
+  }
+}
+
 /** A boolean field, edited through true/false draft text. */
 export function booleanField(field: string): FieldSpec {
   return {

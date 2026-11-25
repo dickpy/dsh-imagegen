@@ -30,6 +30,13 @@ export interface UpstreamConfig {
   protocol?: ChannelProtocolPreference
   /** Channel display name, recorded in diagnostics so a failure maps to a settings row. */
   channelName?: string
+  /**
+   * Budget for downloading one result image URL, in milliseconds. A gateway
+   * that hands back a large PNG over a slow link regularly needs more than the
+   * 60 s default, so the budget is a user setting (10 s – 10 min). Absent keeps
+   * {@link IMAGE_FETCH_TIMEOUT_MS}.
+   */
+  downloadTimeoutMs?: number
 }
 
 /** A generation failure with a user-presentable message. */
@@ -135,6 +142,21 @@ const UPSTREAM_TIMEOUT_MS = 240_000
 
 /** Budget for downloading one result image URL. */
 const IMAGE_FETCH_TIMEOUT_MS = 60_000
+
+/** Bounds a user-set download budget is clamped to. */
+const MIN_DOWNLOAD_TIMEOUT_MS = 10_000
+const MAX_DOWNLOAD_TIMEOUT_MS = 600_000
+
+/**
+ * The download budget a request runs with.
+ * @param upstream - channel config, which may carry the user's setting.
+ * @returns milliseconds inside the supported range.
+ */
+function downloadBudgetMs(upstream: UpstreamConfig): number {
+  const configured = upstream.downloadTimeoutMs
+  if (typeof configured !== 'number' || !Number.isFinite(configured) || configured <= 0) return IMAGE_FETCH_TIMEOUT_MS
+  return Math.min(MAX_DOWNLOAD_TIMEOUT_MS, Math.max(MIN_DOWNLOAD_TIMEOUT_MS, Math.round(configured)))
+}
 
 /** Cap on the reference image payload (edit mode), in bytes. */
 const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024
@@ -577,7 +599,8 @@ async function normalizeItem(
     if (parsed === undefined) throw new ImageGenError('upstream returned a malformed data: url')
     return { b64: parsed.base64, mime: detectImageMime(Buffer.from(parsed.base64, 'base64')) ?? parsed.mime, revisedPrompt }
   }
-  const budget = requestSignal(signal, IMAGE_FETCH_TIMEOUT_MS)
+  const downloadMs = downloadBudgetMs(upstream)
+  const budget = requestSignal(signal, downloadMs)
   const resultContext: AttemptContext = {
     phase: 'fetch-result',
     channel: upstream.channelName?.trim() || '默认渠道',
@@ -604,8 +627,12 @@ async function normalizeItem(
       })
     } catch (error) {
       // A gateway that accepts the job but hands back an unreachable result URL
-      // looks like a silent failure unless the URL is on the record.
-      const failure = new ImageGenError(`failed to fetch the generated image url: ${error instanceof Error ? error.message : String(error)}`)
+      // looks like a silent failure unless the URL is on the record. A budget
+      // timeout is the one failure the user can fix from settings, so it says
+      // which budget expired instead of showing a bare AbortError.
+      const failure = isBudgetTimeout(error)
+        ? new ImageGenError(`下载结果图超时（${Math.round(downloadMs / 1000)} 秒）：这张图较大或链路较慢，可在「设置 → 生图配置 → 渠道」里调大「结果图下载超时」`, 'download-timeout')
+        : new ImageGenError(`failed to fetch the generated image url: ${error instanceof Error ? error.message : String(error)}`)
       recordFailure(resultContext, failure)
       throw failure
     }
@@ -615,7 +642,16 @@ async function normalizeItem(
       throw failure
     }
     // Budget stays armed through the body read so a stalled download cannot hang the task.
-    const buffer = Buffer.from(await response.arrayBuffer())
+    let buffer: Buffer
+    try {
+      buffer = Buffer.from(await response.arrayBuffer())
+    } catch (error) {
+      const failure = isBudgetTimeout(error)
+        ? new ImageGenError(`下载结果图超时（${Math.round(downloadMs / 1000)} 秒）：这张图较大或链路较慢，可在「设置 → 生图配置 → 渠道」里调大「结果图下载超时」`, 'download-timeout')
+        : new ImageGenError(`failed to read the generated image: ${error instanceof Error ? error.message : String(error)}`)
+      recordFailure(resultContext, failure)
+      throw failure
+    }
     const contentType = response.headers.get('content-type')
     const mime = detectImageMime(buffer)
       ?? (contentType !== null && contentType !== ''

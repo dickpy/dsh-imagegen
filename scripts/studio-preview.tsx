@@ -10,7 +10,8 @@ import { ImageGenSettingsCardController, ImageGenSettingsSurface, type ImageGenS
 import { bindImageGenScope } from '../src/client/settings-scope.ts'
 import { tt } from '../src/client/helpers.ts'
 
-const value = { enabled: true, ...new URLSearchParams(location.search).has('reverse') ? { promptModel: 'fixture-vision' } : {}, defaultChannelId: 'one', defaultModel: 'gpt-image-2', channels: [
+const params = new URLSearchParams(location.search)
+const value = { enabled: true, ...params.has('reverse') ? { promptModel: 'fixture-vision' } : {}, ...params.has('host') ? { sidebarTakeover: false } : {}, defaultChannelId: 'one', defaultModel: 'gpt-image-2', channels: [
   { id: 'one', name: 'Provider A', apiUrl: 'https://one.test/v1', models: [{ id: 'gpt-image-2', alias: 'gpt-image-2' }, { id: 'gpt-image-2.5-flare', alias: 'gpt-image-2.5-flare' }] },
   { id: 'two', name: 'Provider B', apiUrl: 'https://two.test/v1', models: [{ id: 'gpt-image-2', alias: 'gpt-image-2' }] },
 ] }
@@ -18,7 +19,7 @@ const scope = { getSnapshot: () => ({ value, writable: true, status: 'ready' }),
 const api = new ImageGenApi()
 function Fixture(): React.JSX.Element {
   const [key, setKey] = useState(0), [visible, setVisible] = useState(true)
-  return <><nav className="fixture-controls"><button onClick={() => setKey(key + 1)}>Remount studio</button><button onClick={() => setVisible(!visible)}>Toggle workspace</button></nav><div style={{ height: 'calc(100% - 36px)', display: visible ? 'block' : 'none' }}><ImageGenPanel key={key} api={api} scope={scope} onExit={() => {}} /></div></>
+  return <><nav className="fixture-controls"><button onClick={() => setKey(key + 1)}>Remount studio</button><button onClick={() => setVisible(!visible)}>Toggle workspace</button></nav><div style={{ height: 'calc(100% - 36px)', display: visible ? 'block' : 'none' }}><ImageGenPanel key={key} api={api} scope={scope} onExit={() => { const host = window as unknown as { studioExits?: number }; host.studioExits = (host.studioExits ?? 0) + 1 }} /></div></>
 }
 Object.assign(window, { studioRaster: { compositeMaskedResult, loadRaster }, studioSidebar: { mount: mountSidebarSurfaces, Controller: ImageGenController } })
 const root = createRoot(document.getElementById('root')!)

@@ -324,6 +324,7 @@ import { redactDiagnosticText } from './diagnostics-store.ts'
 import { PptRuntime } from './ppt-runtime.ts'
 import { canvasStore } from './canvas-store.ts'
 import { imageGenLanguageOf, interpolate } from './locale-tables.ts'
+import { effectiveDownloadTimeoutMs } from './download-timeout.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'imagegen'
@@ -405,6 +406,19 @@ export interface Config {
   promptChannelId?: string
   /** Local root for generated/history/gallery/canvas images. Empty keeps the default under DSH_HOME. */
   localStoragePath?: string
+  /**
+   * Budget for downloading one finished image from the upstream URL, in
+   * seconds. Large PNGs over a slow link need more than the historical 60 s;
+   * clamped to 10–600 s.
+   */
+  downloadTimeoutSeconds?: number
+  /**
+   * While the studio is open, hand the whole left column to image history: the
+   * shell's brand row, New Session button and panel list step aside so the
+   * history list owns the height, with `回到对话` at its top. Off keeps the
+   * shell's own navigation visible beside the history.
+   */
+  sidebarTakeover?: boolean
   /** Sync saved images to an S3-compatible object store (COS / OSS / Qiniu S3 …). */
   storageEnabled?: boolean
   /** S3-compatible endpoint URL including the bucket (virtual-hosted or path style). */
@@ -508,6 +522,8 @@ const configSchema = z.object({
   promptModel: z.string().default('').volatile(),
   promptChannelId: z.string().default('').volatile(),
   localStoragePath: z.string().default('').volatile(),
+  downloadTimeoutSeconds: z.number().default(60).volatile(),
+  sidebarTakeover: z.boolean().default(true).volatile(),
   storageEnabled: z.boolean().default(false).volatile(),
   storageEndpoint: z.string().default('').volatile(),
   storageRegion: z.string().default('').volatile(),
@@ -639,6 +655,10 @@ export interface EffectiveConfig {
   /** Channel chosen for the chat model; empty means automatic reuse. */
   promptChannelId: string
   storage: StorageSyncConfig & { enabled: boolean; syncGallery: boolean; syncHistory: boolean }
+  /** Budget for downloading one result image, in milliseconds (10 s – 10 min). */
+  downloadTimeoutMs: number
+  /** Whether the studio claims the whole left column while it is open. */
+  sidebarTakeover: boolean
   /** Infinite-canvas skill settings. */
   skills: {
     enabled: boolean
@@ -803,6 +823,8 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
         syncGallery: value.storageSyncGallery ?? true,
         syncHistory: value.storageSyncHistory ?? false,
       },
+      downloadTimeoutMs: effectiveDownloadTimeoutMs(value.downloadTimeoutSeconds),
+      sidebarTakeover: value.sidebarTakeover ?? true,
       skills: {
         enabled: value.skillsEnabled ?? true,
         allowHeavy: value.allowHeavySkills ?? true,
@@ -827,10 +849,11 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   }
 
   // Transient helper used by several mount points below: resolve the shared
-  // channel view once per access; the runtime then picks per-request creds.
+  // channel view once per access; the runtime then picks per-request creds and
+  // the download budget.
   const channelsView = (): ChannelsView => {
     const value = resolve()
-    return { channels: value.channels, defaultChannelId: value.defaultChannelId }
+    return { channels: value.channels, defaultChannelId: value.defaultChannelId, downloadTimeoutMs: value.downloadTimeoutMs }
   }
 
   // Object-storage sync: the image stores announce every file they write; the

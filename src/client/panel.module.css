@@ -299,6 +299,107 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   display: none;
 }
 
+/* --- left column takeover ----------------------------------------------------
+ * With `sidebarTakeover` on, the open studio owns the whole sidebar: the shell's
+ * brand row, New Session button and global panel list step aside, so the history
+ * surface keeps every pixel no matter how many panels are installed (#101).
+ * The markers on those rows are written from our own launcher icon in
+ * sidebar-entry.ts — never from a shell class — because a skin may name nothing
+ * at all. `display:none` also takes the rows out of the tab order, which
+ * `visibility:hidden` would not. Closing the studio drops the attribute and the
+ * shell navigation returns exactly as it was. */
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-panel-list],
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome]:not([data-dsh-imagegen-toggle-host]) {
+  display: none !important;
+}
+
+/* The brand identity is hidden inside the row, not with the row: the shipped
+   shell renders the collapse control as its sibling, so hiding the row would
+   take the control with it. */
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-brand] {
+  display: none !important;
+}
+
+/* The row that carries the collapse control keeps its box, floated to the top
+   right of the column — the corner users reach for. Everything else in that row
+   (brand identity, extra caption controls) is gone, and being absolute means
+   the row no longer reserves height above the history.
+   `:not(#…)` is a specificity booster, not a state: a skin hides its own logo
+   row with a long `!important` chain, and the control must survive that. The id
+   never exists, so only the specificity counts. */
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-toggle-host]:not(#dsh-imagegen-toggle-keep) {
+  display: flex !important;
+  position: absolute !important;
+  top: 8px;
+  right: 8px;
+  z-index: 40;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-toggle-host] > :not([data-dsh-imagegen-toggle]) {
+  display: none !important;
+}
+
+/* Absolutely-positioned rows need the column itself as their containing block. */
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-root] {
+  position: relative !important;
+}
+
+/* The Islands skin lays the sidebar out as a five-row grid (breathing gap, brand
+   band, workspace island, two foot seats) and places the island at grid-area
+   3/2/5/3. Hiding the chrome leaves those two leading rows reserving their
+   heights, which shows up as an empty band above the history — the red box
+   reported against dsh-islands-ui. Collapsing the rows moves the island to the
+   top of the column without touching the skin's placement rules or the rail
+   (grid column 1). */
+html[data-dsh-imagegen-sidebar-takeover] [data-islands-part~='sidebar-root']:not([data-islands-part~='sidebar-collapsed']):not(#dsh-imagegen-grid-keep) {
+  grid-template-rows: 0 0 minmax(0, 1fr) auto auto !important;
+}
+
+/* Exit from the takeover: the first thing on the column, above the history. */
+.sidebarModeBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 6px;
+}
+
+/* Leave room for the floating host control so the two do not overlap. */
+html[data-dsh-imagegen-sidebar-toggle] .sidebarModeBar {
+  padding-right: 42px;
+}
+
+.sidebarBack {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 12px 0 9px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-base, Canvas);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sidebarBack:hover { background: var(--dsw-alias-bg-layer-2); }
+.sidebarBack:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.sidebarBack svg { flex: none; color: var(--dsw-alias-label-secondary); }
+
 /* --- panel frame -------------------------------------------------------------- */
 
 .view {

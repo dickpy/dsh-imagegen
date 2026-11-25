@@ -4,7 +4,11 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 const file = process.argv[2]
 assert.ok(file, 'Usage: node scripts/verify-package.mjs package.tgz')
-const entries = execFileSync('tar', ['-tzf', file], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }).trim().split('\n')
+// `tar -t` emits CRLF on Windows; normalize so the same checks run on both hosts.
+const entries = execFileSync('tar', ['-tzf', file], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
+  .split(/\r?\n/)
+  .map(path => path.trim())
+  .filter(path => path !== '')
 for (const path of ['package/package.json', 'package/lib/index.js', 'package/lib/client.js', 'package/lib/locale-tables.js', 'package/cordis.patch.yml', 'package/src/poster.ts', 'package/src/client/template-library-state.ts', 'package/src/client/ReferenceImages.tsx', 'package/src/client/reference-images.ts', 'package/src/remote-access.ts', 'package/src/client/StudioResults.tsx', 'package/src/client/studio-state.ts', 'package/src/client/MaskEditor.tsx', 'package/src/image-dimensions.ts']) assert.ok(entries.includes(path), `missing ${path}`)
 assert.ok(!entries.some(path => /node_modules|\.poster-preview|\.template-preview|\.references-preview|\.result-preview|\.npmrc|\.env(?:\.|$)/.test(path)), 'package contains no local dependencies, preview output or credentials')
 const manifest = JSON.parse(execFileSync('tar', ['-xOzf', file, 'package/package.json'], { encoding: 'utf8' }))

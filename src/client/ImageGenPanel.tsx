@@ -27,6 +27,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { ImageGenApiError } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
+import { sidebarModeOf } from './sidebar-mode.ts'
 import { renderMarkdown } from './markdown.tsx'
 import { openImageGenConfig } from './config-entry.tsx'
 import { TemplateLibrary, TemplateLibraryButton } from './TemplateLibrary.tsx'
@@ -553,6 +554,9 @@ export function ImageGenPanel(props: {
   // library and the inspiration wall render inside this tree.
   useImageGenLanguageTick()
   const enabled = config?.enabled ?? true
+  // Who owns the left column while this panel is open; the shell hides its own
+  // navigation from the same value (mount.tsx publishes it on <html>).
+  const sidebarMode = sidebarModeOf(config)
   // Channel-aware model options: every selector keeps the owning channel so
   // repeated aliases can never route through the wrong endpoint.
   const modelOptions = imageModelOptions(config)
@@ -2396,8 +2400,25 @@ export function ImageGenPanel(props: {
   // surface from both the image workspace and the native conversation.
   const historyPanel = (
     <aside className={css.history} data-dsh-imagegen-history data-imagegen-private={privacyMode ? 'true' : undefined}>
+      {/* Takeover: the column is image-only, so its first control is the way
+          back. Without the takeover the shell's own navigation is right above,
+          and a second exit would just be noise. */}
+      {sidebarMode === 'studio' && onExit !== undefined ? (
+        <div className={css.sidebarModeBar} data-sidebar-mode-bar="">
+          <button
+            type="button"
+            className={css.sidebarBack}
+            data-sidebar-back=""
+            title={tt('sidebar.backToChatHint')}
+            onClick={() => { onExit() }}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
+            {tt('sidebar.backToChat')}
+          </button>
+        </div>
+      ) : null}
       <header className={css.historyHeader}>
-        <span className={css.historyTitle}>{tt('history.title')}</span>
+        <span className={css.historyTitle}>{tt(sidebarMode === 'studio' ? 'sidebar.title' : 'history.title')}</span>
         <div className={css.historyHeaderActions}>
           <button
             type="button"
