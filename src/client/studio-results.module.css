@@ -93,13 +93,11 @@
 }
 
 /*
- * The board is a photo sheet, not a scrolling list: it fills the panel, and the
- * row split comes from result-layout.ts, which measures the board and the image
- * shapes (two side by side, three portraits in a row, otherwise a balanced
- * sheet). Each row divides its width evenly; each cell keeps the image fully
- * visible (contain, never cropped).
+ * Fixed row groups keep the result order stable. Fit the frame inside each
+ * cell so mixed image ratios don't turn into large bands inside the cards.
  */
 .grid {
+  container: result-sheet / size;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -112,6 +110,58 @@
   flex: 1 1 0;
   min-height: 0;
   gap: 12px;
+}
+
+.cell {
+  container-type: size;
+  display: flex;
+  justify-content: center;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Widen both images in a narrow column when there is room to stack them. */
+@container result-sheet (max-width: 420px) and (min-height: 300px) {
+  .grid[data-landscape-pair] > .row {
+    flex-direction: column;
+  }
+}
+
+@supports (width: 1cqh) {
+  .cell[data-fit-image] > [data-result-card] {
+    --result-meta-height: 36px;
+    --result-caption-height: 0px;
+    --result-media-height: max(0px, 100cqh - var(--result-meta-height) - var(--result-caption-height) - 2px);
+    box-sizing: border-box;
+    flex: none;
+    align-self: flex-start;
+    width: min(100%, calc(var(--result-media-height) * var(--result-aspect) + 2px));
+    /* Keep small frames usable for the duration badge and card actions. */
+    min-width: min(100%, 120px);
+    max-height: 100%;
+  }
+
+  .cell[data-fit-image] > [data-result-card]:has(> figcaption) {
+    --result-caption-height: 32px;
+  }
+
+  .cell[data-fit-image] [data-result-media] {
+    flex: 0 1 auto;
+    aspect-ratio: var(--result-aspect);
+    max-height: var(--result-media-height);
+  }
+
+  .cell[data-fit-image] .meta {
+    box-sizing: border-box;
+    height: var(--result-meta-height);
+    line-height: 17px;
+  }
+
+  .cell[data-fit-image] figcaption {
+    box-sizing: border-box;
+    height: var(--result-caption-height);
+  }
 }
 
 /* Too many cards for one screen: rows keep a readable height and the board scrolls. */
@@ -407,8 +457,6 @@
   .board {
     padding: 48px 10px 12px;
   }
-  /* The planner already drops to narrower sheets on a narrow board; only the
-     gap needs to shrink with it. */
   .grid,
   .row {
     gap: 10px;

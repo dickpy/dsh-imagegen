@@ -278,6 +278,45 @@ try {
   assert.ok(sidebar.historyHeight > 250, 'the history fills the remaining grid track')
   assert.deepEqual(sidebar.takeover, { list: 'none', scrollport: 'flex' }, 'takeover keeps the full flex scrollport for history')
   console.log('PASS native scrollport: steady launcher, selected color, and history in both sidebar modes')
+
+  const legacyImage = (id, width, height) => {
+    assets[id] = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="steelblue"/></svg>`)
+    return { url: `/history/image/${id}.png`, mime: 'image/svg+xml', revisedPrompt: 'Fixture prompt' }
+  }
+  const first = legacyImage('first-wide', 640, 360)
+  const second = legacyImage('second-wide', 480, 320)
+  const portrait = legacyImage('portrait', 360, 640)
+  entries.unshift(
+    { ...entries[0], id: 'layout-wide', prompt: 'Legacy wide pair', createdAt: Date.now(), n: 2, images: [first, second] },
+    { ...entries[0], id: 'layout-mixed', prompt: 'Legacy mixed pair', createdAt: Date.now() - 1, n: 2, images: [first, portrait] },
+  )
+  await page.setViewportSize({ width: 1440, height: 840 })
+  await page.goto(base)
+  await page.getByRole('button', { name: /Legacy wide pair/ }).click()
+  const grid = page.locator('[data-result-preview-grid]')
+  const media = grid.locator('[data-result-media]')
+  const dimensions = grid.locator('[data-image-dimensions]')
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-image-dimensions]')].every(el => el.textContent.includes(' × ')))
+  assert.deepEqual(await dimensions.allTextContents(), ['640 × 360', '480 × 320'])
+  const geometry = () => media.evaluateAll(elements => elements.map(el => {
+    const { width, height, y } = el.getBoundingClientRect()
+    return { width, height, y }
+  }))
+  await grid.evaluate(element => { element.style.width = '480px' })
+  const wide = await geometry()
+  assert.equal(wide[0].y, wide[1].y, 'landscapes remain side by side with space to compare')
+  await grid.evaluate(element => { element.style.width = '400px' })
+  const narrow = await geometry()
+  assert.ok(narrow[1].y > narrow[0].y + narrow[0].height, 'two landscapes stack in a narrow result sheet')
+  assert.ok(narrow[0].width > wide[0].width, 'stacking widens the first preview')
+  assert.ok(Math.abs(narrow[0].width - narrow[0].height * 16 / 9) < 2, 'the caption and metadata fit outside the picture')
+  await page.getByRole('button', { name: /Legacy mixed pair/ }).click()
+  await dimensions.last().getByText('360 × 640', { exact: true }).waitFor()
+  await grid.evaluate(element => { element.style.width = '400px' })
+  const mixed = await geometry()
+  assert.equal(mixed[0].y, mixed[1].y, 'mixed images use the original order and stay side by side')
+  assert.ok(Math.abs(mixed[1].width - mixed[1].height * 9 / 16) < 2, 'the legacy portrait keeps its decoded ratio')
+  console.log('PASS result sheet: legacy dimensions, image fit and width-aware landscape pairs')
 } catch (error) {
   if (page) { mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true }); await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/history-failure.png', import.meta.url)) }) }
   throw error
