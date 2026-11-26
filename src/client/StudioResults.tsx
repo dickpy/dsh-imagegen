@@ -7,24 +7,15 @@ import { StudioActionButton } from './StudioActionButton.tsx'
 import { GenerationLoading } from './GenerationLoading.tsx'
 import { GenerationDurationBadge } from './GenerationDurationBadge.tsx'
 import { ImageActionMenu, type ImageMenuGroup } from './ImageActionMenu.tsx'
-import { planResultLayout } from './result-layout.ts'
+import { ResultSheet, type ResultImageSize } from './ResultSheet.tsx'
 import { downloadImage } from './result-board.ts'
 import { tt } from './helpers.ts'
 import css from './studio-results.module.css'
 
-export function ImageResultMeta({ image, model, channel }: { image: GeneratedImage; model?: string; channel?: string }): React.JSX.Element {
-  const [size, setSize] = useState<{ width: number; height: number } | null>(null)
-  useEffect(() => {
-    if (image.width !== undefined) return
-    let disposed = false
-    const decoded = new Image()
-    decoded.onload = () => { if (!disposed) setSize({ width: decoded.naturalWidth, height: decoded.naturalHeight }) }
-    decoded.src = `data:${image.mime};base64,${image.b64}`
-    return () => { disposed = true }
-  }, [image.b64, image.mime, image.width])
+export function ImageResultMeta({ image, size, model, channel }: { image: GeneratedImage; size: ResultImageSize | undefined; model?: string; channel?: string }): React.JSX.Element {
   return <div className={css.meta} data-result-meta="">
     <span title={`${channel ?? image.channel ?? ''} / ${model ?? image.model ?? ''}`}>{[channel ?? image.channel, model ?? image.model].filter(Boolean).join(' / ')}</span>
-    <span data-image-dimensions="">{(image.width ?? size?.width) ? `${image.width ?? size?.width} × ${image.height ?? size?.height}` : ''}</span>
+    <span data-image-dimensions="">{size === undefined ? '' : `${size.width} × ${size.height}`}</span>
   </div>
 }
 
@@ -44,8 +35,7 @@ function useBoardClock(active: boolean): number {
  *
  * It is deliberately quiet: one image per card, a single metadata line, and
  * the actions behind a right-click (or the "…" button) plus a download button
- * in the picture's corner. The sheet itself is planned per board size so mixed
- * pixel shapes fill the panel instead of leaving letterbox bars (#97).
+ * in the picture's corner. The sheet keeps the slots in order as images arrive.
  */
 export function StudioResults(props: {
   run: StudioRun
@@ -98,10 +88,6 @@ export function StudioResults(props: {
   const previewImages = cards.flatMap(card => card.display === undefined ? [] : [card.display])
   const previewIndexOf = (cardIndex: number): number => cards.slice(0, cardIndex).filter(card => card.display !== undefined).length
 
-  const layout = planResultLayout({ count: cards.length })
-  // The planner always covers every card; this keeps a stale plan from hiding one.
-  const rows = layout.rows.flat().length === cards.length ? layout.rows : cards.map((_, index) => [index])
-
   const openMenuAt = (x: number, y: number, cardIndex: number): void => {
     const card = cards[cardIndex]
     if (card?.display === undefined) return
@@ -114,11 +100,11 @@ export function StudioResults(props: {
     openMenuAt(event.clientX, event.clientY, cardIndex)
   }
 
-  const renderCard = (cardIndex: number): React.JSX.Element => {
+  const renderCard = (cardIndex: number, size: ResultImageSize | undefined, onImageLoad: (element: HTMLImageElement) => void): React.JSX.Element => {
     const { slot, task, status, display, waiting, failed, missing, channel } = cards[cardIndex]!
     const elapsed = task?.startedAt === undefined ? 0 : Math.max(0, Math.floor((now - task.startedAt) / 1000))
     return <figure key={slot.id} className={css.card} data-result-card="" data-studio-slot={slot.id} data-comparison-task={slot.taskId} data-task-status={status} data-generation-state={waiting ? status : undefined}>
-      <div className={css.media} data-empty={display === undefined ? '' : undefined} data-failed={failed ? '' : undefined}>
+      <div className={css.media} data-result-media="" data-empty={display === undefined ? '' : undefined} data-failed={failed ? '' : undefined}>
         {display !== undefined ? (
           <button
             type="button"
@@ -128,7 +114,7 @@ export function StudioResults(props: {
             onClick={() => props.onPreview(previewImages, previewIndexOf(cardIndex))}
             onContextMenu={event => openMenuFromEvent(event, cardIndex)}
           >
-            <img src={`data:${display.mime};base64,${display.b64}`} alt={slot.model} draggable={false} />
+            <img src={`data:${display.mime};base64,${display.b64}`} alt={slot.model} draggable={false} onLoad={event => onImageLoad(event.currentTarget)} />
           </button>
         ) : null}
         {display !== undefined ? (
@@ -193,7 +179,7 @@ export function StudioResults(props: {
           </div>
         ) : null}
       </div>
-      {display !== undefined ? <ImageResultMeta image={display} model={slot.model} channel={channel} /> : <div className={css.meta}><span title={`${channel ?? ''} / ${slot.model}`}>{[channel, slot.model].filter(Boolean).join(' / ')}</span><span /></div>}
+      {display !== undefined ? <ImageResultMeta image={display} size={size} model={slot.model} channel={channel} /> : <div className={css.meta}><span title={`${channel ?? ''} / ${slot.model}`}>{[channel, slot.model].filter(Boolean).join(' / ')}</span><span /></div>}
       {task?.result?.historyError && <p className={css.errorText} role="status">{task.result.historyError}</p>}
     </figure>
   }
@@ -216,19 +202,11 @@ export function StudioResults(props: {
       <button type="button" className={css.appendSubmit} disabled={props.busy || choice.model === ''} onClick={() => props.onAppend(choice)}>{tt('studio.appendGenerate')}</button>
       <span>{tt('studio.appendHint')}</span>
     </div>}
-    <div
-      className={css.grid}
-      data-count={cards.length <= 4 ? String(cards.length) : 'many'}
-      data-result-preview-grid=""
-      data-rows={rows.length}
-      data-scroll={layout.scroll ? '' : undefined}
-    >
-      {rows.map((row, rowIndex) => (
-        <div className={css.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>
-          {row.map(cardIndex => renderCard(cardIndex))}
-        </div>
-      ))}
-    </div>
+    <ResultSheet items={cards.map(({ slot, display, waiting, failed, missing, task }) => ({
+      key: slot.id,
+      image: display,
+      keepFullCell: waiting || failed || missing || Boolean(task?.result?.historyError),
+    }))} renderCard={renderCard} />
     {menu !== null ? <ImageActionMenu x={menu.x} y={menu.y} groups={menu.groups} label={tt('result.more')} onClose={() => { setMenu(null) }} /> : null}
   </section>
 }

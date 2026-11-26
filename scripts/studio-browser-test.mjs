@@ -95,6 +95,11 @@ try {
   await board().getByRole('button', { name: '追加生成', exact: true }).click()
   await waitFor(async () => await slots().count() === 4 && await slots().last().getAttribute('data-task-status') === 'completed', 'new model appended')
   assert.deepEqual((await slots().evaluateAll(elements => elements.map(el => el.dataset.studioSlot))).slice(0, 3), ids)
+  assert.deepEqual(await board().locator('[data-result-row]').evaluateAll(rows => rows.map(row => row.querySelectorAll('figure').length)), [2, 2])
+  assert.ok(await board().locator('[data-result-media]').evaluateAll(media => media.every(element => {
+    const { width, height } = element.getBoundingClientRect()
+    return width > 0 && Math.abs(width - height * 4 / 3) < 2
+  })), 'completed live cards fit the original image ratio')
   assert.equal(requests[4].prompt, 'text run')
   terminalCap = 2
   await page.getByRole('button', { name: 'Remount studio', exact: true }).click()

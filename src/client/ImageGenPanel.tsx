@@ -64,7 +64,7 @@ import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService }
 import { useConversationImageAttachment } from './use-conversation-image-attachment.tsx'
 import { ConversationSessionPicker } from './ConversationSessionPicker.tsx'
 import { Select } from './Select.tsx'
-import { planResultLayout } from './result-layout.ts'
+import { ResultSheet } from './ResultSheet.tsx'
 import { downloadImage } from './result-board.ts'
 import css from './panel.module.css'
 import resultCss from './studio-results.module.css'
@@ -2330,14 +2330,6 @@ export function ImageGenPanel(props: {
   const previewFrameScale = Math.max(1, previewScale)
   const previewImageScale = previewScale / previewFrameScale
 
-  /*
-   * The plain result grid (history/gallery records and single-model results
-   * outside a studio run) uses the same fixed sheet as the studio board, so the
-   * two surfaces cannot disagree about layout again (#97).
-   */
-  const plainLayout = planResultLayout({ count: images.length })
-  const plainRows = plainLayout.rows
-
   /** Drag the config panel's right edge to resize it (persisted per browser). */
   const onConfigResizeStart = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
@@ -3590,70 +3582,58 @@ export function ImageGenPanel(props: {
                   </span>
                 ) : null}
               </div>
-              <div
-                className={resultCss.grid}
-                data-count={images.length <= 4 ? String(images.length) : 'many'}
-                data-result-preview-grid=""
-                data-rows={plainRows.length}
-                data-scroll={plainLayout.scroll ? '' : undefined}
-              >
-                {plainRows.map((row, rowIndex) => (
-                  <div className={resultCss.row} key={`row-${rowIndex}`} data-result-row={rowIndex}>
-                    {row.map(index => {
-                      const image = images[index]!
-                      return (
-                          <figure
-                            key={index}
-                            className={css.imageCard}
-                            data-result-card=""
-                            role="button"
-                            tabIndex={0}
-                            title={tt('preview.open')}
-                            onClick={() => { openPreview(images, index) }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault()
-                                openPreview(images, index)
-                              }
-                            }}
-                          >
-                            <div className={css.imageMedia}>
-                              <img
-                                className={css.image}
-                                src={srcOf(image)}
-                                alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
-                                onContextMenu={event => openImageMenu(event, image, viewingEntry ?? viewingGalleryEntry ?? undefined)}
-                              />
-                              <div className={resultCss.mediaCorner}>
-                                <button
-                                  type="button"
-                                  className={resultCss.cardDownload}
-                                  data-result-download=""
-                                  aria-label={tt('download')}
-                                  title={tt('download')}
-                                  onClick={(event) => { event.stopPropagation(); downloadImage(image, `dsh-image-${index + 1}`) }}
-                                >
-                                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3v6.5" /><path d="M5.2 7.2 8 10l2.8-2.8" /><path d="M3.4 12.6h9.2" /></svg>
-                                </button>
-                                <GenerationDurationBadge durationMs={image.durationMs} />
-                              </div>
-                            </div>
-                            <ImageResultMeta image={image} model={image.model ?? viewingEntry?.model} channel={image.channel ?? viewingEntry?.channel} />
-                            {image.revisedPrompt !== undefined ? (
-                              <figcaption className={css.imageCaption} title={image.revisedPrompt}>
-                                {tt('revisedPrompt', { prompt: image.revisedPrompt })}
-                              </figcaption>
-                            ) : null}
-                            <span className={css.zoomHint}>
-                              <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M13 13l-3.2-3.2"/><path d="M7 5.4v3.2M5.4 7h3.2"/></svg>
-                              {tt('preview.open')}
-                            </span>
-                          </figure>
-                        )
-                    })}
-                  </div>
-                ))}
-              </div>
+              <ResultSheet items={images.map((image, index) => ({ key: index, image }))} renderCard={(index, size, onImageLoad) => {
+                const image = images[index]!
+                return (
+                  <figure
+                    className={css.imageCard}
+                    data-result-card=""
+                    role="button"
+                    tabIndex={0}
+                    title={tt('preview.open')}
+                    onClick={() => { openPreview(images, index) }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        openPreview(images, index)
+                      }
+                    }}
+                  >
+                    <div className={css.imageMedia} data-result-media="">
+                      <img
+                        className={css.image}
+                        src={srcOf(image)}
+                        alt={image.revisedPrompt ?? `${tt('panel.title')} ${index + 1}`}
+                        onLoad={event => onImageLoad(event.currentTarget)}
+                        onContextMenu={event => openImageMenu(event, image, viewingEntry ?? viewingGalleryEntry ?? undefined)}
+                      />
+                      <div className={resultCss.mediaCorner}>
+                        <button
+                          type="button"
+                          className={resultCss.cardDownload}
+                          data-result-download=""
+                          aria-label={tt('download')}
+                          title={tt('download')}
+                          onClick={(event) => { event.stopPropagation(); downloadImage(image, `dsh-image-${index + 1}`) }}
+                        >
+                          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3v6.5" /><path d="M5.2 7.2 8 10l2.8-2.8" /><path d="M3.4 12.6h9.2" /></svg>
+                        </button>
+                        <GenerationDurationBadge durationMs={image.durationMs} />
+                      </div>
+                    </div>
+                    <ImageResultMeta image={image} size={size} model={image.model ?? viewingEntry?.model} channel={image.channel ?? viewingEntry?.channel} />
+                    {image.revisedPrompt !== undefined ? (
+                      <figcaption className={css.imageCaption} title={image.revisedPrompt}>
+                        {tt('revisedPrompt', { prompt: image.revisedPrompt })}
+                      </figcaption>
+                    ) : null}
+                    <span className={css.zoomHint}>
+                      <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M13 13l-3.2-3.2"/><path d="M7 5.4v3.2M5.4 7h3.2"/></svg>
+                      {tt('preview.open')}
+                    </span>
+                  </figure>
+                )
+              }} />
             </div>
           ) : null}
           {workspace === 'ecommerce' || (isGeneration && !liveBoardCurrent) ? <TemplateLibraryButton expanded={libraryOpen} onClick={() => setLibraryOpen(true)} /> : null}
