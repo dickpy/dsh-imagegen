@@ -249,6 +249,14 @@ html[data-dsh-imagegen-active] [class*='frame'][data-sidebar-drawer] [data-dsh-i
  * the icon registered in `sidebar.panellist` and own its size, hover chrome and
  * label. The only thing this stylesheet adds is the lit state, because the
  * studio is not a `main` panel the shell could mark as selected. */
+/* Selecting the launcher arms a `main` shim that hands the column straight back
+ * to the Conversation, so the shell never sees the row as the active panel and
+ * it stayed unlit while every other panel row stayed lit after selection. Paint
+ * it with the shell's own active token from the icon's open state, which
+ * survives the hand-off (the icon already tracks it). */
+html[data-dsh-imagegen-active] [class*='panelEntry']:has([data-dsh-imagegen-panel-icon][data-active]) {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
 
 .panelIcon {
   display: inline-flex;
@@ -3645,8 +3653,11 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 .sidebarHistoryHost .historyPrompt { -webkit-line-clamp: 1; }
 
 /* The native session region may have an intrinsic content height or its own
-   scrolling wrappers. Fill the remaining sidebar instead of that short tree. */
-html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep] {
+   scrolling wrappers. Fill the remaining sidebar instead of that short tree.
+
+   When takeover is enabled, the history fills the scrollport by itself. */
+html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep]:not([data-sidebar-scrollport]),
+html[data-dsh-imagegen-active][data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-keep][data-sidebar-scrollport] {
   display: flex !important;
   flex: 1 1 0% !important;
   flex-direction: column;
@@ -3654,6 +3665,12 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-keep] {
   height: auto;
   max-height: none !important;
   overflow: hidden !important;
+}
+
+/* Keep the shell grid's launcher spacing and gutter when its list is visible.
+   Let the session row fill the available space for the history overlay. */
+html[data-dsh-imagegen-active]:not([data-dsh-imagegen-sidebar-takeover]) [data-dsh-imagegen-sidebar-keep][data-sidebar-scrollport] {
+  grid-template-rows: 8px max-content 2px minmax(0, 1fr) !important;
 }
 
 /* Iteration branches remain accessible in both host themes. */

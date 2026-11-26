@@ -85,6 +85,13 @@ try {
   assert.ok(runtimeCss.includes('data-shell-leading'), 'the collapsed sidebar opener is raised above the studio')
   assert.ok(runtimeCss.includes('[class*=mainPanel]'), 'the 0.2.x main panel wrapper is recognised')
   assert.ok(runtimeCss.includes('[data-dsh-imagegen-chat-column]'), 'the chat carrier rule is emitted')
+  // Opening the studio must not move the launcher list. The shell lays its
+  // middle section out as a grid (8px spacer, launcher list, 2px spacer,
+  // session region) inside a 4px gutter column, so the fill rule has to keep
+  // that grid instead of forcing flex over it.
+  assert.ok(runtimeCss.includes('[data-dsh-imagegen-sidebar-keep]:not([data-sidebar-scrollport])'), 'the sidebar fill rule skips the shell scrollport')
+  assert.match(runtimeCss, /:not\(\[data-dsh-imagegen-sidebar-takeover\]\) \[data-dsh-imagegen-sidebar-keep\]\[data-sidebar-scrollport\][^{]*\{[^}]*grid-template-rows/, 'the scrollport keeps its grid when the launcher list is visible')
+  assert.ok(runtimeCss.includes('[data-dsh-imagegen-panel-icon][data-active]'), 'the launcher row is painted as the selected panel while the studio is open')
   assert.deepEqual(page.errors, [])
   page.dom.window.close()
 

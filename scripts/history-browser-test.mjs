@@ -233,6 +233,51 @@ try {
   assert.equal(await dialog.locator('[data-watermark-hint]').count(), 0, 'unrelated models do not advertise unsupported switches')
   assert.deepEqual(errors, [])
   console.log('PASS channel settings Chromium: capability-aware hints, SenseNova switches, saved HTTP payload, reload persistence and unrelated model isolation')
+  // The expanded DSH sidebar uses a grid scrollport for the launcher list and
+  // sessions. Its gutters must survive when the studio keeps that list visible.
+  await page.goto(`${base}/?host`)
+  await page.locator('[data-dsh-imagegen-history-host]').waitFor()
+  await page.addStyleTag({ content: `
+    :root { --dsw-alias-interactive-bg-hover: rgb(225, 229, 235); }
+    .host_scrollArea[data-sidebar-scrollport] {
+      display: grid;
+      grid-template-columns: 4px minmax(0, 1fr);
+      grid-template-rows: 8px max-content 2px max-content;
+      margin-left: -4px;
+    }
+    .host_panelList { grid-area: 2 / 2; }
+    .host_regionArea { grid-area: 4 / 2; }
+  ` })
+  const sidebar = await page.evaluate(() => {
+    const root = document.documentElement
+    const scrollport = document.querySelector('.host_scrollArea')
+    const icon = document.querySelector('[data-dsh-imagegen-panel-icon]')
+    const row = icon.closest('button')
+    scrollport.setAttribute('data-sidebar-scrollport', '')
+    row.classList.add('host_panelEntry')
+    const position = () => { const { x, y } = row.getBoundingClientRect(); return [x, y] }
+
+    root.removeAttribute('data-dsh-imagegen-active')
+    const before = position()
+    const idle = getComputedStyle(row).backgroundColor
+    root.setAttribute('data-dsh-imagegen-active', '')
+    icon.setAttribute('data-active', '')
+    const open = position()
+    const selected = getComputedStyle(row).backgroundColor
+    const historyHeight = document.querySelector('[data-dsh-imagegen-history-host]').getBoundingClientRect().height
+    root.setAttribute('data-dsh-imagegen-sidebar-takeover', '')
+    const takeover = {
+      list: getComputedStyle(document.querySelector('.host_panelList')).display,
+      scrollport: getComputedStyle(scrollport).display,
+    }
+    return { before, idle, open, selected, historyHeight, takeover }
+  })
+  assert.deepEqual(sidebar.open, sidebar.before, 'opening the studio keeps the launcher under the pointer')
+  assert.equal(sidebar.idle, 'rgba(0, 0, 0, 0)')
+  assert.equal(sidebar.selected, 'rgb(225, 229, 235)', 'the launcher takes the native active color')
+  assert.ok(sidebar.historyHeight > 250, 'the history fills the remaining grid track')
+  assert.deepEqual(sidebar.takeover, { list: 'none', scrollport: 'flex' }, 'takeover keeps the full flex scrollport for history')
+  console.log('PASS native scrollport: steady launcher, selected color, and history in both sidebar modes')
 } catch (error) {
   if (page) { mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true }); await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/history-failure.png', import.meta.url)) }) }
   throw error
