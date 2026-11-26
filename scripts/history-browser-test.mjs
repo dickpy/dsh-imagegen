@@ -295,9 +295,11 @@ try {
   await page.getByRole('button', { name: /Legacy wide pair/ }).click()
   const grid = page.locator('[data-result-preview-grid]')
   const media = grid.locator('[data-result-media]')
-  const dimensions = grid.locator('[data-image-dimensions]')
-  await page.waitForFunction(() => [...document.querySelectorAll('[data-image-dimensions]')].every(el => el.textContent.includes(' × ')))
-  assert.deepEqual(await dimensions.allTextContents(), ['640 × 360', '480 × 320'])
+  const waitForDimensions = expected => page.waitForFunction(values => {
+    const dimensions = [...document.querySelectorAll('[data-result-preview-grid] [data-image-dimensions]')]
+    return dimensions.length === values.length && dimensions.every((element, index) => element.textContent === values[index])
+  }, expected)
+  await waitForDimensions(['640 × 360', '480 × 320'])
   const geometry = () => media.evaluateAll(elements => elements.map(el => {
     const { width, height, y } = el.getBoundingClientRect()
     return { width, height, y }
@@ -311,7 +313,7 @@ try {
   assert.ok(narrow[0].width > wide[0].width, 'stacking widens the first preview')
   assert.ok(Math.abs(narrow[0].width - narrow[0].height * 16 / 9) < 2, 'the caption and metadata fit outside the picture')
   await page.getByRole('button', { name: /Legacy mixed pair/ }).click()
-  await dimensions.last().getByText('360 × 640', { exact: true }).waitFor()
+  await waitForDimensions(['640 × 360', '360 × 640'])
   await grid.evaluate(element => { element.style.width = '400px' })
   const mixed = await geometry()
   assert.equal(mixed[0].y, mixed[1].y, 'mixed images use the original order and stay side by side')
