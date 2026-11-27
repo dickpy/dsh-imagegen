@@ -19,7 +19,6 @@
  */
 
 import css from './panel.module.css'
-import { SIDEBAR_TOGGLE_ATTR, SIDEBAR_TOGGLE_HOST_ATTR, SIDEBAR_TOGGLE_PRESENT_ATTR, SIDEBAR_TOGGLE_SELECTOR } from './sidebar-mode.ts'
 
 /** Stable selector for the history surface in the shell region area. */
 export const HISTORY_HOST_SELECTOR = '[data-dsh-imagegen-history-host]'
@@ -39,15 +38,12 @@ export const PANEL_ICON_SELECTOR = '[data-dsh-imagegen-panel-icon]'
 export const PANEL_LIST_ATTR = 'data-dsh-imagegen-panel-list'
 
 /**
- * Marks shell chrome the takeover hides: the brand row, the top strip and the
- * New Session button. All of them mean "conversation", so they have no job on a
- * column that belongs to image generation. The row that carries the collapse
- * control is the one exception — see {@link markTakeoverSurfaces}.
+ * Marks shell chrome the takeover hides: the New Session row. It means
+ * "start a conversation", which is the one thing a column owned by image
+ * generation has no room for. The top band (window buttons) and the brand row
+ * stay — see {@link markTakeoverSurfaces}.
  */
 export const SIDEBAR_CHROME_ATTR = 'data-dsh-imagegen-sidebar-chrome'
-
-/** The brand identity inside the logo row, hidden separately from the row. */
-const SIDEBAR_BRAND_ATTR = 'data-dsh-imagegen-sidebar-brand'
 
 /**
  * Sidebar column markers: the web shell names its grid column `sidebarCol`
@@ -191,38 +187,11 @@ function markTakeoverSurfaces(root: HTMLElement): void {
   const list = launcherList(root)
   if (list !== undefined && !list.hasAttribute(PANEL_LIST_ATTR)) list.setAttribute(PANEL_LIST_ATTR, '')
 
-  // The collapse control is the one shell control the column cannot lose: it is
-  // how the user folds the sidebar away. Find it first, mark the row that holds
-  // it, and keep that row visible (floated) while every other chrome row goes.
-  const toggle = root.querySelector<HTMLElement>(SIDEBAR_TOGGLE_SELECTOR)
-  let toggleHost: HTMLElement | undefined
-  if (toggle !== null) {
-    if (!toggle.hasAttribute(SIDEBAR_TOGGLE_ATTR)) toggle.setAttribute(SIDEBAR_TOGGLE_ATTR, '')
-    const host = toggle.parentElement
-    if (host !== null && host !== root && root.contains(host)) {
-      toggleHost = host
-      if (!host.hasAttribute(SIDEBAR_TOGGLE_HOST_ATTR)) host.setAttribute(SIDEBAR_TOGGLE_HOST_ATTR, '')
-      document.documentElement.setAttribute(SIDEBAR_TOGGLE_PRESENT_ATTR, '')
-    }
-  }
-
-  // Hide the brand identity, not the row that carries it: in the shipped shell
-  // the collapse button is a sibling of the brand inside `logoRow`, so hiding
-  // the whole row is what made the button disappear.
-  const logo = root.querySelector<HTMLElement>('[class*="logoRow"]')
-  if (logo !== null) {
-    for (const child of logo.children) {
-      if (toggle !== null && (child === toggle || child.contains(toggle))) continue
-      if (!child.hasAttribute(SIDEBAR_BRAND_ATTR)) child.setAttribute(SIDEBAR_BRAND_ATTR, '')
-    }
-    if (toggleHost !== logo && !logo.hasAttribute(SIDEBAR_CHROME_ATTR)) logo.setAttribute(SIDEBAR_CHROME_ATTR, '')
-  }
-  // A skin may keep its own top band (darwin traffic lights, Windows caption
-  // row); that band is chrome too, unless it is where the toggle lives.
-  for (const strip of root.querySelectorAll<HTMLElement>('[class*="topStrip"]')) {
-    if (strip !== toggleHost && !strip.hasAttribute(SIDEBAR_CHROME_ATTR)) strip.setAttribute(SIDEBAR_CHROME_ATTR, '')
-  }
-
+  // The top chrome stays: the band the shell reserves for the window buttons
+  // (macOS traffic lights, the Windows caption row) and the row that carries the
+  // brand and the collapse control. Hiding them (v1.22.0) put the takeover
+  // header under the traffic lights and dropped the DSH logo; only the rows
+  // that actually cost height are hidden, and both live below this band.
   const button = newSessionButton(root)
   if (button === undefined) return
   // Hide the row the button lives in (a wrapper's padding would otherwise leave
@@ -320,16 +289,6 @@ export function mountSidebarSurfaces(): () => void {
     for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_CHROME_ATTR}]`)) {
       element.removeAttribute(SIDEBAR_CHROME_ATTR)
     }
-    for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_BRAND_ATTR}]`)) {
-      element.removeAttribute(SIDEBAR_BRAND_ATTR)
-    }
-    for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_TOGGLE_HOST_ATTR}]`)) {
-      element.removeAttribute(SIDEBAR_TOGGLE_HOST_ATTR)
-    }
-    for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_TOGGLE_ATTR}]`)) {
-      element.removeAttribute(SIDEBAR_TOGGLE_ATTR)
-    }
-    document.documentElement.removeAttribute(SIDEBAR_TOGGLE_PRESENT_ATTR)
     if (root !== undefined) delete root.dataset.dshImagegenSidebarRoot
   }
 }

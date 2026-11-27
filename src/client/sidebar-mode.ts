@@ -9,10 +9,12 @@
  * (issue #101).
  *
  * The studio therefore has a mode:
- *  - `studio`: the whole left column belongs to image history. The shell's
- *    brand row, New Session button and panel list step aside, and the history
- *    surface puts `回到对话` at its own top. Height no longer depends on how
- *    many panels are installed.
+ *  - `studio`: the left column belongs to image history. The shell's New
+ *    Session button and panel list step aside, and the history surface puts
+ *    `回到对话` at its own top. Height no longer depends on how many panels are
+ *    installed, while the band the shell reserves for the window buttons and
+ *    the brand row stay put — the history must not start under the traffic
+ *    lights, and the logo is how the column still reads as DSH.
  *  - `host`: leave the shell's navigation in place and just overlay the region
  *    the shell already gives the history, which is the pre-v1.21.x behaviour.
  *
@@ -23,36 +25,6 @@
 
 /** Marks <html> while the studio owns the left column. */
 export const SIDEBAR_TAKEOVER_ATTR = 'data-dsh-imagegen-sidebar-takeover'
-
-/**
- * Collapse controls shipped by the shell or by a skin.
- *
- * Every sidebar implementation owns this button, so the takeover must never
- * hide it: it is the only way to fold the column away. The row that carries it
- * is kept (and floated to the column's top-right) while every other chrome row
- * is hidden; see `sidebar-entry.ts`.
- */
-export const SIDEBAR_TOGGLE_SELECTOR = '[data-sidebar-toggle], [data-islands-part~="sidebar-toggle"]'
-
-/**
- * Marks the button itself, so the stylesheet can keep it while hiding the rest
- * of the chrome row that carries it (the brand identity lives in the same row
- * in the shipped shell, and the skin's top band can hold more than one control).
- */
-export const SIDEBAR_TOGGLE_ATTR = 'data-dsh-imagegen-toggle'
-
-/**
- * Marks the row that carries the collapse control. Exactly one row keeps its
- * box in takeover mode; it is floated to the top-right so the control users
- * reach for is still where they expect it.
- */
-export const SIDEBAR_TOGGLE_HOST_ATTR = 'data-dsh-imagegen-toggle-host'
-
-/**
- * Set on <html> when a collapse control was found, so the takeover header can
- * reserve room for it instead of drawing underneath it.
- */
-export const SIDEBAR_TOGGLE_PRESENT_ATTR = 'data-dsh-imagegen-sidebar-toggle'
 
 /** Left-column presentations the studio supports. */
 export type SidebarMode = 'studio' | 'host'
