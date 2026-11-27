@@ -2355,7 +2355,8 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome] {
   color: var(--dsw-alias-label-primary);
 }
 
-.chatToggle[data-open='true'] {
+.chatToggle[data-open='true'],
+.chatToggle[data-config-open='true'] {
   color: var(--dsw-alias-brand-primary);
   border-color: var(--dsw-alias-brand-primary);
 }

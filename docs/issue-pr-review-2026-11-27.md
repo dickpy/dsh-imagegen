@@ -308,7 +308,7 @@ export function downloadImage(image: GeneratedImage, name: string): void {
 2. **模型目录**
    - `src/model-catalog.ts:11` 增加 `'cloudflare'` family；
    - `describeFamily()` 增加 `/^@cf\//` 识别；
-   - `supportsEdit` 按具体模型区分（flux-1-schnell false；flux-2-dev true），`supportsAspectRatio` 可标记为 true（映射 width/height），质量档位不适用。
+   - 首版 `supportsEdit` / `supportsAspectRatio` 均为 false（只开放 flux-1-schnell 文生图）；后续接入 flux-2-dev 或 SDXL img2img 时再按模型能力开放。
 3. **Engine adapter**
    - 新增 `generateCloudflareImage()`，参考 `generateQwenImage()` / `generateMiniMaxImage()` 的结构（`src/engine.ts:1233-1352`、`1361+`）；
    - 在 `generateImage()` 的 dispatch（`src/engine.ts:1606-1639`）中优先按 preset/family 分派；

@@ -2678,7 +2678,7 @@ export function ImageGenPanel(props: {
             type="button"
             className={css.chatToggle}
             data-config-toggle=""
-            data-open={!configCollapsed ? 'true' : 'false'}
+            data-config-open={!configCollapsed ? 'true' : 'false'}
             aria-pressed={!configCollapsed}
             aria-label={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
             title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}

@@ -4,7 +4,7 @@
 - 基线：`origin/main` `8b6ce53`（v1.22.1）
 - 当前版本：仍为 `1.22.1`，未改版本号、未创建 Release、未发布 npm 包
 - 本地已安装：`%USERPROFILE%\.dsh\profiles\desktop\node_modules\@dickpy\dsh-imagegen\lib`
-- 安装备份：`lib.__old-20261127-200643`（最近一次安装；更早备份 `lib.__old-20261127-200446`）
+- 安装备份：`lib.__old-20261127-200922`（最近一次安装；更早备份 `lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
 
 ## 一、本次统一修改内容
 
@@ -24,6 +24,7 @@
 |---|---|
 | `pnpm run typecheck` | 通过（exit 0） |
 | `pnpm test` | 通过：单测 119 项、remote 14 项、iterations 6 项、全部 DOM E2E 通过 |
+| `node scripts/smoke.mjs` | 通过：全量 host smoke（客户端 apply、侧栏、画布与下载相关路径） |
 | `pnpm run test:studio:browser` | 通过；含结果下载文件大小断言、预览宽度/关闭按钮位置、参数栏收起宽度断言 |
 | `pnpm run test:history:browser` | 通过；含历史、分页、侧栏几何、结果卡片比例回归 |
 | `pnpm run test:history` | 通过；`sidebar-takeover-dom-e2e` 验证品牌行/收起按钮/Islands 顶部带保留 |
