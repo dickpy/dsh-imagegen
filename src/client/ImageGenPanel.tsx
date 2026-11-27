@@ -1058,6 +1058,27 @@ export function ImageGenPanel(props: {
     if (historyPage !== visibleHistoryPage) goToHistoryPage(visibleHistoryPage)
   }, [historyPage, visibleHistoryPage])
 
+  // A wheel step can select a record on another page. Once that page renders,
+  // bring the active row into view inside the history list; otherwise the
+  // selection changes off-screen and the sidebar looks stuck.
+  useEffect(() => {
+    if (viewingHistoryId === null) return
+    const list = historyListRef.current
+    if (list === null) return
+    const reveal = (): void => {
+      const active = list.querySelector<HTMLElement>('[data-active]')
+      if (active !== null && typeof active.scrollIntoView === 'function') {
+        active.scrollIntoView({ block: 'nearest' })
+      }
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      const frame = requestAnimationFrame(reveal)
+      return () => cancelAnimationFrame(frame)
+    }
+    const timer = window.setTimeout(reveal, 0)
+    return () => window.clearTimeout(timer)
+  }, [viewingHistoryId, visibleHistoryPage, visibleHistoryGroups])
+
   const syncHistory = (entries: HistoryEntry[]): void => {
     setHistory(entries)
     setHistoryReady(true)
@@ -1857,6 +1878,8 @@ export function ImageGenPanel(props: {
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
     if (entry === undefined) return
+    const groupIndex = filteredHistory.findIndex(candidate => candidate.key === group.key)
+    if (groupIndex >= 0) goToHistoryPage(Math.floor(groupIndex / HISTORY_PAGE_SIZE) + 1)
     const requestId = beginResultNavigation(entry.mode)
     pendingHistoryRestores.current.delete(entry.mode)
     // Product sets rebuild their grouped results canvas instead of the
