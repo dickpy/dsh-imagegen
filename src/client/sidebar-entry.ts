@@ -183,9 +183,30 @@ function launcherList(root: HTMLElement): HTMLElement | undefined {
  * so the column goes back to the shell the moment the studio closes.
  * @param root - the sidebar root element.
  */
+function hasVisibleBrand(logo: HTMLElement, root: HTMLElement): boolean {
+  const toggle = root.querySelector<HTMLElement>('[data-sidebar-toggle], [data-islands-part~="sidebar-toggle"]')
+  for (const child of logo.children) {
+    if (toggle !== null && (child === toggle || child.contains(toggle))) continue
+    if ((child.textContent ?? '').trim() === '') continue
+    // Minimal test shells provide a document without a window; treat a brand
+    // with text as visible there rather than throwing or hiding the row.
+    const style = root.ownerDocument.defaultView?.getComputedStyle?.(child)
+    if (style === undefined || (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0')) return true
+  }
+  return false
+}
+
 function markTakeoverSurfaces(root: HTMLElement): void {
   const list = launcherList(root)
   if (list !== undefined && !list.hasAttribute(PANEL_LIST_ATTR)) list.setAttribute(PANEL_LIST_ATTR, '')
+
+  // Some skins leave the logo row as an empty band. Hide that band so the
+  // history starts under the window-button strip instead of under a blank
+  // rectangle; a row with a real brand stays untouched (#109).
+  const logo = root.querySelector<HTMLElement>('[class*="logoRow"]')
+  if (logo !== null && !hasVisibleBrand(logo, root) && !logo.hasAttribute(SIDEBAR_CHROME_ATTR)) {
+    logo.setAttribute(SIDEBAR_CHROME_ATTR, '')
+  }
 
   // The top chrome stays: the band the shell reserves for the window buttons
   // (macOS traffic lights, the Windows caption row) and the row that carries the

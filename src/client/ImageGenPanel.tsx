@@ -18,7 +18,7 @@ import { readHistorySelection, writeHistorySelection } from './history-selection
 import { newStudioRun, orderedStudioChoices, readStudioRuns, replaceStudioSlot, slotsForTask, studioRetryRequest, studioTaskIds, writeStudioRuns, type StudioRun, type StudioRuns, type StudioSlot } from './studio-state.ts'
 import { MaskEditor } from './MaskEditor.tsx'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Maximize2, Sparkles, Paintbrush, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Columns2, Maximize2, PanelLeftClose, Sparkles, Paintbrush, X } from 'lucide-react'
 import { StudioActionButton } from './StudioActionButton.tsx'
 import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
@@ -2659,7 +2659,7 @@ export function ImageGenPanel(props: {
                 title={tt('sidebar.collapseHint')}
                 onClick={collapseHostSidebar}
               >
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="1.8" y="3" width="12.4" height="10" rx="1.5" /><path d="M6 3v10M9.2 6.2 7.4 8l1.8 1.8" /></svg>
+                <PanelLeftClose size={16} strokeWidth={1.7} aria-hidden="true" />
               </button>
             ) : (
               <button
@@ -2695,7 +2695,7 @@ export function ImageGenPanel(props: {
             title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
             onClick={() => { setConfigCollapsed(previous => !previous) }}
           >
-            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.2" y="2.5" width="11.6" height="11" rx="1.6" /><path d="M6.2 3v10" /></svg>
+            <Columns2 size={16} strokeWidth={1.7} aria-hidden="true" />
           </button>
           {update !== null ? (
             <span ref={updateAreaRef} className={css.updateArea}>

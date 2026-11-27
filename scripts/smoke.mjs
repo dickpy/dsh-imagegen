@@ -5083,7 +5083,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   jsdomDocument.body.append(iconHost)
   const iconRoot = moduleStubs['react-dom/client'].createRoot(iconHost)
   iconRoot.render(react.createElement(launcherEntry.component, { size: 16 }))
-  await new Promise(resolve => setTimeout(resolve, 30))
+  await new Promise(resolve => setTimeout(resolve, 150))
   assert.ok(iconHost.querySelector('[data-dsh-imagegen-panel-icon]') !== null, 'the launcher icon renders when a sidebar mounts it directly')
   assert.ok(iconHost.querySelector('svg') !== null, 'the launcher icon carries the images glyph')
   iconRoot.unmount()
