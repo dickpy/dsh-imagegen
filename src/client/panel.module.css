@@ -298,6 +298,9 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
 /* The takeover surface slides in from the column edge; the host's own grid is
    untouched, so skins with custom sidebar layouts keep their geometry (#107). */
 html[data-dsh-imagegen-sidebar-takeover] .sidebarHistoryHost {
+  /* The takeover header should start at the top of the shell's region; the
+     brand/window band above it belongs to the host, not to this panel. */
+  padding-top: 0;
   animation: dshHistorySlideIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -368,31 +371,6 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome] {
 .sidebarBack:hover { background: var(--dsw-alias-bg-layer-2); }
 .sidebarBack:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .sidebarBack svg { flex: none; color: var(--dsw-alias-label-secondary); }
-
-.sidebarCollapse {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 9px;
-  background: var(--dsw-alias-bg-base, Canvas);
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-}
-
-.sidebarCollapse:hover {
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
-}
-
-.sidebarCollapse:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
-}
 
 /* --- panel frame -------------------------------------------------------------- */
 

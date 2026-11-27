@@ -4,7 +4,7 @@
 - 基线：`origin/main` `8b6ce53`（v1.22.1）
 - 当前版本：仍为 `1.22.1`，未改版本号、未创建 Release、未发布 npm 包
 - 本地已安装：`%USERPROFILE%\.dsh\profiles\desktop\node_modules\@dickpy\dsh-imagegen\lib`
-- 安装备份：`lib.__old-20261127-210850`（最近一次安装；更早备份 `lib.__old-20261127-200922`、`lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
+- 安装备份：`lib.__old-20261127-212447`（最近一次安装；更早备份 `lib.__old-20261127-210850`、`lib.__old-20261127-200922`、`lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
 
 ## 一、本次统一修改内容
 
@@ -14,8 +14,8 @@
 | #105 结果卡片比例 | 合入 PR：新增 `ResultSheet`，实时结果/历史/素材详情共用；卡片按原图比例收缩，旧记录按自然尺寸补齐 |
 | #108 下载 0 字节 | 新增统一 Blob 下载 helper；结果卡片、预览、右键菜单、电商、画廊批量、画布节点全部改走 Blob URL / attachment 路由，不再用大体积 `data:` URL 下载 |
 | #106 预览放大与关闭按钮 | lightbox 从 1100×820 放宽到 `min(1680px, 100vw-96px)` × `min(1200px, 100vh-40px)`；关闭按钮移到右上偏左下（44×44），并加 `z-index` 保证可点 |
-| #107 参数栏抽屉与重复箭头 | 参数栏宽度 180ms 过渡，拖动 resizer 时禁用过渡；侧栏历史入场滑入；参数栏收起按钮放在中间参数栏顶部，使用面板图标，移除旧的 `‹` 箭头 |
-| 侧栏收起按钮 | 「回到对话」行最右侧增加收起按钮，转发宿主 `[data-sidebar-toggle]`，不另造侧栏状态 |
+| #107 参数栏抽屉与重复箭头 | 参数栏宽度 180ms 过渡，拖动 resizer 时禁用过渡；侧栏历史入场滑入；参数栏收起按钮放在面板 header 的 GitHub 按钮右侧，使用面板图标；旧的 `‹` 箭头移除 |
+| 侧栏收起按钮 | 面板 header 最左侧按钮改为“收起/展开最左侧边栏”，转发宿主 `[data-sidebar-toggle]`，再点恢复；「回到对话」保留为退出工作室 |
 | 多图动态排版 | 结果区测量宽度与每张图宽高比，按可读列数动态分行；三张竖图从 2+1 改为同排三列，两图保持并排，横图保持 2+1/2×2 |
 | 预览滚轮切图 | 文生图/图生图结果区滚轮切换上一条/下一条历史记录（260ms 节流）；点击大图后的 lightbox 滚轮仍为缩放 |
 | #104 Cloudflare Workers AI | 新增 `cloudflare` model family、原生 Run API adapter、`cloudflare-workers-ai` 预设和 `@cf/black-forest-labs/flux-1-schnell` 模型；支持 JSON base64 与二进制两种响应；图生图暂不支持 |
@@ -31,7 +31,7 @@
 | `pnpm run test:studio:browser` | 通过；含结果下载文件大小、预览宽度/关闭按钮位置、参数栏收起宽度/位置断言 |
 | `pnpm run test:history:browser` | 通过；含历史、分页、侧栏几何、结果卡片比例、三张竖图动态同排、滚轮切历史图回归 |
 | `pnpm run test:history` | 通过；`sidebar-takeover-dom-e2e` 验证品牌行/收起按钮/Islands 顶部带保留 |
-| `install-to-profile.ps1 -DryRun` | 通过：5 个文件、6755 KB、所有相对 import 可解析 |
+| `install-to-profile.ps1 -DryRun` | 通过：5 个文件、6775 KB、所有相对 import 可解析 |
 | `install-to-profile.ps1 -KeepBackup` | 通过：原子替换完成，宿主入口 import smoke `IMPORT_OK 120` |
 
 ## 三、未覆盖 / 需要人工确认

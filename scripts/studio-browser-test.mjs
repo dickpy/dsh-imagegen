@@ -162,8 +162,8 @@ try {
   await page.waitForTimeout(260)
   const collapsedConfig = await configAside.boundingBox()
   assert.ok(collapsedConfig.width < expandedConfig.width - 100, 'the config panel collapses with a drawer width change')
-  assert.equal(await configAside.locator('[data-config-toggle]').count(), 1, 'the config toggle sits above the middle column')
-  assert.equal(await page.locator('header[data-dsh-imagegen-panel-header] [data-config-toggle]').count(), 0, 'the config toggle stays out of the panel header')
+  assert.equal(await configAside.locator('[data-config-toggle]').count(), 0, 'the config toggle is not duplicated inside the config column')
+  assert.equal(await page.locator('header[data-dsh-imagegen-panel-header] [data-config-toggle]').count(), 1, 'the config toggle sits in the panel header next to the GitHub link')
   await page.locator('[data-config-toggle]').click()
   await page.waitForTimeout(260)
 
