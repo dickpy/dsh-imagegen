@@ -4,16 +4,17 @@
  * Two shell shapes are exercised against the real stylesheet from the built
  * bundle:
  *  - the shipped shell, where the collapse control is a sibling of the brand
- *    inside the logo row (hiding the row would take the control with it — the
- *    "collapse button disappeared" regression);
- *  - the dsh-islands-ui grid, where the hidden chrome leaves its leading rows
- *    reserving height (the empty band reported against the skin).
+ *    inside the logo row: the takeover hides the panel list and the New Session
+ *    row but keeps the band and the brand, so the history never starts under the
+ *    window buttons and the control keeps its home in that row;
+ *  - the dsh-islands-ui grid, whose leading band and brand row must survive the
+ *    takeover for the same reason.
  *
  * jsdom computes cascade but not layout, and its matcher cannot evaluate the
  * plugin's `:has()` allow-list, so visibility is asserted from the rules this
- * change owns (position / display / grid-template-rows) while the pixel proof
- * (control at the top-right, no band above the history) lives in the Chromium
- * harness.
+ * change owns (markers / display / position / grid-template-rows) while the
+ * pixel proof (brand row above the history, control in place) lives in the
+ * Chromium harness.
  */
 
 import assert from 'node:assert/strict'
@@ -25,9 +26,6 @@ const { server, base } = await startHistoryFixture()
 /** Markers the takeover writes. */
 const PANEL_LIST_ATTR = 'data-dsh-imagegen-panel-list'
 const CHROME_ATTR = 'data-dsh-imagegen-sidebar-chrome'
-const BRAND_ATTR = 'data-dsh-imagegen-sidebar-brand'
-const TOGGLE_ATTR = 'data-dsh-imagegen-toggle'
-const TOGGLE_HOST_ATTR = 'data-dsh-imagegen-toggle-host'
 const TAKEOVER_ATTR = 'data-dsh-imagegen-sidebar-takeover'
 
 async function openPage(query) {
@@ -75,17 +73,21 @@ try {
   const brand = doc.querySelector('.host_brand')
   const toggle = doc.querySelector('[data-sidebar-toggle]')
   assert.equal(panelList.getAttribute(PANEL_LIST_ATTR), '', 'the panel list is marked from the launcher row')
-  assert.equal(brand.getAttribute(BRAND_ATTR), '', 'the brand identity is marked separately from its row')
-  assert.equal(toggle.getAttribute(TOGGLE_ATTR), '', 'the collapse control is marked')
-  assert.equal(logo.getAttribute(TOGGLE_HOST_ATTR), '', 'the row that carries the collapse control is marked')
-  assert.equal(doc.querySelector('.host_newSessionRow').getAttribute(CHROME_ATTR), '', 'the New Session row is chrome')
+  const newSessionRow = doc.querySelector('.host_newSessionRow')
+  assert.equal(newSessionRow.getAttribute(CHROME_ATTR), '', 'the New Session row is chrome')
+  assert.equal(style(panelList).display, 'none', 'the panel list steps aside')
+  assert.equal(style(newSessionRow).display, 'none', 'the New Session row steps aside')
 
-  // Hiding the brand (not the row) is what keeps the control alive; the row is
-  // floated to the column's top-right corner instead of reserving its height.
-  assert.equal(style(logo).position, 'absolute', 'the row that carries the collapse control is floated out of the flow')
-  assert.equal(style(logo).top, '8px', 'the control sits at the top of the column')
-  assert.equal(style(logo).right, '8px', 'the control sits at the right of the column')
-  assert.equal(style(logo).display, 'flex', 'the row keeps a box so the control is rendered')
+  // The top chrome stays put: hiding it (v1.22.0) put the takeover header under
+  // the macOS traffic lights and dropped the DSH logo. jsdom cannot evaluate the
+  // plugin's :has() allow-list, so the proof here is that no rule hides the band
+  // or the brand any more and the control keeps its home in the brand row.
+  const cssText = [...doc.querySelectorAll('style')].map(sheet => sheet.textContent).join('\n')
+  assert.ok(!cssText.includes('data-dsh-imagegen-sidebar-brand'), 'no rule hides the brand identity any more')
+  assert.ok(!cssText.includes('data-dsh-imagegen-toggle-host'), 'the collapse control is no longer floated out of its row')
+  assert.equal(logo.hasAttribute(CHROME_ATTR), false, 'the brand row is not hidden by the takeover')
+  assert.notEqual(style(logo).position, 'absolute', 'the brand row stays in the flow')
+  assert.equal(toggle.parentElement, logo, 'the collapse control stays in the brand row')
   toggle.click()
   assert.equal(window.toggleClicks, 1, 'the host control is still wired to the host action')
 
@@ -116,12 +118,12 @@ try {
   const islandsDoc = islands.document
   const islandsRoot = islandsDoc.querySelector('[data-islands-part~="sidebar-root"]')
   const rows = islands.window.getComputedStyle(islandsRoot).gridTemplateRows.trim().split(/\s+/).slice(0, 2)
-  assert.deepEqual(rows.map(row => row.replace(/px$/, '')), ['0', '0'], `the skin's leading rows collapse instead of reserving an empty band (got ${rows.join(' ')})`)
-  assert.equal(islands.window.getComputedStyle(islandsDoc.querySelector('.host_logoRow')).position, 'absolute', 'the skin collapse control is floated by the same rule')
+  assert.deepEqual(rows, ['8px', '36px'], `the skin keeps its leading band and brand row, so the history never starts under the window buttons (got ${rows.join(' ')})`)
+  assert.notEqual(islands.window.getComputedStyle(islandsDoc.querySelector('.host_logoRow')).position, 'absolute', 'the skin brand row keeps its place instead of being floated')
   assert.deepEqual(islands.errors, [])
   islands.dom.window.close()
 
-  console.log('PASS sidebar takeover DOM E2E: markers, brand-only hiding, collapse control kept and floated, islands rows collapsed, exit wired')
+  console.log('PASS sidebar takeover DOM E2E: markers, panel list and New Session hidden, brand row and collapse control kept, islands band preserved, exit wired')
 } finally {
   await new Promise(resolve => server.close(resolve))
 }
