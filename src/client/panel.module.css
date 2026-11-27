@@ -774,28 +774,6 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-brand-empty][data-is
   min-height: 28px;
 }
 
-.configToggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 7px;
-  color: var(--dsw-alias-label-secondary);
-  background: var(--dsw-alias-bg-layer-1);
-  cursor: pointer;
-}
-
-.configToggle:hover,
-.configToggle:focus-visible,
-.configToggle[data-config-open='true'] {
-  border-color: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-brand-primary);
-  outline: none;
-}
-
 .config[data-collapsed='true'] {
   width: 38px;
   min-width: 38px;

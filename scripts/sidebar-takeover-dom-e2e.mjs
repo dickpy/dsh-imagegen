@@ -130,7 +130,17 @@ try {
   assert.deepEqual(islands.errors, [])
   islands.dom.window.close()
 
-  console.log('PASS sidebar takeover DOM E2E: markers, panel list and New Session hidden, brand row and collapse control kept, islands band preserved, exit wired')
+  /* ----------------------------------------- islands skin with empty brand row */
+  const emptyBrand = await openPage('?islands&takeover&emptybrand')
+  await emptyBrand.waitFor(() => emptyBrand.document.querySelector('[data-sidebar-back]') !== null, 'the takeover header renders in the empty-brand islands shell')
+  const emptyRoot = emptyBrand.document.querySelector('[data-islands-part~="sidebar-root"]')
+  assert.equal(emptyRoot.getAttribute('data-dsh-imagegen-brand-empty'), '', 'an empty brand row is marked on the sidebar root')
+  const emptyRows = emptyBrand.window.getComputedStyle(emptyRoot).gridTemplateRows.trim().split(/\s+/).slice(0, 2)
+  assert.deepEqual(emptyRows, ['0', '0'], `the empty brand band collapses instead of leaving a blank row (got ${emptyRows.join(' ')})`)
+  assert.deepEqual(emptyBrand.errors, [])
+  emptyBrand.dom.window.close()
+
+  console.log('PASS sidebar takeover DOM E2E: markers, panel list and New Session hidden, brand row and collapse control kept, islands band preserved, empty brand band collapsed, exit wired')
 } finally {
   await new Promise(resolve => server.close(resolve))
 }

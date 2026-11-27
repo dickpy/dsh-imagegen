@@ -4,7 +4,7 @@
 - 基线：`origin/main` `8b6ce53`（v1.22.1）
 - 当前版本：仍为 `1.22.1`，未改版本号、未创建 Release、未发布 npm 包
 - 本地已安装：`%USERPROFILE%\.dsh\profiles\desktop\node_modules\@dickpy\dsh-imagegen\lib`
-- 安装备份：`lib.__old-20261127-220605`（最近一次安装；更早备份 `lib.__old-20261127-215040`、`lib.__old-20261127-214555`、`lib.__old-20261127-213020`、`lib.__old-20261127-212447`、`lib.__old-20261127-210850`、`lib.__old-20261127-200922`、`lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
+- 安装备份：`lib.__old-20261127-221147`（最近一次安装；更早备份 `lib.__old-20261127-220605`、`lib.__old-20261127-215040`、`lib.__old-20261127-214555`、`lib.__old-20261127-213020`、`lib.__old-20261127-212447`、`lib.__old-20261127-210850`、`lib.__old-20261127-200922`、`lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
 
 ## 一、本次统一修改内容
 
@@ -30,7 +30,7 @@
 | `node scripts/smoke.mjs` | 通过：全量 host smoke（客户端 apply、侧栏、画布与下载相关路径） |
 | `pnpm run test:studio:browser` | 通过；含结果下载文件大小、预览宽度/关闭按钮位置、参数栏收起宽度/位置断言 |
 | `pnpm run test:history:browser` | 通过；含历史、分页、侧栏几何、结果卡片比例、三张竖图动态同排、滚轮切历史图、跨页后分页跟随并滚动到当前记录 |
-| `pnpm run test:history` | 通过；`sidebar-takeover-dom-e2e` 验证品牌行/收起按钮/Islands 顶部带保留 |
+| `pnpm run test:history` | 通过；`sidebar-takeover-dom-e2e` 验证品牌行/收起按钮/Islands 顶部带保留，并验证空品牌行时引导带收为 `0` |
 | `install-to-profile.ps1 -DryRun` | 通过：5 个文件、6780 KB、所有相对 import 可解析 |
 | `install-to-profile.ps1 -KeepBackup` | 通过：原子替换完成，宿主入口 import smoke `IMPORT_OK 120` |
 

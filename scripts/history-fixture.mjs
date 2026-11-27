@@ -81,10 +81,14 @@ export async function startHistoryFixture() {
       // real stylesheet instead of a hand-written copy of the rule.
       const takeover = req.url.includes('takeover')
       const islands = req.url.includes('islands')
+      const emptyBrand = req.url.includes('emptybrand')
       if (takeover && settings.sidebarTakeover !== true) settings = { ...settings, sidebarTakeover: true }
       res.setHeader('content-type', 'text/html')
       const style = islands ? `${css}${islandsCss}` : css
-      const shell = islands ? islandsSidebar : sidebar
+      const shellBase = islands ? islandsSidebar : sidebar
+      const shell = emptyBrand
+        ? shellBase.replace('<button class="host_brand" type="button" data-islands-part="brand-button">DSH</button>', '').replace('<button class="host_brand" type="button">DSH 0.2.2-rc.3</button>', '')
+        : shellBase
       const bodyAttr = islands ? ' data-islands-ui' : ''
       return res.end(`<!doctype html><html data-dsh-imagegen-active${takeover ? ' data-dsh-imagegen-sidebar-takeover' : ''}><meta charset="utf-8"><style>${style}</style><body${bodyAttr}>${shell}<div id="root"></div><script src="/preview.js"></script><script>${iconInject};${mountSidebar}</script></body></html>`)
     }
