@@ -163,7 +163,7 @@
     --result-media-height: max(0px, 100cqh - var(--result-meta-height) - var(--result-caption-height) - 2px);
     box-sizing: border-box;
     flex: none;
-    align-self: flex-start;
+    align-self: center;
     width: min(100%, calc(var(--result-media-height) * var(--result-aspect) + 2px));
     /* Keep small frames usable for the duration badge and card actions. */
     min-width: min(100%, 120px);
