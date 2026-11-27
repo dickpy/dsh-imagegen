@@ -34,6 +34,11 @@ try {
     assert.equal(await resultImages().count(), 1)
   }
   await expectImage('live')
+  const liveWheel = page.locator('[data-history-wheel]')
+  await liveWheel.hover()
+  await page.mouse.wheel(0, 300)
+  await page.waitForTimeout(320)
+  await expectImage('text-a')
 
   // #79: the native tree can have a small intrinsic/max height and an outer
   // wheel interceptor. History must fill the sidebar and own scroll gestures.
@@ -93,6 +98,14 @@ try {
   const time = await row('text-a').locator('[data-history-started-at]').getAttribute('datetime')
   assert.equal(time, new Date(entries[0].createdAt).toISOString())
   assert.match(await row('text-a').innerText(), /2026-11-13/)
+  const resultWheel = page.locator('[data-history-wheel]')
+  await resultWheel.hover()
+  await page.mouse.wheel(0, 300)
+  await page.waitForTimeout(320)
+  await expectImage('text-b')
+  await page.mouse.wheel(0, -300)
+  await page.waitForTimeout(320)
+  await expectImage('text-a')
 
   await page.locator('[data-dsh-imagegen-history-main]').filter({ hasText: 'Saved live task' }).click()
   await expectImage('live')
@@ -286,9 +299,12 @@ try {
   const first = legacyImage('first-wide', 640, 360)
   const second = legacyImage('second-wide', 480, 320)
   const portrait = legacyImage('portrait', 360, 640)
+  const portraitB = legacyImage('portrait-b', 360, 640)
+  const portraitC = legacyImage('portrait-c', 360, 640)
   entries.unshift(
     { ...entries[0], id: 'layout-wide', prompt: 'Legacy wide pair', createdAt: Date.now(), n: 2, images: [first, second] },
     { ...entries[0], id: 'layout-mixed', prompt: 'Legacy mixed pair', createdAt: Date.now() - 1, n: 2, images: [first, portrait] },
+    { ...entries[0], id: 'layout-portraits', prompt: 'Legacy portrait trio', createdAt: Date.now() - 2, n: 3, images: [portrait, portraitB, portraitC] },
   )
   await page.setViewportSize({ width: 1440, height: 840 })
   await page.goto(base)
@@ -301,8 +317,8 @@ try {
   }, expected)
   await waitForDimensions(['640 × 360', '480 × 320'])
   const geometry = () => media.evaluateAll(elements => elements.map(el => {
-    const { width, height, y } = el.getBoundingClientRect()
-    return { width, height, y }
+    const { x, width, height, y } = el.getBoundingClientRect()
+    return { x, width, height, y }
   }))
   await grid.evaluate(element => { element.style.width = '480px' })
   const wide = await geometry()
@@ -318,7 +334,14 @@ try {
   const mixed = await geometry()
   assert.equal(mixed[0].y, mixed[1].y, 'mixed images use the original order and stay side by side')
   assert.ok(Math.abs(mixed[1].width - mixed[1].height * 9 / 16) < 2, 'the legacy portrait keeps its decoded ratio')
-  console.log('PASS result sheet: legacy dimensions, image fit and width-aware landscape pairs')
+  await page.getByRole('button', { name: /Legacy portrait trio/ }).click()
+  await waitForDimensions(['360 × 640', '360 × 640', '360 × 640'])
+  const trio = await geometry()
+  assert.equal(trio.length, 3)
+  assert.equal(trio[0].y, trio[1].y, 'three portrait cards share the first row')
+  assert.equal(trio[1].y, trio[2].y, 'three portrait cards share the first row')
+  assert.ok(trio[2].x > trio[1].x, 'the three portrait cards fill the width instead of leaving a half-empty second row')
+  console.log('PASS result sheet: legacy dimensions, image fit, width-aware landscape pairs and dynamic portrait rows')
 } catch (error) {
   if (page) { mkdirSync(new URL('../.test-artifacts', import.meta.url), { recursive: true }); await page.screenshot({ path: fileURLToPath(new URL('../.test-artifacts/history-failure.png', import.meta.url)) }) }
   throw error

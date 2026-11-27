@@ -369,6 +369,31 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome] {
 .sidebarBack:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .sidebarBack svg { flex: none; color: var(--dsw-alias-label-secondary); }
 
+.sidebarCollapse {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-base, Canvas);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.sidebarCollapse:hover {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+}
+
+.sidebarCollapse:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
 /* --- panel frame -------------------------------------------------------------- */
 
 .view {
@@ -780,7 +805,8 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome] {
 }
 
 .configToggle:hover,
-.configToggle:focus-visible {
+.configToggle:focus-visible,
+.configToggle[data-config-open='true'] {
   border-color: var(--dsw-alias-brand-primary);
   color: var(--dsw-alias-brand-primary);
   outline: none;
@@ -2963,6 +2989,13 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   border-radius: 10px;
   overflow-wrap: anywhere;
   flex: none;
+}
+
+.liveBoardWheel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .canvasBody {

@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type Key, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type Key, type ReactNode } from 'react'
 import type { GeneratedImage } from '../protocol.ts'
 import { planResultLayout } from './result-layout.ts'
 import css from './studio-results.module.css'
@@ -22,6 +22,8 @@ export function ResultSheet({ items, renderCard }: {
 }): React.JSX.Element {
   const [decodedSizes] = useState(() => new WeakMap<GeneratedImage, ResultImageSize>())
   const [, refresh] = useState(0)
+  const [sheetWidth, setSheetWidth] = useState(0)
+  const gridRef = useRef<HTMLDivElement | null>(null)
   const sizes = items.map(({ image }) => {
     if (image === undefined) return undefined
     const { width, height } = image
@@ -29,13 +31,29 @@ export function ResultSheet({ items, renderCard }: {
       ? { width, height }
       : decodedSizes.get(image)
   })
-  const { rows, scroll } = planResultLayout({ count: items.length })
+  const aspects = sizes.map(size => size === undefined ? undefined : size.width / size.height)
+  const layout = planResultLayout({ count: items.length, aspects, width: sheetWidth })
+  const { rows, scroll } = layout
+  const allLandscape = aspects.every(aspect => aspect !== undefined && aspect >= 1.2)
+  const dynamic = sheetWidth > 0 && items.length > 2 && !(allLandscape && items.length <= 4)
   const landscapePair = items.length === 2 && sizes.every(size => size !== undefined && size.width > size.height)
 
+  useEffect(() => {
+    const node = gridRef.current
+    if (node === null) return
+    const measure = (): void => { setSheetWidth(node.clientWidth) }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
   return <div
+    ref={gridRef}
     className={css.grid}
     data-count={items.length <= 4 ? String(items.length) : 'many'}
-    data-result-preview-grid=""
+    data-result-preview-grid="" data-dynamic={dynamic ? '' : undefined}
     data-rows={rows.length}
     data-scroll={scroll ? '' : undefined}
     data-landscape-pair={landscapePair ? '' : undefined}
@@ -66,3 +84,4 @@ export function ResultSheet({ items, renderCard }: {
     ))}
   </div>
 }
+

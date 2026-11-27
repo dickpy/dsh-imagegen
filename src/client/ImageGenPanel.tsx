@@ -901,6 +901,10 @@ export function ImageGenPanel(props: {
   const [chatOpen, setChatOpen] = useState(readChatOpen)
   const [configWidth, setConfigWidth] = useState(readConfigWidth)
   const configAsideRef = useRef<HTMLElement>(null)
+  const canvasBodyRef = useRef<HTMLDivElement>(null)
+  const liveBoardRef = useRef<HTMLDivElement>(null)
+  /** One wheel gesture should advance one history record, not several. */
+  const historyWheelAt = useRef(0)
   const currentSessionId = useCurrentSessionId(sessions)
   const sidebarHistoryHost = useSidebarHistoryHost()
   const modeGroups: ImageModelGroup[] = tab === 'edit'
@@ -1836,6 +1840,19 @@ export function ImageGenPanel(props: {
   const runHasResults = (run: StudioRun): boolean =>
     tasks.some(task => task.result !== undefined && run.slots.some(slot => slot.taskId === task.id))
 
+  /** Wheel over the result sheet walks the filtered history in order. */
+  const stepViewingHistory = (direction: 1 | -1): void => {
+    if (filteredHistory.length < 2) return
+    const current = viewingHistoryId === null
+      ? -1
+      : filteredHistory.findIndex(group => group.entries.some(entry => entry.id === viewingHistoryId))
+    const nextIndex = current === -1
+      ? (direction > 0 ? 0 : filteredHistory.length - 1)
+      : (current + direction + filteredHistory.length) % filteredHistory.length
+    const next = filteredHistory[nextIndex]
+    if (next !== undefined) void viewHistoryGroup(next)
+  }
+
   /** View every model result from one comparison as one canvas result set. */
   const viewHistoryGroup = async (group: HistoryGroup): Promise<void> => {
     const entry = group.entries[0]
@@ -2322,6 +2339,40 @@ export function ImageGenPanel(props: {
    */
   const liveBoardCurrent = studioRun !== null && viewingGalleryEntry === null
     && (viewingEntry === null || viewingEntry.comparisonId === studioRun.id)
+
+  // Native listener: React's delegated wheel listener is passive, so the sheet
+  // cannot both prevent page scrolling and step the history reliably.
+  useEffect(() => {
+    const node = canvasBodyRef.current
+    if (node === null) return
+    const onWheel = (event: WheelEvent): void => {
+      if (viewingGalleryEntry !== null || filteredHistory.length < 2 || Math.abs(event.deltaY) < 8) return
+      event.preventDefault()
+      const now = performance.now()
+      if (now - historyWheelAt.current < 260) return
+      historyWheelAt.current = now
+      stepViewingHistory(event.deltaY > 0 ? 1 : -1)
+    }
+    node.addEventListener('wheel', onWheel, { passive: false })
+    return () => node.removeEventListener('wheel', onWheel)
+  }, [filteredHistory, viewingGalleryEntry, viewingHistoryId, images.length])
+
+  // The live board uses the same wheel gesture while it owns the canvas; the
+  // history grid's own listener is attached only when that grid is mounted.
+  useEffect(() => {
+    const node = liveBoardRef.current
+    if (node === null) return
+    const onWheel = (event: WheelEvent): void => {
+      if (viewingGalleryEntry !== null || filteredHistory.length < 2 || Math.abs(event.deltaY) < 8) return
+      event.preventDefault()
+      const now = performance.now()
+      if (now - historyWheelAt.current < 260) return
+      historyWheelAt.current = now
+      stepViewingHistory(event.deltaY > 0 ? 1 : -1)
+    }
+    node.addEventListener('wheel', onWheel, { passive: false })
+    return () => node.removeEventListener('wheel', onWheel)
+  }, [filteredHistory, viewingGalleryEntry, viewingHistoryId, liveBoardCurrent])
   const previewImage = preview === null ? null : preview.images[preview.index] ?? null
   const comparisonTasks = comparison === null ? [] : comparison.taskIds.map(id => tasks.find(task => task.id === id)).filter((task): task is GenerationTask => task !== undefined)
   const comparisonResults = comparisonTasks.filter(task => task.status === 'completed' && task.result !== undefined)
@@ -2388,6 +2439,12 @@ export function ImageGenPanel(props: {
     closePreview()
   }
 
+  /** Ask the shell to fold the whole left column; the studio keeps running. */
+  const collapseHostSidebar = (): void => {
+    const toggle = document.querySelector<HTMLElement>('[data-sidebar-toggle], [data-islands-part~="sidebar-toggle"]')
+    toggle?.click()
+  }
+
   // Render history into the shell sidebar so it remains a separate navigation
   // surface from both the image workspace and the native conversation.
   const historyPanel = (
@@ -2406,6 +2463,19 @@ export function ImageGenPanel(props: {
           >
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
             {tt('sidebar.backToChat')}
+          </button>
+          <button
+            type="button"
+            className={css.sidebarCollapse}
+            data-sidebar-collapse=""
+            aria-label={tt('sidebar.collapse')}
+            title={tt('sidebar.collapseHint')}
+            onClick={collapseHostSidebar}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="1.8" y="3" width="12.4" height="10" rx="1.5" />
+              <path d="M6 3v10M9.2 6.2 7.4 8l1.8 1.8" />
+            </svg>
           </button>
         </div>
       ) : null}
@@ -2674,18 +2744,6 @@ export function ImageGenPanel(props: {
           ]}
         />
         <span className={css.panelHeaderActions}>
-          <button
-            type="button"
-            className={css.chatToggle}
-            data-config-toggle=""
-            data-config-open={!configCollapsed ? 'true' : 'false'}
-            aria-pressed={!configCollapsed}
-            aria-label={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
-            title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
-            onClick={() => { setConfigCollapsed(previous => !previous) }}
-          >
-            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.2" y="2.5" width="11.6" height="11" rx="1.6" /><path d="M6.2 3v10" /></svg>
-          </button>
           <button type="button" className={css.privacyToggle} data-privacy-toggle="" aria-pressed={privacyMode}
             aria-keyshortcuts="Alt+Shift+H" title={tt('image.privacyHint')} onClick={() => { setPrivacyMode(value => !value); setImageMenu(null) }}>
             {tt(privacyMode ? 'image.show' : 'image.hide')}
@@ -2730,6 +2788,20 @@ export function ImageGenPanel(props: {
             data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}
           >
             <div className={css.configResizer} title={tt('config.resizeHint')} onPointerDown={onConfigResizeStart} />
+          <div className={css.configHeader}>
+            <button
+              type="button"
+              className={css.configToggle}
+              data-config-toggle=""
+              data-config-open={!configCollapsed ? 'true' : 'false'}
+              aria-expanded={!configCollapsed}
+              aria-label={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
+              title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
+              onClick={() => { setConfigCollapsed(previous => !previous) }}
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.2" y="2.5" width="11.6" height="11" rx="1.6" /><path d="M6.2 3v10" /></svg>
+            </button>
+          </div>
           {isGallery ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
@@ -3533,12 +3605,12 @@ export function ImageGenPanel(props: {
               </div>
             </section>
           ) : null}
-          {liveBoardCurrent && studioRun !== null && isGeneration ? <StudioResults key={studioRun.id} run={studioRun} tasks={tasks} groups={modeGroups} busy={studioBusy} privacyMode={privacyMode}
+          {liveBoardCurrent && studioRun !== null && isGeneration ? <div ref={liveBoardRef} className={css.liveBoardWheel} data-history-wheel=""><StudioResults key={studioRun.id} run={studioRun} tasks={tasks} groups={modeGroups} busy={studioBusy} privacyMode={privacyMode}
             onRetry={slot => { void retryStudioSlot(studioRun, slot) }} onAppend={choice => { void appendStudioModel(studioRun, choice) }}
             onPreview={(images, index) => openPreview(images, index)} onCopy={image => { void copyImage(image) }}
             onGallery={(image, request) => { void addToGallery(image, request) }} onConversation={image => { void addImageToConversation(image, 0) }}
             onEdit={(image, request) => continueEditing(image, request)} onReverse={image => openReversePrompt(image)}
-            toolbarAction={<TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => { setLibraryOpen(true) }} />} /> : null}
+            toolbarAction={<TemplateLibraryButton placement="toolbar" expanded={libraryOpen} onClick={() => { setLibraryOpen(true) }} />} /></div> : null}
           {historyLoading && isGeneration ? <div className={css.canvasState} data-history-loading="" role="status">{tt('canvas.loading')}</div> : null}
           {!liveBoardCurrent && !historyLoading && generating && comparison === null && isGeneration ? (
             <div className={`${css.canvasState} ${css.generationState}`} data-generation-state={activeTask?.status ?? 'submitting'} role="status">
@@ -3570,7 +3642,7 @@ export function ImageGenPanel(props: {
           ) : null}
 
           {!liveBoardCurrent && isGeneration && !historyLoading && !generating && images.length > 0 ? (
-            <div className={css.canvasBody}>
+            <div ref={canvasBodyRef} className={css.canvasBody} data-history-wheel="">
               <div className={css.canvasMeta}>
                 <span>{tt('canvas.images', { count: images.length })}</span>
                 {viewingEntry !== null || viewingGalleryEntry !== null ? (

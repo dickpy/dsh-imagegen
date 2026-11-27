@@ -94,6 +94,13 @@ try {
   const title = doc.querySelector('[data-dsh-imagegen-history] header span')
   assert.match(title?.textContent ?? '', /生图历史|Image history|История изображений/, 'the column title names image history while it owns the column')
 
+  // The takeover header's rightmost control folds the whole shell column by
+  // forwarding to the host's own toggle; it must not invent a second state.
+  const collapse = doc.querySelector('[data-sidebar-collapse]')
+  assert.ok(collapse !== null, 'the takeover header offers a shell-sidebar collapse button')
+  collapse.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  assert.equal(window.toggleClicks, 2, 'the new button forwards to the host collapse control')
+
   // The exit is the plugin's own action: the studio closes through onExit.
   doc.querySelector('[data-sidebar-back]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
   assert.equal(window.studioExits, 1, '回到对话 asks the host to close the studio')

@@ -162,7 +162,8 @@ try {
   await page.waitForTimeout(260)
   const collapsedConfig = await configAside.boundingBox()
   assert.ok(collapsedConfig.width < expandedConfig.width - 100, 'the config panel collapses with a drawer width change')
-  assert.equal(await configAside.locator('button[aria-label="收起参数栏"]').count(), 0, 'the duplicate config arrow stays out of the config panel')
+  assert.equal(await configAside.locator('[data-config-toggle]').count(), 1, 'the config toggle sits above the middle column')
+  assert.equal(await page.locator('header[data-dsh-imagegen-panel-header] [data-config-toggle]').count(), 0, 'the config toggle stays out of the panel header')
   await page.locator('[data-config-toggle]').click()
   await page.waitForTimeout(260)
 

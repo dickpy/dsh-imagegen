@@ -121,6 +121,34 @@
   min-height: 0;
 }
 
+/* Measured rows choose their own column count. Let the row take its natural
+   height and the card grow from the column width, so a portrait batch does not
+   leave a half-empty second row under it (#106/#107). */
+.grid[data-dynamic] {
+  justify-content: center;
+}
+
+.grid[data-dynamic] .row {
+  flex: 0 0 auto;
+}
+
+.grid[data-dynamic] .cell {
+  container-type: normal;
+}
+
+.grid[data-dynamic] .cell[data-fit-image] > [data-result-card] {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: auto;
+}
+
+.grid[data-dynamic] .cell[data-fit-image] [data-result-media] {
+  flex: 0 0 auto;
+  aspect-ratio: var(--result-aspect);
+  max-height: none;
+}
+
 /* Widen both images in a narrow column when there is room to stack them. */
 @container result-sheet (max-width: 420px) and (min-height: 300px) {
   .grid[data-landscape-pair] > .row {

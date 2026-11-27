@@ -61,3 +61,18 @@ test('the split never depends on pixel shapes, only on the count', () => {
     assert.ok(layout.rows.length <= 1 || count > 1)
   }
 })
+
+test('measured portrait batches use the widest readable columns', () => {
+  const portrait = 1199 / 1312
+  const three = planResultLayout({ count: 3, aspects: [portrait, portrait, portrait], width: 1000 })
+  assert.deepEqual(three.rows, [[0, 1, 2]], 'three portrait cards use one row instead of a half-empty two-over-one sheet')
+  assert.equal(three.scroll, false)
+
+  // A landscape set keeps the familiar two-over-one sheet; all three cards are
+  // wide enough to read without being squeezed into narrow columns.
+  const landscape = planResultLayout({ count: 3, aspects: [16 / 9, 16 / 9, 16 / 9], width: 1000 })
+  assert.deepEqual(landscape.rows, [[0, 1], [2]])
+
+  const five = planResultLayout({ count: 5, aspects: [portrait, portrait, portrait, portrait, portrait], width: 1000 })
+  assert.deepEqual(five.rows, [[0, 1, 2], [3, 4]], 'five portraits keep a balanced 3+2 last row')
+})
