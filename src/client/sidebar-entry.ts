@@ -190,8 +190,17 @@ function hasVisibleBrand(logo: HTMLElement, root: HTMLElement): boolean {
     if ((child.textContent ?? '').trim() === '') continue
     // Minimal test shells provide a document without a window; treat a brand
     // with text as visible there rather than throwing or hiding the row.
-    const style = root.ownerDocument.defaultView?.getComputedStyle?.(child)
-    if (style === undefined || (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0')) return true
+    const view = root.ownerDocument.defaultView
+    const style = view?.getComputedStyle?.(child)
+    if (style === undefined) return true
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue
+    // A real browser can also answer whether the text actually has a box (a
+    // skin may hide the brand with zero-size/clipped markup). jsdom has no
+    // layout and reports 0×0 for everything, so skip that check in test shells.
+    const measurable = view != null && !/jsdom/i.test(view.navigator.userAgent ?? '')
+    if (!measurable) return true
+    const rect = child.getBoundingClientRect()
+    if (rect.width > 1 && rect.height > 1) return true
   }
   return false
 }
@@ -204,8 +213,13 @@ function markTakeoverSurfaces(root: HTMLElement): void {
   // history starts under the window-button strip instead of under a blank
   // rectangle; a row with a real brand stays untouched (#109).
   const logo = root.querySelector<HTMLElement>('[class*="logoRow"]')
-  if (logo !== null && !hasVisibleBrand(logo, root) && !logo.hasAttribute(SIDEBAR_CHROME_ATTR)) {
-    logo.setAttribute(SIDEBAR_CHROME_ATTR, '')
+  if (logo !== null && !hasVisibleBrand(logo, root)) {
+    if (!logo.hasAttribute(SIDEBAR_CHROME_ATTR)) logo.setAttribute(SIDEBAR_CHROME_ATTR, '')
+    // A skin may keep the brand in a fixed grid row even when its contents are
+    // hidden; mark the root so the stylesheet can collapse that empty band.
+    root.dataset.dshImagegenBrandEmpty = ''
+  } else if (logo !== null) {
+    delete root.dataset.dshImagegenBrandEmpty
   }
 
   // The top chrome stays: the band the shell reserves for the window buttons
@@ -310,7 +324,10 @@ export function mountSidebarSurfaces(): () => void {
     for (const element of document.querySelectorAll<HTMLElement>(`[${SIDEBAR_CHROME_ATTR}]`)) {
       element.removeAttribute(SIDEBAR_CHROME_ATTR)
     }
-    if (root !== undefined) delete root.dataset.dshImagegenSidebarRoot
+    if (root !== undefined) {
+      delete root.dataset.dshImagegenSidebarRoot
+      delete root.dataset.dshImagegenBrandEmpty
+    }
   }
 }
 

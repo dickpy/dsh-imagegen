@@ -340,6 +340,12 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome] {
   display: none !important;
 }
 
+/* A grid-based skin (Islands) keeps its leading rows even when the brand row
+   is empty; collapse that empty band so "回到对话" starts at the top. */
+html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-brand-empty][data-islands-part~='sidebar-root'] {
+  grid-template-rows: 0 0 minmax(0, 1fr) auto auto !important;
+}
+
 /* Exit from the takeover: the first thing on the column, above the history. */
 .sidebarModeBar {
   flex: none;

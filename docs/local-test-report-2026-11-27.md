@@ -4,7 +4,7 @@
 - 基线：`origin/main` `8b6ce53`（v1.22.1）
 - 当前版本：仍为 `1.22.1`，未改版本号、未创建 Release、未发布 npm 包
 - 本地已安装：`%USERPROFILE%\.dsh\profiles\desktop\node_modules\@dickpy\dsh-imagegen\lib`
-- 安装备份：`lib.__old-20261127-215040`（最近一次安装；更早备份 `lib.__old-20261127-214555`、`lib.__old-20261127-213020`、`lib.__old-20261127-212447`、`lib.__old-20261127-210850`、`lib.__old-20261127-200922`、`lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
+- 安装备份：`lib.__old-20261127-220605`（最近一次安装；更早备份 `lib.__old-20261127-215040`、`lib.__old-20261127-214555`、`lib.__old-20261127-213020`、`lib.__old-20261127-212447`、`lib.__old-20261127-210850`、`lib.__old-20261127-200922`、`lib.__old-20261127-200643`、`lib.__old-20261127-200446`）
 
 ## 一、本次统一修改内容
 
@@ -31,14 +31,14 @@
 | `pnpm run test:studio:browser` | 通过；含结果下载文件大小、预览宽度/关闭按钮位置、参数栏收起宽度/位置断言 |
 | `pnpm run test:history:browser` | 通过；含历史、分页、侧栏几何、结果卡片比例、三张竖图动态同排、滚轮切历史图、跨页后分页跟随并滚动到当前记录 |
 | `pnpm run test:history` | 通过；`sidebar-takeover-dom-e2e` 验证品牌行/收起按钮/Islands 顶部带保留 |
-| `install-to-profile.ps1 -DryRun` | 通过：5 个文件、6779 KB、所有相对 import 可解析 |
+| `install-to-profile.ps1 -DryRun` | 通过：5 个文件、6780 KB、所有相对 import 可解析 |
 | `install-to-profile.ps1 -KeepBackup` | 通过：原子替换完成，宿主入口 import smoke `IMPORT_OK 120` |
 
 ## 三、未覆盖 / 需要人工确认
 
 1. **Cloudflare 真实上游没有跑通**：本次没有可用的 Cloudflare Account ID / API Token，只验证了 mock 的 JSON base64、二进制 PNG、错误与配置缺失路径。拿到 Token 后建议用 `@cf/black-forest-labs/flux-1-schnell` 做一次真实 smoke。
 2. **历史文件/项目分类与拖拽**：#107 的后半段是 issue 作者计划另提 PR 的功能，本次只做参数栏抽屉、侧栏收起按钮和去重箭头，没有擅自设计文件夹数据模型。
-3. **侧栏顶部空白**：接管态检测品牌行是否真的有可见品牌；空品牌行会被标记隐藏，避免「回到对话」上方留白；有真实品牌时仍保留（#109），不压 macOS 交通灯。
+3. **侧栏顶部空白**：接管态检测品牌行是否真的有可见品牌；空品牌行会被标记隐藏，Islands 的固定 `8px + 36px` 引导行也会收为 0，避免「回到对话」上方留白；有真实品牌时仍保留（#109），不压 macOS 交通灯。
 4. **macOS 真机**：本地测试在 Windows + Edge Chromium 完成；#109 的 macOS 交通灯场景按 PR 作者描述和 DOM/CSS 断言验证，建议在 macOS 桌面版再截图确认。
 5. **4K 超大屏**：预览上限 1680×1200，若用户希望完全铺满 4K，需要再讨论是否增加“适应窗口/100%”切换。
 
