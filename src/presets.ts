@@ -84,6 +84,16 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     ],
   },
   {
+    id: 'cloudflare-workers-ai',
+    name: 'Cloudflare Workers AI（实验）',
+    apiUrl: 'https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run',
+    hint: 'Workers AI 原生接口：先支持 FLUX.1 schnell 文生图；把 {ACCOUNT_ID} 替换为 Cloudflare Account ID，API Token 填在密钥栏',
+    models: [
+      { alias: 'flux-1-schnell', id: '@cf/black-forest-labs/flux-1-schnell' },
+    ],
+    experimental: true,
+  },
+  {
     id: 'xai-grok',
     name: 'xAI（Grok）',
     apiUrl: 'https://api.x.ai/v1',

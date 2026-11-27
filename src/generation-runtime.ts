@@ -61,7 +61,7 @@ export class ImageGenerationRuntime {
     const createdAt = Date.now()
     const generated = channel.auth === 'subscription' && channel.subscription !== undefined
       ? { images: await this.generateSubscription(channel.subscription, request, signal) }
-      : await generateImage({ apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, channelName: channel.name, ...channel.watermark === false ? { watermark: false } : {}, ...channel.promptExtend === false ? { promptExtend: false } : {}, ...view.downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs: view.downloadTimeoutMs } } satisfies UpstreamConfig, request, { signal })
+      : await generateImage({ apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull, protocol: channel.protocol, preset: channel.preset, channelName: channel.name, ...channel.watermark === false ? { watermark: false } : {}, ...channel.promptExtend === false ? { promptExtend: false } : {}, ...view.downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs: view.downloadTimeoutMs } } satisfies UpstreamConfig, request, { signal })
     const durationMs = Math.max(0, Math.round(performance.now() - started))
     const result: GenerateResult = {
       ...generated,

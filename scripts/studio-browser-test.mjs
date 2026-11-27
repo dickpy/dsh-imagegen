@@ -1,7 +1,7 @@
 /** Exercise the actual studio + API client in Chromium; only provider responses are fixtures. */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { readFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, mkdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { deflateSync } from 'node:zlib'
 const require = createRequire(import.meta.url)
@@ -58,7 +58,7 @@ if (process.argv.includes('--serve')) { console.log(base); await new Promise(() 
 let browser, lastPage, passed = false
 try {
   browser = await chromium.launch({ headless: true, ...(process.env.GENERATION_CHROMIUM_PATH ? { executablePath: process.env.GENERATION_CHROMIUM_PATH, args: ['--no-sandbox', '--disable-dev-shm-usage'] } : {}) })
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true }), errors = []
   lastPage = page
   page.on('pageerror', error => { errors.push(error.message); console.error('PAGE ERROR:', error.message) })
   page.setDefaultTimeout(15000)
@@ -90,6 +90,11 @@ try {
   assert.deepEqual(await slots().evaluateAll(elements => elements.map(el => el.dataset.studioSlot)), ids)
   assert.equal(requests[3].n, 1)
   assert.deepEqual(await board().locator('[data-image-dimensions]').allTextContents(), ['640 × 480', '640 × 480', '640 × 480'])
+  const downloadPromise = page.waitForEvent('download')
+  await slots().nth(1).hover()
+  await slots().nth(1).locator('[data-result-download]').click()
+  const download = await downloadPromise
+  assert.equal(statSync(await download.path()).size, bytes.length, 'result download writes the complete original bytes, not a 0-byte file')
   await prompt().fill('do not use this changed prompt')
   await board().getByRole('button', { name: '追加模型', exact: true }).click()
   await board().getByRole('button', { name: '追加生成', exact: true }).click()
@@ -146,7 +151,20 @@ try {
   assert.deepEqual(menuLabels, ['查看大图', '继续编辑', '重新生成', '复制图片', '加入素材库', '加入对话', '反推提示词', '下载'])
   await page.locator('[data-image-action-menu] [data-menu-action="preview"]').click()
   const preview = page.getByRole('dialog', { name: '图片预览', exact: true }); await preview.waitFor()
+  const previewFigure = await preview.locator('figure').first().boundingBox()
+  assert.ok(previewFigure.width > 1200, 'the preview uses the available window width instead of the old 1100px cap')
+  const previewClose = await preview.getByRole('button', { name: '关闭', exact: true }).boundingBox()
+  assert.ok(previewClose.y >= 30 && previewClose.x + previewClose.width < 1440 - 40, 'the preview close button clears the window corner')
   await preview.getByRole('button', { name: '关闭', exact: true }).click()
+  const configAside = page.locator('aside[data-collapsed]').first()
+  const expandedConfig = await configAside.boundingBox()
+  await page.locator('[data-config-toggle]').click()
+  await page.waitForTimeout(260)
+  const collapsedConfig = await configAside.boundingBox()
+  assert.ok(collapsedConfig.width < expandedConfig.width - 100, 'the config panel collapses with a drawer width change')
+  assert.equal(await configAside.locator('button[aria-label="收起参数栏"]').count(), 0, 'the duplicate config arrow stays out of the config panel')
+  await page.locator('[data-config-toggle]').click()
+  await page.waitForTimeout(260)
 
   // Pixel preservation is checked on the real browser canvas, outside the mask.
   const preserved = await page.evaluate(async () => {

@@ -65,7 +65,7 @@ import { useConversationImageAttachment } from './use-conversation-image-attachm
 import { ConversationSessionPicker } from './ConversationSessionPicker.tsx'
 import { Select } from './Select.tsx'
 import { ResultSheet } from './ResultSheet.tsx'
-import { downloadImage } from './result-board.ts'
+import { downloadImage, downloadUrl } from './result-board.ts'
 import css from './panel.module.css'
 import resultCss from './studio-results.module.css'
 
@@ -754,7 +754,7 @@ export function ImageGenPanel(props: {
           { id: 'reverse', label: tt('prompt.reverse.action'), onSelect: () => { openReversePrompt(image) } },
         ],
         [
-          { id: 'download', label: tt('download'), onSelect: () => { downloadGeneratedImage(image) } },
+          { id: 'download', label: tt('download'), onSelect: () => { downloadImage(image, 'dsh-image') } },
         ],
       ],
     })
@@ -897,6 +897,7 @@ export function ImageGenPanel(props: {
   const [ecommerceAnchor, setEcommerceAnchor] = useState<{ projectId: string; mainTaskIds: string[]; remaining: GenerateRequest[] } | null>(null)
   const [ecommerceRefOpen, setEcommerceRefOpen] = useState(false)
   const [configCollapsed, setConfigCollapsed] = useState(readConfigCollapsed)
+  const [configResizing, setConfigResizing] = useState(false)
   const [chatOpen, setChatOpen] = useState(readChatOpen)
   const [configWidth, setConfigWidth] = useState(readConfigWidth)
   const configAsideRef = useRef<HTMLElement>(null)
@@ -2215,10 +2216,7 @@ export function ImageGenPanel(props: {
     gallery.filter(entry => selectedGalleryIds.has(entry.id)).forEach((entry, index) => {
       const image = entry.images[0]
       if (image === undefined) return
-      const anchor = document.createElement('a')
-      anchor.href = image.url
-      anchor.download = `dsh-gallery-${index + 1}.${extensionOf(image.mime)}`
-      anchor.click()
+      void downloadUrl(image.url, `dsh-gallery-${index + 1}.${extensionOf(image.mime)}`)
     })
   }
 
@@ -2297,7 +2295,7 @@ export function ImageGenPanel(props: {
                 <GenerationDurationBadge durationMs={image.durationMs} />
                 <span className={css.ecommerceResultBadge}>{group.label}</span>
                 <span className={css.ecommerceTaskActions} onClick={event => event.stopPropagation()}>
-                  <a className={css.ecommerceActionChip} href={srcOf(image)} download={`product-${item.slotKey || item.id}-${imageIndex + 1}.${extensionOf(image.mime)}`}>{tt('download')}</a>
+                  <button type="button" className={css.ecommerceActionChip} onClick={() => downloadImage(image, `product-${item.slotKey || item.id}-${imageIndex + 1}`)}>{tt('download')}</button>
                   <button type="button" className={css.ecommerceActionChip} disabled={galleryAdding} onClick={() => { void addToGallery(image) }}>{tt('gallery.add')}</button>
                   <button type="button" className={css.ecommerceActionChip} disabled={conversationBusy} onClick={() => { addImageToConversation(image, imageIndex, `${item.id}:${imageIndex}`) }}>{conversationAttachment.busyKey === `${item.id}:${imageIndex}` ? tt('conversation.adding') : tt('conversation.add')}</button>
                 </span>
@@ -2336,6 +2334,7 @@ export function ImageGenPanel(props: {
     event.preventDefault()
     const aside = configAsideRef.current
     if (aside === null) return
+    setConfigResizing(true)
     const left = aside.getBoundingClientRect().left
     const onMove = (move: PointerEvent): void => {
       const width = Math.round(Math.min(CONFIG_WIDTH_MAX, Math.max(CONFIG_WIDTH_MIN, move.clientX - left)))
@@ -2343,6 +2342,7 @@ export function ImageGenPanel(props: {
       try { window.localStorage.setItem(CONFIG_WIDTH_STORAGE_KEY, String(width)) } catch { /* optional */ }
     }
     const onUp = (): void => {
+      setConfigResizing(false)
       window.removeEventListener('pointermove', onMove)
       document.documentElement.style.removeProperty('cursor')
       document.documentElement.style.removeProperty('user-select')
@@ -2674,6 +2674,18 @@ export function ImageGenPanel(props: {
           ]}
         />
         <span className={css.panelHeaderActions}>
+          <button
+            type="button"
+            className={css.chatToggle}
+            data-config-toggle=""
+            data-open={!configCollapsed ? 'true' : 'false'}
+            aria-pressed={!configCollapsed}
+            aria-label={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
+            title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
+            onClick={() => { setConfigCollapsed(previous => !previous) }}
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2.2" y="2.5" width="11.6" height="11" rx="1.6" /><path d="M6.2 3v10" /></svg>
+          </button>
           <button type="button" className={css.privacyToggle} data-privacy-toggle="" aria-pressed={privacyMode}
             aria-keyshortcuts="Alt+Shift+H" title={tt('image.privacyHint')} onClick={() => { setPrivacyMode(value => !value); setImageMenu(null) }}>
             {tt(privacyMode ? 'image.show' : 'image.hide')}
@@ -2714,23 +2726,10 @@ export function ImageGenPanel(props: {
             className={css.config}
             style={{ '--dsh-imagegen-config-width': `${configWidth}px` } as CSSProperties}
             data-collapsed={configCollapsed ? 'true' : 'false'}
+            data-resizing={configResizing ? 'true' : undefined}
             data-gallery={workspace === 'normal' && tab === 'gallery' ? 'true' : undefined}
           >
             <div className={css.configResizer} title={tt('config.resizeHint')} onPointerDown={onConfigResizeStart} />
-          <div className={css.configHeader}>
-            <button
-              type="button"
-              className={css.configToggle}
-              aria-expanded={!configCollapsed}
-              aria-label={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
-              title={tt(configCollapsed ? 'panel.expandConfig' : 'panel.collapseConfig')}
-              onClick={() => { setConfigCollapsed(previous => !previous) }}
-            >
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d={configCollapsed ? 'M6 3l5 5-5 5' : 'M10 3L5 8l5 5'} />
-              </svg>
-            </button>
-          </div>
           {isGallery ? (
             <div className={css.galleryFilters}>
               <div className={css.galleryFilterHeading}>{tt('gallery.categories')}</div>
@@ -3790,13 +3789,13 @@ export function ImageGenPanel(props: {
                   <button type="button" className={css.lightboxEdit} onClick={addPreviewToEdit}>
                     {tt('preview.addToEdit')}
                   </button>
-                  <a
+                  <button
+                    type="button"
                     className={css.lightboxDownload}
-                    href={srcOf(previewImage)}
-                    download={`dsh-image-${preview.index + 1}.${extensionOf(previewImage.mime)}`}
+                    onClick={() => downloadImage(previewImage, `dsh-image-${preview.index + 1}`)}
                   >
                     {tt('download')}
-                  </a>
+                  </button>
                 </span>
               </div>
             </figure>
@@ -3858,17 +3857,6 @@ export function ImageGenPanel(props: {
       <DiagnosticsPanel api={api} open={diagnosticsOpen} onClose={() => { setDiagnosticsOpen(false) }} />
     </div>
   )
-}
-
-/** Save the original bytes under a readable filename (menu action). */
-function downloadGeneratedImage(image: GeneratedImage): void {
-  const anchor = document.createElement('a')
-  anchor.href = `data:${image.mime};base64,${image.b64}`
-  anchor.download = `dsh-image.${extensionOf(image.mime)}`
-  anchor.rel = 'noopener'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
 }
 
 /** File extension for a MIME type (download filenames). */

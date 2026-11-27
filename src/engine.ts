@@ -28,6 +28,8 @@ export interface UpstreamConfig {
   promptExtend?: boolean
   /** Request protocol; auto infers chat-completions from an exact chat URL. */
   protocol?: ChannelProtocolPreference
+  /** Built-in provider preset id; native adapters (Cloudflare) use it to dispatch. */
+  preset?: string
   /** Channel display name, recorded in diagnostics so a failure maps to a settings row. */
   channelName?: string
   /**
@@ -1224,6 +1226,156 @@ async function requestOneImage(
 }
 
 /**
+ * Cloudflare Workers AI (native Run API): one JSON request per image.
+ *
+ * Workers AI is not an OpenAI-compatible image endpoint. Each model has its own
+ * input/output schema: FLUX.1 schnell accepts `{ prompt }` and answers
+ * `{ result: { image: base64 } }`, while SDXL accepts width/height/img2img
+ * fields and answers a binary PNG stream. The adapter normalizes both shapes to
+ * the same GeneratedImage records the rest of the queue expects.
+ */
+function cloudflareRequestBody(model: string, request: GenerateRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = { prompt: request.prompt }
+  // FLUX.1 schnell documents only prompt/seed/steps; width/height would be
+  // rejected or silently ignored. Leave the model on its native square output.
+  if (/flux-1-schnell/i.test(model)) return body
+  const pixels = request.size !== '' && request.size !== 'auto' ? OPENAI_SIZE_BY_RATIO[request.size] : undefined
+  if (pixels !== undefined) {
+    const [width, height] = pixels.split('x').map(Number)
+    body.width = width
+    body.height = height
+  }
+  if (/stable-diffusion/i.test(model)) body.num_steps = 20
+  if (request.mode === 'edit') {
+    const parsed = parseDataUrl(request.image ?? '')
+    if (parsed === undefined) throw new ImageGenError('参考图片格式无效', 'edit-image-invalid')
+    body.image_b64 = parsed.base64
+  }
+  return body
+}
+
+/** Pull the base64 picture out of the two JSON envelopes Workers AI uses. */
+function cloudflareImageBase64(payload: unknown): string | undefined {
+  if (payload === null || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  const result = record.result
+  if (result !== null && typeof result === 'object') {
+    const image = (result as Record<string, unknown>).image
+    if (typeof image === 'string' && image.trim() !== '') return image
+  }
+  if (typeof record.image === 'string' && record.image.trim() !== '') return record.image
+  return undefined
+}
+
+async function requestOneCloudflareImage(
+  requestUrl: string,
+  upstream: UpstreamConfig,
+  request: GenerateRequest,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<GeneratedImage[]> {
+  const budget = requestSignal(signal, UPSTREAM_TIMEOUT_MS)
+  try {
+    let response: Response
+    const context = attemptContext(upstream, request, 'generate', requestUrl, 'POST', JSON.stringify(body), Date.now())
+    try {
+      response = await fetch(requestUrl, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${upstream.apiKey.trim()}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: budget.signal,
+      })
+    } catch (error) {
+      const network = networkErrorFields(error)
+      const failure = isBudgetTimeout(error)
+        ? new ImageGenError('上游接口响应超时（240 秒）', 'upstream-timeout')
+        : signal?.aborted === true
+          ? new ImageGenError('任务已取消', 'cancelled')
+          : new ImageGenError(
+            `无法连接上游接口：${network.detail}${network.errorCode === undefined ? '' : ` [${network.errorCode}]`} · 请求地址 ${displayUrl(requestUrl)}`,
+            'upstream-unreachable',
+          )
+      recordFailure(context, failure)
+      throw failure
+    }
+
+    const contentType = (response.headers.get('content-type') ?? '').toLowerCase()
+    if (!response.ok) {
+      const responseText = await readResponseText(response)
+      let payload: unknown
+      try { payload = JSON.parse(responseText) } catch { payload = undefined }
+      const failure = new ImageGenError(
+        `${upstreamMessage(payload, response.status)}（HTTP ${response.status} · ${displayUrl(requestUrl)}）`,
+        'upstream-rejected',
+        response.status,
+      )
+      recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
+      throw failure
+    }
+
+    if (contentType.includes('application/json')) {
+      const responseText = await readResponseText(response)
+      let payload: unknown
+      try {
+        payload = JSON.parse(responseText)
+      } catch {
+        const failure = new ImageGenError(`上游接口返回了非 JSON 响应（HTTP ${response.status}）`, 'upstream-invalid', response.status)
+        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
+        throw failure
+      }
+      const encoded = cloudflareImageBase64(payload)
+      if (encoded === undefined) {
+        const failure = new ImageGenError('上游响应缺少图片内容', 'upstream-empty')
+        recordFailure(context, failure, { status: response.status, bodyExcerpt: responseText })
+        throw failure
+      }
+      const bytes = Buffer.from(bareBase64(encoded), 'base64')
+      const mime = detectImageMime(bytes)
+      if (mime === undefined) throw new ImageGenError('Cloudflare 返回了无法识别的图片数据', 'upstream-invalid', response.status)
+      return [{ b64: bytes.toString('base64'), mime }]
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    const mime = detectImageMime(bytes)
+    if (mime === undefined) throw new ImageGenError('Cloudflare 返回了无法识别的图片数据', 'upstream-invalid', response.status)
+    return [{ b64: Buffer.from(bytes).toString('base64'), mime }]
+  } finally {
+    budget.dispose()
+  }
+}
+
+async function generateCloudflareImage(
+  baseUrl: string,
+  upstream: UpstreamConfig,
+  request: GenerateRequest,
+  options: { signal?: AbortSignal },
+): Promise<GenerateResult> {
+  const model = wireModel(request)
+  if (baseUrl.includes('{ACCOUNT_ID}')) {
+    throw new ImageGenError('请先在渠道地址中把 {ACCOUNT_ID} 替换为 Cloudflare Account ID', 'config-missing')
+  }
+  if (!/^@cf\//i.test(model)) {
+    throw new ImageGenError(`Cloudflare Workers AI 模型 id 需要以 @cf/ 开头（当前 ${model}）`, 'model-unavailable')
+  }
+  if (/flux-2/i.test(model)) {
+    throw new ImageGenError('Cloudflare FLUX.2 的 multipart 协议暂未支持，请先使用 flux-1-schnell', 'model-unavailable')
+  }
+  if (request.mode === 'edit' && !/stable-diffusion/i.test(model)) {
+    throw new ImageGenError('当前 Cloudflare 模型不支持图生图，请切换到文生图或选择支持编辑的模型', 'edit-unsupported')
+  }
+  const count = effectiveCount(request)
+  const body = cloudflareRequestBody(model, request)
+  const requestUrl = `${baseUrl.replace(/\/+$/, '')}/${model}`
+  const settled = await Promise.allSettled(
+    Array.from({ length: count }, () => withTransientRetry(() => requestOneCloudflareImage(requestUrl, upstream, request, body, options.signal), options.signal)),
+  )
+  return fanOutResult(settled, count)
+}
+
+/**
  * Qwen-Image (DashScope native multimodal-generation): one chat-style request
  * carries the prompt (plus the reference image for edit mode) and answers
  * synchronously with image URLs in the reply content. The versioned series
@@ -1608,11 +1760,14 @@ export async function generateImage(upstream: UpstreamConfig, request: GenerateR
   const baseUrl = normalizeModelScopeBaseUrl(configuredBaseUrl, upstream.apiUrlFull === true)
   if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
   if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
-  if (request.mask !== undefined && (request.mode !== 'edit' || resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions' || ['grok', 'nanobanana', 'seedream', 'sensenova', 'qwen', 'minimax', 'zhipu'].includes(modelFamily(wireModel(request))))) {
+  if (request.mask !== undefined && (request.mode !== 'edit' || resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions' || ['grok', 'nanobanana', 'seedream', 'sensenova', 'qwen', 'minimax', 'zhipu', 'cloudflare'].includes(modelFamily(wireModel(request))))) {
     throw new ImageGenError('当前模型或渠道协议不支持原生遮罩，请选择支持 images/edits 遮罩的 GPT Image 等 API 模型', 'mask-unsupported')
   }
   if (resolveChannelProtocol(baseUrl, upstream.protocol) === 'chat-completions') {
     return finalizeResult(await generateChatCompletionImages(upstream, baseUrl, request, options.signal), request)
+  }
+  if (upstream.preset === 'cloudflare-workers-ai' || modelFamily(wireModel(request)) === 'cloudflare') {
+    return finalizeResult(await generateCloudflareImage(baseUrl, upstream, request, options), request)
   }
   // A complete URL is an explicit escape hatch to the exact provider endpoint:
   // use the generic OpenAI-compatible request shape instead of native family
@@ -1756,6 +1911,15 @@ function upstreamMessage(payload: unknown, status: number): string {
     }
     if (typeof record.message === 'string' && record.message !== '') return record.message
     if (typeof record.error === 'string' && record.error !== '') return record.error
+    // Cloudflare Workers AI reports `{ success: false, errors: [{ code, message }] }`.
+    const errors = record.errors
+    if (Array.isArray(errors)) {
+      const first = errors[0]
+      if (first !== null && typeof first === 'object') {
+        const message = (first as Record<string, unknown>).message
+        if (typeof message === 'string' && message !== '') return message
+      }
+    }
   }
   return `上游接口拒绝请求（HTTP ${status}）`
 }

@@ -8,7 +8,7 @@
  * Framework-free (pure data + regex), safe for the client bundle to inline.
  */
 
-export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'sensenova' | 'zhipu' | 'qwen' | 'minimax' | 'unknown'
+export type ModelFamily = 'gpt-image' | 'dall-e' | 'grok' | 'nanobanana' | 'seedream' | 'sensenova' | 'zhipu' | 'qwen' | 'minimax' | 'cloudflare' | 'unknown'
 
 /** Capability/identity annotation for one model id. */
 export interface ModelCatalogEntry {
@@ -111,6 +111,18 @@ const ENTRIES: Record<Exclude<ModelFamily, 'unknown'>, Omit<FamilyDescription, '
     supportsAspectRatio: true,
     qualityTiers: ['auto'],
   },
+  cloudflare: {
+    label: 'Cloudflare',
+    labelZh: 'Cloudflare Workers AI',
+    known: true,
+    // First release: text-to-image only (FLUX.1 schnell). More capable
+    // Workers AI models can opt in when their multipart/img2img adapters land.
+    supportsEdit: false,
+    // FLUX.1 schnell owns its square output; the adapter reads width/height only
+    // for SDXL-style models, so the shared ratio picker stays off for now.
+    supportsAspectRatio: false,
+    qualityTiers: ['auto'],
+  },
 }
 
 /** Documented upstream prompt hard limits (UTF-16 code units). The engine
@@ -151,6 +163,7 @@ function describeFamily(model: string): FamilyDescription {
   if (/^(?:glm-image|cogview(?:-|$))/i.test(id)) return { family: 'zhipu', ...ENTRIES.zhipu }
   if (/^qwen-image(?:[-_.]|$)/i.test(id)) return { family: 'qwen', ...ENTRIES.qwen }
   if (/^(?:minimax[-_/])?image-\d+/i.test(id)) return { family: 'minimax', ...ENTRIES.minimax }
+  if (/^@cf\//i.test(id)) return { family: 'cloudflare', ...ENTRIES.cloudflare }
   return { family: 'unknown', label: 'unknown', labelZh: '未知协议', known: false, supportsEdit: true, supportsAspectRatio: false, qualityTiers: [] }
 }
 
@@ -164,7 +177,8 @@ export function describeModel(model: string): ModelCatalogEntry {
  *  image model naming conventions without treating every unknown model as an
  *  image model. */
 export function isLikelyImageModelId(model: string): boolean {
-  if (describeModel(model).family === 'sensenova') return true
+  const family = describeModel(model).family
+  if (family === 'sensenova' || family === 'cloudflare') return true
   return /(?:^|[-_.])(?:image|img|diffusion|flux|cogview|imagen|seedream|nanobanana|grok-imagine|dall-e|stable-diffusion|sdxl|pixart|kolors|ideogram|midjourney|recraft|hunyuan|jimeng|wanx|hidream|playground)(?:$|[-_.])/i.test(model.trim())
 }
 

@@ -295,6 +295,17 @@ html[data-dsh-imagegen-active] .sidebarHistoryHost {
   display: flex;
 }
 
+/* The takeover surface slides in from the column edge; the host's own grid is
+   untouched, so skins with custom sidebar layouts keep their geometry (#107). */
+html[data-dsh-imagegen-sidebar-takeover] .sidebarHistoryHost {
+  animation: dshHistorySlideIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes dshHistorySlideIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
 .sidebarHistoryHost .history {
   width: 100%;
   height: 100%;
@@ -735,6 +746,16 @@ html[data-dsh-imagegen-sidebar-takeover] [data-dsh-imagegen-sidebar-chrome] {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  /* Drawer-like collapse/expand instead of the old hard jump (#107). The
+     transition is disabled while the user drags the resizer so pointer
+     movement stays 1:1. */
+  transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    min-width 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    max-width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.config[data-resizing='true'] {
+  transition: none;
 }
 
 .configHeader {
@@ -3130,13 +3151,16 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 
 .lightboxClose {
   position: absolute;
-  top: 16px;
-  right: 16px;
+  /* Clear of the desktop window controls: the old 16/16 position sat in the
+     same corner as the OS close button and invited accidental hits (#106). */
+  top: 44px;
+  right: 64px;
+  z-index: 20;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   color: #fff;
   background: rgba(255, 255, 255, 0.14);
   border: 1px solid rgba(255, 255, 255, 0.28);
@@ -3169,11 +3193,11 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
 }
 
 .lightboxNav[data-dir='prev'] {
-  left: max(20px, calc(50% - 640px));
+  left: max(20px, calc(50% - 840px));
 }
 
 .lightboxNav[data-dir='next'] {
-  right: max(20px, calc(50% - 640px));
+  right: max(20px, calc(50% - 840px));
 }
 
 .lightboxFigure {
@@ -3181,9 +3205,11 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   flex-direction: column;
   gap: 10px;
   margin: 0;
-  max-width: min(1100px, calc(100vw - 160px));
-  width: min(1100px, calc(100vw - 160px));
-  height: min(820px, calc(100vh - 48px));
+  /* Use the screen the user has: 1100x820 left a 27-inch window mostly empty
+     and made detailed retouching impossible (#106). */
+  max-width: min(1680px, calc(100vw - 96px));
+  width: min(1680px, calc(100vw - 96px));
+  height: min(1200px, calc(100vh - 40px));
   min-height: 0;
 }
 
@@ -3353,6 +3379,11 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
     max-width: none;
   }
 
+  .lightboxClose {
+    top: 16px;
+    right: 16px;
+  }
+
   .lightboxNav[data-dir='prev'] {
     left: 20px;
   }
@@ -3370,6 +3401,16 @@ html[data-dsh-imagegen-chat-collapsed] [data-dsh-imagegen-chat-resizer] {
   .lightboxCopy,
   .lightboxActions {
     align-self: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .config {
+    transition: none;
+  }
+
+  html[data-dsh-imagegen-sidebar-takeover] .sidebarHistoryHost {
+    animation: none;
   }
 }
 

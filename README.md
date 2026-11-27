@@ -150,7 +150,7 @@ GPT Image 2 及以上版本会按「比例 + 清晰度」发送实际像素尺�
 
 在「设置 → 生图配置」添加渠道，填写 API 地址与密钥，检测并选择生图模型。可配置多个提供方，并设置默认生图模型和可选的提示词增强聊天模型。
 
-支持 OpenAI 兼容的 Images API / Chat Completions，以及 xAI Grok、Google Nano Banana、Seedream、Qwen-Image、GLM-Image、MiniMax 等预置渠道；也可手动添加兼容模型。
+支持 OpenAI 兼容的 Images API / Chat Completions，以及 xAI Grok、Google Nano Banana、Seedream、Qwen-Image、GLM-Image、MiniMax、Cloudflare Workers AI（实验，先支持 FLUX.1 schnell 文生图）等预置渠道；也可手动添加兼容模型。
 
 <details>
 <summary><b>接口与渠道补充说明</b></summary>

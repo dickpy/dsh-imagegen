@@ -1727,11 +1727,15 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const asset = assetOf(node)
     if (asset === undefined || asset.url === '') return
     const link = globalThis.document.createElement('a')
-    link.href = asset.url
+    // The asset route serves images inline for the canvas; `?download=0`
+    // switches it to an attachment stream, so the browser can save large
+    // originals without turning them into a giant data: URL (#108).
+    link.href = `${asset.url}?download=0`
     link.download = `${node.title || 'canvas-image'}.${asset.assetId.split('.').pop() ?? 'png'}`
-    link.target = '_blank'
     link.rel = 'noopener'
+    globalThis.document.body.appendChild(link)
     link.click()
+    link.remove()
   }, [])
 
   const upstreamNodes = useCallback((canvasDocument: CanvasDocument, nodeId: string): CanvasNode[] => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { generateImage } from '../src/engine.ts'
 import { describeModel, isLikelyImageModelId } from '../src/model-catalog.ts'
+import { IMAGE_PRESETS } from '../src/presets.ts'
 import { ImageGenerationRuntime } from '../lib/index.js'
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='
@@ -87,6 +88,44 @@ test('SenseNova sizes use documented 32-pixel alignment at every clarity and asp
   }
   await generateImage(upstream, { ...request, size: 'auto' })
   assert.equal(calls.at(-1).body.size, undefined)
+})
+
+test('Cloudflare Workers AI preset carries the account placeholder and FLUX.1 model', () => {
+  const preset = IMAGE_PRESETS.find(candidate => candidate.id === 'cloudflare-workers-ai')
+  assert.ok(preset)
+  assert.match(preset.apiUrl, /\{ACCOUNT_ID\}/)
+  assert.deepEqual(preset.models, [{ alias: 'flux-1-schnell', id: '@cf/black-forest-labs/flux-1-schnell' }])
+  assert.equal(preset.experimental, true)
+})
+
+test('Cloudflare Workers AI is a native family with JSON and binary response shapes', async t => {
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, headers: init.headers, body: JSON.parse(init.body) })
+    if (calls.length === 1) return Response.json({ result: { image: png } })
+    return new Response(Buffer.from(png, 'base64'), { headers: { 'content-type': 'image/png' } })
+  })
+  const cloudflare = {
+    apiUrl: 'https://api.cloudflare.com/client/v4/accounts/acct/ai/run',
+    apiKey: 'cf-token',
+    preset: 'cloudflare-workers-ai',
+  }
+  const request = { mode: 'text', model: 'flux-1-schnell', upstream: '@cf/black-forest-labs/flux-1-schnell', prompt: 'a cat', size: 'auto', quality: 'auto', detail: '', n: 1 }
+  assert.equal(describeModel('@cf/black-forest-labs/flux-1-schnell').family, 'cloudflare')
+  assert.equal(isLikelyImageModelId('@cf/black-forest-labs/flux-1-schnell'), true)
+  const json = await generateImage(cloudflare, request)
+  assert.equal(calls[0].url, 'https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/black-forest-labs/flux-1-schnell')
+  assert.equal(calls[0].headers.authorization, 'Bearer cf-token')
+  assert.deepEqual(calls[0].body, { prompt: 'a cat' })
+  assert.equal(json.images[0].b64, png)
+  assert.equal(json.images[0].mime, 'image/png')
+  const binary = await generateImage(cloudflare, { ...request, upstream: '@cf/stabilityai/stable-diffusion-xl-base-1.0', size: '16:9' })
+  assert.equal(binary.images[0].b64, png)
+  assert.equal(binary.images[0].mime, 'image/png')
+  assert.equal(calls[1].body.width, 1792)
+  assert.equal(calls[1].body.height, 1024)
+  await assert.rejects(generateImage(cloudflare, { ...request, mode: 'edit', image }), error => error.code === 'edit-unsupported')
+  await assert.rejects(generateImage({ ...cloudflare, apiUrl: 'https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run' }, request), error => error.code === 'config-missing')
 })
 
 test('channel preferences reach the runtime and history records generation start time', async t => {
